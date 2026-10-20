@@ -3,10 +3,15 @@ Copyright (c) 2026 hassandaoh. All rights reserved.
 
 This software, its source code and everything in this repository belong to hassandaoh.
 
+The app, as released by hassandaoh (the Veymelo downloads on this repository's Releases page),
+may be downloaded and used free of charge, for any purpose, including making videos for work.
+It may not be sold, changed, taken apart to make another program, or handed on except by
+pointing to those Releases.
+
 The source is published so that it can be read. No permission is given to use, copy, modify,
-merge, publish, distribute, sublicense or sell the software or any part of it, in source or
-compiled form, without written permission from the copyright holder. Viewing and forking on
-GitHub are allowed only as far as GitHub's Terms of Service require.
+merge, publish, distribute, sublicense or sell the source or any part of it, or programs built
+from it, without written permission from the copyright holder. Viewing and forking on GitHub are
+allowed only as far as GitHub's Terms of Service require.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT
 SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT

@@ -1,11 +1,17 @@
 #!/bin/sh
 # Veymelo.app, and a disk image to hand it on in: the app, with the command line tool AIs reach
 # it through (Contents/MacOS/veymelo: `veymelo mcp --bridge`) beside it, built for every Mac with
-# Apple silicon (M1 and every chip after it) on macOS 11 or later. Signed for this Mac only (ad
-# hoc): on another Mac it opens the first time with Control-click → Open.
+# Apple silicon (M1 and every chip after it) on macOS 11 or later.
 #
 #   scripts/bundle.sh            → dist/Veymelo.app and dist/Veymelo.dmg
 #   scripts/bundle.sh --no-dmg   → dist/Veymelo.app only
+#
+# Signed for this Mac only (ad hoc) unless VEYMELO_SIGN names a Developer ID certificate in the
+# keychain; then it is signed for every Mac (hardened runtime, timestamped). With VEYMELO_NOTARY
+# too (a notarytool keychain profile) the app and the disk image are sent to Apple to be
+# notarized, and the tickets stapled to them, so they open anywhere without a warning:
+#
+#   VEYMELO_SIGN="Developer ID Application: …" VEYMELO_NOTARY=profile scripts/bundle.sh
 #
 # Only tools that come with macOS (and cargo) are used.
 set -eu
@@ -106,11 +112,30 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-# signed as it is (ad hoc): the tool first, then the app round it
-codesign --force --sign - "$app/Contents/MacOS/veymelo"
-codesign --force --sign - "$app"
+# signed: the tool first, then the app round it (ad hoc, or by the Developer ID asked for)
+sign=${VEYMELO_SIGN:-}
+if [ -n "$sign" ]; then
+	codesign --force --options runtime --timestamp --sign "$sign" "$app/Contents/MacOS/veymelo"
+	codesign --force --options runtime --timestamp --sign "$sign" "$app"
+else
+	codesign --force --sign - "$app/Contents/MacOS/veymelo"
+	codesign --force --sign - "$app"
+fi
 codesign --verify --strict "$app"
 echo "made $app ($(du -sh "$app" | cut -f1 | tr -d ' '))"
+
+# sent to Apple to be notarized, and the ticket stapled to it
+notarize() {
+	xcrun notarytool submit "$1" --keychain-profile "$VEYMELO_NOTARY" --wait
+}
+notary=${VEYMELO_NOTARY:-}
+if [ -n "$notary" ] && [ -n "$sign" ]; then
+	packed=$(mktemp -d)/Veymelo.zip
+	ditto -c -k --keepParent "$app" "$packed"
+	notarize "$packed"
+	rm -rf "$(dirname "$packed")"
+	xcrun stapler staple "$app"
+fi
 
 if [ "${1:-}" != "--no-dmg" ]; then
 	# the app beside a way to Applications, to drag it there
@@ -120,5 +145,12 @@ if [ "${1:-}" != "--no-dmg" ]; then
 	rm -f dist/Veymelo.dmg
 	hdiutil create -quiet -volname Veymelo -srcfolder "$stage" -ov -format UDZO dist/Veymelo.dmg
 	rm -rf "$stage"
+	if [ -n "$sign" ]; then
+		codesign --force --timestamp --sign "$sign" dist/Veymelo.dmg
+		if [ -n "$notary" ]; then
+			notarize dist/Veymelo.dmg
+			xcrun stapler staple dist/Veymelo.dmg
+		fi
+	fi
 	echo "made dist/Veymelo.dmg ($(du -sh dist/Veymelo.dmg | cut -f1 | tr -d ' '))"
 fi
