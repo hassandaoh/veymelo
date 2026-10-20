@@ -1,0 +1,31 @@
+[package]
+name = "veymelo-engine"
+description = "The session: named commands with checked parameters, a branching undo history, batches"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-json.workspace = true
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-keyframe.workspace = true
+veymelo-project.workspace = true
+veymelo-render.workspace = true
+veymelo-track.workspace = true
+veymelo-model.workspace = true
+veymelo-export.workspace = true
+veymelo-interchange.workspace = true
+veymelo-lottie.workspace = true
+veymelo-media.workspace = true
+veymelo-svg.workspace = true
+veymelo-psd.workspace = true
+veymelo-expr.workspace = true
+veymelo-effects.workspace = true
+veymelo-geom.workspace = true
+veymelo-path.workspace = true
+veymelo-raster.workspace = true
+veymelo-font.workspace = true
+veymelo-text.workspace = true
+
+[dev-dependencies]
+veymelo-os.workspace = true

@@ -1,0 +1,4 @@
+# built for the processors of every Mac with Apple silicon (the M1's and every one after it), so
+# the program made here runs on any of them; the GPU does the heaviest drawing either way
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=apple-m1"]

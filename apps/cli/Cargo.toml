@@ -1,0 +1,15 @@
+[package]
+name = "veymelo-cli"
+description = "The veymelo command: an MCP server, and commands and renders from the shell"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "veymelo"
+path = "src/main.rs"
+
+[dependencies]
+veymelo-json.workspace = true
+veymelo-time.workspace = true
+veymelo-engine.workspace = true
+veymelo-mcp.workspace = true

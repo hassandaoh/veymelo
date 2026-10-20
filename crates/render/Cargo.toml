@@ -1,0 +1,25 @@
+[package]
+name = "veymelo-render"
+description = "Frames of a composition, drawn by our own code, and PNG pictures of them"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-geom.workspace = true
+veymelo-path.workspace = true
+veymelo-keyframe.workspace = true
+veymelo-project.workspace = true
+veymelo-raster.workspace = true
+veymelo-text.workspace = true
+veymelo-expr.workspace = true
+veymelo-effects.workspace = true
+veymelo-zip.workspace = true
+veymelo-media.workspace = true
+veymelo-model.workspace = true
+veymelo-os.workspace = true
+veymelo-svg.workspace = true
+
+[dev-dependencies]
+veymelo-json.workspace = true

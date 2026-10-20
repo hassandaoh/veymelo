@@ -1,0 +1,16 @@
+[package]
+name = "veymelo-lottie"
+description = "Compositions to Lottie (the JSON animation format players on the web and in apps use) and back"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-json.workspace = true
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-keyframe.workspace = true
+veymelo-project.workspace = true
+veymelo-font.workspace = true
+veymelo-text.workspace = true
+veymelo-effects.workspace = true
+veymelo-zip.workspace = true

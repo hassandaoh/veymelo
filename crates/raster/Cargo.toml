@@ -1,0 +1,10 @@
+[package]
+name = "veymelo-raster"
+description = "Pictures we draw ourselves: canvases, fills, lines, dots and shadows"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-path.workspace = true
+veymelo-color.workspace = true
+veymelo-geom.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "veymelo-studio"
+description = "The Veymelo app: its window"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-path.workspace = true
+veymelo-raster.workspace = true
+veymelo-font.workspace = true
+veymelo-engine.workspace = true
+veymelo-mcp.workspace = true
+veymelo-time.workspace = true
+veymelo-export.workspace = true
+veymelo-json.workspace = true
+
+[dev-dependencies]
+veymelo-render.workspace = true

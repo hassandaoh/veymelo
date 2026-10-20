@@ -1,0 +1,11 @@
+[package]
+name = "veymelo-project"
+description = "The project: items, compositions, layers and their property trees, read and written as JSON"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-json.workspace = true
+veymelo-color.workspace = true
+veymelo-keyframe.workspace = true

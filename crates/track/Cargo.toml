@@ -1,0 +1,8 @@
+[package]
+name = "veymelo-track"
+description = "Following what moves in footage: point tracking by correlation over a pyramid, refined to a fraction of a pixel; corner-pin and similarity fits"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-raster.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "veymelo-interchange"
+description = "Timelines as video editors exchange them: EDL, OpenTimelineIO, Final Cut Pro XML and FCPXML, read and written our own way"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-json.workspace = true

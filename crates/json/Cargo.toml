@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-json"
+description = "JSON: values, read strictly and written compact or pretty"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

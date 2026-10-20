@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-color"
+description = "Colour: sRGB and linear light, HSL and HSV, luminance, and the blend modes"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-os"
+description = "What talks to the operating system: pictures, video and sound in and out through the system's own frameworks (macOS first)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

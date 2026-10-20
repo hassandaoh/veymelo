@@ -1,0 +1,8 @@
+[package]
+name = "veymelo-path"
+description = "Paths: outlines of lines and curves, and how much of each pixel they cover"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-keyframe.workspace = true

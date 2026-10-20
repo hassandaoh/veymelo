@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+# a plain `cargo run` opens the app; test everything with `cargo test --workspace`
+default-members = ["apps/studio"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+# no crates from outside: everything is ours
+[workspace.dependencies]
+veymelo-zip = { path = "crates/zip" }
+veymelo-exr = { path = "crates/exr" }
+veymelo-model = { path = "crates/model" }
+veymelo-svg = { path = "crates/svg" }
+veymelo-psd = { path = "crates/psd" }
+veymelo-track = { path = "crates/track" }
+veymelo-interchange = { path = "crates/interchange" }
+veymelo-os = { path = "crates/os" }
+veymelo-media = { path = "crates/media" }
+veymelo-path = { path = "crates/path" }
+veymelo-raster = { path = "crates/raster" }
+veymelo-font = { path = "crates/font" }
+veymelo-json = { path = "crates/json" }
+veymelo-time = { path = "crates/time" }
+veymelo-geom = { path = "crates/geom" }
+veymelo-color = { path = "crates/color" }
+veymelo-keyframe = { path = "crates/keyframe" }
+veymelo-project = { path = "crates/project" }
+veymelo-text = { path = "crates/text" }
+veymelo-expr = { path = "crates/expr" }
+veymelo-effects = { path = "crates/effects" }
+veymelo-render = { path = "crates/render" }
+veymelo-export = { path = "crates/export" }
+veymelo-lottie = { path = "crates/lottie" }
+veymelo-engine = { path = "crates/engine" }
+veymelo-mcp = { path = "crates/mcp" }
+
+# the pictures are drawn by our own code every frame: keep it quick in a plain `cargo run` too
+[profile.dev]
+opt-level = 3
+
+# the program as it is handed over: the whole of it optimised together (slower to build)
+[profile.release]
+lto = "fat"
+codegen-units = 1

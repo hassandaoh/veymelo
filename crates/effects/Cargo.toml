@@ -1,0 +1,17 @@
+[package]
+name = "veymelo-effects"
+description = "Effects on a layer's pixels, our own: the catalog of effects and how each draws (puppet first)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-geom.workspace = true
+veymelo-keyframe.workspace = true
+veymelo-project.workspace = true
+veymelo-raster.workspace = true
+veymelo-path.workspace = true
+veymelo-text.workspace = true
+veymelo-font.workspace = true
+veymelo-track.workspace = true

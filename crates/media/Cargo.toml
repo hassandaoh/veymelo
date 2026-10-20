@@ -1,0 +1,18 @@
+[package]
+name = "veymelo-media"
+description = "Footage: what a file is, and its frames and sound decoded by the system and kept in memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-os.workspace = true
+veymelo-time.workspace = true
+veymelo-project.workspace = true
+veymelo-raster.workspace = true
+veymelo-model.workspace = true
+veymelo-svg.workspace = true
+veymelo-psd.workspace = true
+veymelo-geom.workspace = true
+veymelo-exr.workspace = true
+veymelo-json.workspace = true
+veymelo-color.workspace = true

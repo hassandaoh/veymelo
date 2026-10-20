@@ -1,0 +1,494 @@
+Veymelo
+Copyright 2026 hassandaoh
+
+Much of what Veymelo can do was learned by reading EffectCraft
+(https://github.com/storytold/effectcraft), MIT OR Apache-2.0. The code here is written
+for Veymelo; where something was taken over from EffectCraft it is listed below.
+
+- crates/keyframe/src/lib.rs, test `overlapping_influences_match_measured_values`: the
+  sample values (Bezier eases whose influences add up to more than 100 %, measured in a
+  compositing application) come from EffectCraft's keyframe tests.
+- crates/color/src/blend.rs: which blend modes keep colours brighter than white, and the
+  classic modes fading their colour toward a neutral one by opacity, follow what EffectCraft
+  found (and measured) in a compositing application.
+- crates/expr: how loopOut and loopIn find the stretch that repeats and work out pingpong,
+  offset and continue; wiggle's octaves each starting at a phase of their own; gaussRandom's
+  spread (nine in ten within 0 to 1); the small allowance in timeToFrames and posterizeTime;
+  and the ease, easeIn and easeOut curves follow EffectCraft's expression prelude.
+- crates/effects/src/puppet: the way the puppet is built follows EffectCraft's — a mesh over
+  the layer's alpha (thresholded at a half, grown by a distance transform, the region under a
+  seed with its holes filled, traced along cell edges, simplified, densified, a jittered
+  hexagonal lattice inside, Delaunay triangles with the outline's edges recovered by flips),
+  the two-step as-rigid-as-possible solve with conjugate gradients, bend and advanced pins as
+  side targets about the pin (weight 10), starch as triangle stiffness, overlap as triangle
+  depth, and drawing each pixel from the front-most triangle with four-sample coverage; also
+  the defaults (350 triangles, density 50, expansion 3, refinement 20).
+- crates/effects/src/blur.rs: the blur family follows EffectCraft's — blurriness as about twice
+  the Gaussian deviation, Repeat Edge Pixels, how Channel Blur divides each blurred channel by
+  its alpha blurred alike, Compound Blur's blends between blur levels by the map, the bilateral
+  and smart blurs, Cross Blur's transfer modes, Radial Fast Blur's streak length and its
+  brightest and darkest modes, Vector Blur's types, and Camera Lens Blur's iris rows, highlight
+  gain and saturation, diffraction fringe (rim weights) and blur map.
+- crates/effects/src/color.rs, grade.rs, look.rs: the colour correction family follows
+  EffectCraft's — notably Brightness & Contrast's modern curve (its constants were fitted by
+  EffectCraft to a compositing tool's output), Hue/Saturation's ranges and fall-offs, Levels'
+  clipping choices, Black & White's grey from the smallest channel and the colourfulness,
+  Colorama's phases, palettes and matching, Shadow/Highlight's area brightness and amounts,
+  Selective Color's range weights, Broadcast Colors' limits, the automatic corrections'
+  histograms and clips, and the colour grade's steps and made-up looks.
+- crates/effects/src/generate.rs, paint.rs, forms.rs: the generate and paint family follows
+  EffectCraft's — the twenty blend choices of the patterns, Cell Pattern's cell kinds, the
+  light rays, burst and sweep, Scribble's wiggle and Vegas' segments, Write-on's brush timing,
+  Paint Bucket's tolerance and spread, Radio Waves (waves born at the frequency, growing for
+  their lifespan, their parameters read at birth, contours as signed distances, the stroke
+  profiles and the soft edge of 0.5 + 1.5 / quality pixels), Advanced Lightning (midpoint
+  displacement of 0.22 of a piece's length times turbulence, the lightning types, the alpha
+  obstacle, decay, core drain and fork strength), and Fractal's sets, palettes and edge
+  oversampling.
+- crates/effects/src/distort.rs, warp.rs, bends.rs, liquid.rs: the distort family follows
+  EffectCraft's — notably Twirl's and Ripple's radii as parts of the layer, Bulge's taper and
+  pinned edges, Wave Warp's wave shapes and pinning, Transform's shutter, Turbulent Displace's
+  kinds and pinning (locked ones easing over a quarter of the layer), Displacement Map's
+  sources and behaviours, Optics Compensation's resize limits and optimal pixels, Magnify's
+  links and scalings, Bezier Warp's patch, the bend, lens, page-turn, tiler and griddler
+  geometry, Bender's styles, Blobbylize's lighting, Power Pin's expansion and blend of even and
+  perspective stretching, Slant, Smudge and Split, Smear's and Reshape's elasticity steps and
+  correspondence points, the fifteen warp styles, the upscale's detail, Flow Motion's knots, and
+  Liquify's brushes (dabs every quarter brush, the grid's size, the stroke text).
+- crates/effects/src/stylize.rs, crafts.rs: the stylize family follows EffectCraft's — Glow's A & B
+  looping and midpoint, its operations and arbitrary map, Mosaic, Find Edges' and Emboss's
+  kernels, Cartoon's steps (smoothing guided by brightness, the shading steps and the edge
+  black level and contrast), Roughen Edges' types, Strobe Light's operators, Texturize's relief,
+  Brush Strokes' cells, Kaleidoscope's wedges, the tilings, the vignette's falloff, the
+  thresholds, Block Load's levels, Burn Film's charred rim, Glass and Plastic's lighting, the
+  hexagonal tiles and Smoothie's palette.
+- crates/effects/src/grain.rs, film.rs: the noise and grain family follows EffectCraft's — Fractal
+  Noise's engine (value noise on a lattice in x, y and the evolution, the four noise types with
+  soft linear as a quadratic B-spline and its gain of (181/231)/0.55, the fractal types' shapes and
+  dynamic warps, sub settings, perspective offset, turbulence factor and overflows), Curl Noise,
+  Noise Alpha's and Noise HLS's kinds, the grain controls (presets, tones about a midpoint, the
+  blending modes), grain measured in the flattest boxes (spread about a softened self, size from
+  neighbours' likeness), Remove Grain's guided smoothing, texture and temporal pass, and the
+  median found by sliding a count of values (Huang's method).
+- crates/effects/src/channel.rs: the channel family follows EffectCraft's — Invert's colour spaces,
+  the channel sources, Channel Combiner's conversions and where a single value goes, Minimax's
+  channels and edges, Arithmetic's and Compound Arithmetic's operators and overflow, Solid
+  Composite, Remove Color Matting, Set Matte's premultiplied and composited matte, Blend's modes,
+  Calculations' channels and Composite's ways of bringing the original back.
+- crates/effects/src/matte.rs, keys.rs, screen.rs: the matte and keying families follow
+  EffectCraft's — Matte Choker's stages, the refiners' edge band, smoothing, chatter, motion blur
+  and decontamination, the colour keys' distances, Color Difference Key's partial mattes and
+  levels, Color Range's spaces, Extract, Difference Matte, Inner/Outer Key's trimap, colour
+  estimate and clean-up brushes, Unmult's ramp, the spill suppressors, Key Cleaner, Wire
+  Removal's styles, and the screen keyer's method (biases, screen difference, clip and rollback,
+  despot, masks, replace methods, colour suppression and balance, source crops).
+- crates/effects/src/perspective.rs: the perspective family follows EffectCraft's — Drop Shadow,
+  Radial Shadow's projection and glass edge, the bevels' lighting, the cylinder's and sphere's
+  wrapping, turning and shading, Spotlight's cone, Environment's bumps and reflection mappings, and
+  3D Glasses' views.
+- crates/effects/src/transition.rs: the transition family follows EffectCraft's — Block Dissolve's
+  blocks, the gradient and image wipes' soft bands, Iris Wipe's polygon and star, the linear,
+  radial and venetian wipes, Glass Wipe's refraction, Grid Wipe's shapes and spread, Jaws' teeth,
+  Light Wipe's band and ramp, Line Sweep's staggered strips, the scale wipes, Twister's ribbon and
+  the warping reveal's reactors.
+- crates/effects/src/time.rs: the time family follows EffectCraft's — Echo's operators, Posterize
+  Time's held frames, Time Difference's alpha channel choices, Time Displacement's map and time
+  resolution, Timewarp's settings (methods, speed or source frame, tuning, motion blur, matte and
+  warp layers, show, crops), Force Motion Blur and Wide Time. The frames built between
+  (per-pixel moves, what is hidden and uncovered) are our own.
+- crates/effects/src/words.rs: Numbers and Timecode follow EffectCraft's — Numbers' types (leading
+  zeros to five places, the date formats from 1 January 2000, hexadecimal), random values, the
+  display options, and Timecode's formats and time sources. They are drawn in real fonts by our
+  own text engine rather than a stroke font.
+- crates/effects/src/utility.rs: the utility family follows EffectCraft's — Grow Bounds,
+  Overbrights' channels and colours, HDR Highlight Compression's soft knee, HDR Compander's gain
+  and gamma, and Cineon Converter's Kodak log conversion with its rolloff.
+- crates/effects/src/colorfile.rs, ocio.rs, ocio/: the colour-management effects follow
+  EffectCraft's — the OCIO effects' settings, the ASC CDL maths, the .3dl/.csp/.spi1d/.spi3d/
+  .spimtx readers' conventions, the parts of OCIO configurations read, Color Profile Converter's
+  profiles and intents, and Color Stabilizer's three ways. The colour spaces and curves
+  (crates/color/src/space.rs) are from the published standards and camera makers' papers; the
+  Common LUT Format reader, the YAML reader and the gamut limits drawn from a conversion are ours.
+- crates/effects/src/weather.rs, particles.rs, hair.rs, playground.rs, cards.rs, shatter.rs,
+  breakup.rs, water.rs, foam.rs: the simulation family follows EffectCraft's — each effect's
+  settings, defaults and units, and how each behaves: the falling and rising things' depths and
+  drift, the particle systems' producers, physics, kinds and looks, Hair's strands, Particle
+  Playground's cannon, grid, exploders, forces and map layers, Card Dance's and Card Wipe's
+  sources and lighting, Shatter's forces and gradients, Ball Action, Pixel Polly and Scatterize,
+  Caustics' layers, surface and lighting, Wave World's producers, ground depth, slowing in
+  shallow water, damping and height map, and Foam's producer, bubble sizes, lifespans, strength,
+  wind, turbulence, flow map, repulsion, pops, wobble and textures. Our own: the stepped
+  simulations with kept states (stepper.rs), the sprite and 3D piece renderers (sprites.rs,
+  scene3d.rs), Particle Playground's grid each frame and wall reflection, Shatter's puzzle, glass
+  and concentric patterns and breaking where a force first touches, Caustics' refraction by
+  Snell's law with a surface as high as the layer is wide and light carried down to where it
+  lands, Wave World's energy-keeping wave equation, open edges that let the waves out and smooth
+  height map, and Foam's clumping by shared movement, squashing wobble, soap-film colours and
+  mirror off each ball.
+- crates/effects/src/sphere.rs: the immersive family follows EffectCraft's — each effect's
+  settings and defaults, the frame layouts, the cube-map face directions and layouts (with names
+  of our own for those named after products), the sphere-map and dome mappings, Chromatic
+  Aberrations' falloff, Color Gradients' weighting by distance round the sphere, De-Noise's
+  guided filter and median, Glow's bright pass, and Digital Glitch's bands, splits, scan lines,
+  rate and target. Our own: the blur round whole circles through the poles with fractional box
+  widths, more samples where a converted pixel spans many source pixels, the cubic sampling held
+  within its nearest pixels, and the fractal noise's evolution between fields kept at strength.
+- crates/raster/src/passes.rs, crates/effects/src/passes.rs: the 3D Channel family follows
+  EffectCraft's — the channels and names looked for, the effects' settings and defaults, 3D
+  Channel Extract's channels, Depth Matte's feather, the focal blur's curve and bias, Fog 3D's
+  thickening and gradient layer, ID Matte's coverage, the ID viewer's displays, the channel
+  extractor's own-channel names, and the Cryptomatte selection's quoting, patterns and <hex> IDs.
+  Cryptomatte itself follows Psyop's published specification and MurmurHash3 Austin Appleby's
+  public-domain algorithm. Our own: Depth of Field by ordered depth slices, each carried on under
+  nearer ones before blurring, and four points a pixel for jagged edges.
+- crates/effects/src/obsolete.rs: the obsolete family follows EffectCraft's — Basic 3D's plane,
+  eye and glint, the legacy Gaussian's room to spread, Basic Text's and Path Text's settings
+  (shapes, kerning pairs, shear, scale, alignment, margins, visible characters, fade, jitter),
+  and Lightning's bolt (wobbling pieces, detail by splitting, branches, pull, core and glow, blend
+  modes). Our own: the text in real fonts with fallback, Basic 3D's samples by footprint, and the
+  loop spreading its text right round.
+- crates/project/src/styles.rs, crates/render/src/styles.rs, crates/engine/src/commands/style.rs:
+  layer styles follow EffectCraft's — the styles, their settings, order, defaults and ranges,
+  Blending Options and the one Global Light per composition, the drawing order (shadow and glow
+  under the layer in their own modes, the inner styles clipped to its shape, then stroke and
+  bevel), the shapes from the exact distance transform (Felzenszwalb and Huttenlocher's
+  algorithm, already ours in puppet/mesh.rs) and Gaussian blurs, the bevel profiles and their
+  lighting, Satin's two copies, Gradient Overlay's styles and the stroke's positions. Our own:
+  knockout and the channel switches drawn by the renderer, and styled layers drawn whole.
+- crates/project/src/scene.rs, crates/render/src/scene.rs, crates/render/src/three.rs, the 3D parts
+  of crates/expr: the 3D renderer follows EffectCraft's — cameras (zoom from the lens length on
+  36 mm film, the standard 50 mm camera, two-node aim), the camera, light and material settings
+  and defaults, the light falloffs, spot cone and feather, Blinn-Phong shading lit from both
+  sides with light transmission and metal, the per-pixel gathering of every plane's piece
+  through its inverse homography sorted by depth, shadows ray-cast against the casting planes
+  with coloured transmission, and depth of field blurring each layer by its depth. Our own:
+  four looks at pixels a crossing goes through, more samples where a plane is seen small, the
+  adaptive sunflower sampling of a diffuse light's disc, lighting each layer in its own picture
+  before blurring it out of focus (only where it can be seen), motion blur by putting the scene
+  together across the shutter, and collapsed 3D compositions joining the outer scene.
+- crates/lottie: Lottie export and import follow EffectCraft's lottie crate in what is mapped —
+  the document, asset and layer fields, the transform keys, the keyframe ease formulas (speed and
+  influence to the normalised `i`/`o` curves and back, `to`/`ti`, `h`), the shape items and their
+  settings, mask modes, track mattes, the blend mode order, the text document and animator keys,
+  the effects Lottie players draw with their parameter orders and scales, the warnings for what
+  Lottie cannot hold, and dotLottie's manifest and folders. The format itself is from the public
+  Lottie description (the lottie-spec schema and LottieFiles' documentation). Our own: parents
+  and track mattes written by `ind` (both ways), eases worked out before unit changes, layer
+  controls by `ind`, every animation of a `.lottie` read (old and new layouts, deflated with our
+  own inflate), missing or web pictures kept as missing footage, unreadable pictures named by
+  their file, colour alpha folded into still opacity, gaps of 0 written as long as their dash,
+  and text as outlines with the letters' true curves.
+- crates/zip: deflate moved from the renderer; inflate written from RFC 1951 (Huffman decoding
+  by code counts, as Mark Adler's public "puff" describes), zip archives from PKWARE's APPNOTE.
+- crates/effects/src/audio.rs, crates/render/src/audio.rs: the audio effects and the mix follow
+  EffectCraft's — the thirteen effects with their settings, defaults and ranges, the pre-roll
+  that makes blocks sound alike, Audio Levels in dB with −96 as silence, solo and the audio
+  switch, compositions mixed at their layer's time, Backwards reading the in–out stretch the
+  other way, the peak summary for waveforms. The arithmetic is textbook and public: the RBJ
+  "Audio EQ Cookbook" filters, Freeverb's published comb and all-pass lengths, feed-forward
+  dynamics with a quadratic soft knee. Our own: time remapped and varying-speed sound read
+  sample by sample, levels eased across each block, loudness by ITU-R BS.1770 (K-weighting
+  derived for any rate as libebur128 publishes it, gated LUFS), the waveform picture, and
+  Convert Audio to Keyframes.
+- crates/media: footage probing, numbered sequences and a frame cache follow EffectCraft's media
+  crate in what they do; decoding is the system's (crates/os), and the reader kept where it
+  stopped, the animated pictures' frame times and the interpretation are our own.
+- crates/engine/src/commands/{items,assist,cut,paths,arrange}.rs, crates/path: the project item
+  commands, the keyframe assistants (Wiggler, Smoother, Motion Sketch, exponential scale,
+  sequence and stagger), the time and layer edits (slip, stretch to, lift and extract the work
+  area, crop the composition), the path and mask edits (vertex edits, smart mask interpolation,
+  shapes to paths, grouping, nulls from paths, auto-trace) and align and distribute follow
+  EffectCraft's commands of those names in what they do. The arithmetic is public: de
+  Casteljau subdivision, the Procrustes fit for matching shapes, the least-squares cubic fit
+  Philip Schneider gives in Graphics Gems (1990), marching squares and Douglas–Peucker.
+- crates/engine/src/commands/{preset,prerender}.rs, crates/media/src/scenes.rs: animation
+  presets, pre-render with its post-render actions, proxies and scene edit detection follow
+  EffectCraft's command list in what they offer (save and apply a preset; import, import and
+  replace usage, set proxy; markers, split, split and precompose). The preset format and the
+  presets that come with the program, values worked out on the layer a preset goes on, the
+  pre-render lined up in time when only the work area is made, proxies fitted to what they
+  stand for, and the cut finder (a brightness grid and colour histograms, a cut being a change
+  well above the changes around it) are our own.
+- crates/project/src/essential.rs, crates/engine/src/commands/essential.rs: essential properties
+  follow EffectCraft's essential graphics in what they hold and do — controls of a composition
+  (properties with linked ones, mirrors, media replacement, comments, groups; Source Text as a
+  font control, Scale as one value), the essential properties every layer showing it gets, a
+  value set on a layer becoming its own (found by what changed), mirrors set on a layer setting
+  their control, links following the property that changed, push to source and revert,
+  templates. Our own: the properties living in the layer's property tree under essentials/
+  so every property command works on them, what a file writes kept until the project is read
+  whole, ids kept through merges and duplicates, and the overrides reaching the sound.
+- crates/keyframe/src/text.rs, crates/text, crates/render/src/text.rs, crates/engine/src/commands/
+  text.rs: the text follows EffectCraft's text in what it offers — character and paragraph styles
+  set by range (font, weight, size, tracking, leading, baseline shift, scales, tsume, faux bold
+  and italic, caps, super- and subscript, kerning by metrics, optically or by hand, ligatures,
+  OpenType features, variable axes; justification of every kind, indents, spacing, direction,
+  the every-line and single-line composers, hanging punctuation), vertical text, the animator
+  properties and selectors (expression selector, wiggly by dimension), text on a path, fill and
+  stroke order, inter-character blending and per-character 3D. Our own: the layout itself (the
+  evenest-lines composer, optical kerning from the glyphs' outlines, runs per style and
+  direction), the way animators combine, and every implementation.
+- crates/text/src/bidi.rs: the Unicode Bidirectional Algorithm written from UAX #9 (the
+  character classes and the paired brackets from the Unicode Character Database), checked
+  against the system's ICU.
+- crates/font/src/shape.rs, crates/font/src/cff.rs: OpenType shaping written from the OpenType
+  specification (GSUB, GPOS with variation deltas, GDEF), Arabic joining from the Unicode
+  joining types, Hebrew point order from the combining classes, the Type 2 charstrings of CFF
+  and CFF2 from Adobe's technical notes 5176 and 5177; checked against CoreText.
+- crates/font/src/shape/aat.rs: Apple's layout tables (morx, kerx, kern in Apple's form, ankr,
+  trak) written from Apple's TrueType Reference Manual; the feature types and settings are the
+  numbers Apple publishes, paired with OpenType's tags as HarfBuzz pairs them (MIT licence; the
+  old letter-case small capitals counted as smcp, as HarfBuzz does). Checked against CoreText
+  on 55 fonts that come with macOS; where the manual leaves room, CoreText's behaviour is
+  followed (a reset across the line keeps later moves, kerx class offsets read in bytes,
+  tracking held at the ends of its sizes and given only to fonts with an optical size axis).
+  As CoreText does, a font with both Apple's and OpenType's tables is shaped by Apple's, and
+  spaced by its kerx where it has one.
+- crates/font/src/shape/{indic,khmer,myanmar}.rs: Indic shaping (Devanagari, Bengali, Gurmukhi,
+  Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam), Khmer and Myanmar written from
+  Microsoft's script development specifications for OpenType, following HarfBuzz's shapers
+  (MIT licence) where the specifications leave room: their syllable grammars, the scripts' reph
+  and below-form settings, finding the base by asking the font what it would form, the
+  reordering and the cluster merging that goes with it. The characters' categories come from
+  the Unicode Character Database (IndicSyllabicCategory and IndicPositionalCategory 13.0, as
+  macOS's Perl carries them, and the canonical decompositions), changed as HarfBuzz changes them.
+  Checked against CoreText on 500 words in 27 fonts that come with macOS.
+- crates/engine/src/commands/{link,group}.rs, the marker commands in time.rs, key.copy, effect.pickColor,
+  crates/expr/src/reference.rs: these follow EffectCraft's prop.pickWhip, prop.reset,
+  prop.convertExpressionToKeyframes and prop.toggleAnimation in what they do (the pick whip's
+  dimension rules; a keyed property reset by a key at the current time). The same holds for the
+  property group commands, markers.set, markers.convert, markers.nested,
+  layer.updateMarkersFromSource, expr.errors, the Expression Language menu, copying and pasting
+  keys, and effect.pickColor (the colour the effect sees, averaged 5 × 5). Our own:
+  - each reference checked by working it out, falling back to a plainer one;
+  - a reference whose examples the tests run;
+  - shape items moved between groups;
+  - keys copied across layers by composition time;
+  - nested markers placed through time remapping;
+  - picked colours brought back from linear light.
+- crates/engine/src/commands/{mask,arrange}.rs, crates/path/src/feather.rs, the taper and wave in
+  crates/path/src/stroke.rs, the mask settings in crates/project/src/defs.rs and
+  crates/render/src/masks.rs: these follow EffectCraft's layer and mask tools in what they do:
+  - layer.transform (reset, center, fit, fit width or height, flip) and centre anchor (the
+    position's keys moved to make up);
+  - per-mask motion blur and feather falloff, and RotoBezier (Catmull-Rom tangents, a sixth of
+    the way between a point's neighbours);
+  - mask feather points (a signed width and a tension on a piece of the path, travelling with
+    its keys; the reach eased along the arc length, round a closed path's start);
+  - free transform of points, mask shape and reset;
+  - stroke taper (lengths, widths, eases; a quarter-circle ease) and wave (amount, wavelength or
+    cycles, phase), with dashes cut along the same length.
+  Our own:
+  - feather points kept through vertex edits, restarts and reversal;
+  - one ramp across both reaches where outward and inward meet (no step at the edge);
+  - RotoBezier worked out when drawn rather than stored;
+  - wedges filled between the short pieces of a varying stroke;
+  - the empty list of softening points kept out of every value.
+- crates/engine/src/commands/files.rs, the placeholder footage kind, the colour bars in
+  crates/render/src/lib.rs, file times in crates/media/src/pool.rs, and the additions to
+  footage.import, footage.reload, footage.replace and project.save follow EffectCraft's file
+  commands in what they do. Those commands: missing footage and relink (the other missing files
+  found where they were beside it), folder relink (by name, accepted only when the size, kind
+  and length match), reload changed footage, placeholders and replace with a placeholder or a
+  solid, interpretation applied from other footage, consolidate, reduce, import multiple,
+  increment and save, save a copy, item usage, overlay and ripple insert edits. Our own: file
+  times kept by the media pool as files are read, missing footage drawn as colour bars, and
+  ripple insert cutting layers across the insertion point.
+- crates/interchange, crates/export/src/{exr,psd,apart}.rs, crates/engine/src/commands/
+  {templates,timeline}.rs, the extra output modules, comp.responsiveTime and Comp::responsive_time:
+  these follow EffectCraft's render queue and interchange in what they offer:
+  - several output modules, templates, duplicating and moving queue items;
+  - frames saved as layered Photoshop files and multi-layer EXR (layer-prefixed channels);
+  - composition presets;
+  - Responsive Design time (protected regions play at their own speed, the rest takes the
+    stretch);
+  - timeline import and export in EDL, OpenTimelineIO, Final Cut Pro 7 XML and FCPXML.
+  The formats are written and read our own way from their public descriptions: OpenEXR's file
+  layout (ZIP blocks of sixteen scanlines with its byte predictor), Adobe's Photoshop file format,
+  CMX 3600, the OpenTimelineIO schema, xmeml and FCPXML. Our own:
+  - each frame drawn once for every output module;
+  - non-overlapping layers packed onto one track while stacking is kept;
+  - FCPXML written as one gap with every clip connected in its track's lane;
+  - missing timeline media brought in as placeholders.
+- crates/engine/src/commands/camera.rs and the Stereo 3D Controls effect in
+  crates/effects/src/controls.rs follow EffectCraft's camera tools and rigs (three_d.rs and
+  rig3d.rs) in what they do and in these values:
+  - an orbit kept within 89° of straight above or below;
+  - a pan measured in the picture's pixels where the camera looks (its distance there over its
+    zoom);
+  - a one-node camera's point taken as far ahead as its zoom;
+  - the stereo rig: a controls null with configuration (stereo pair, centre and right, centre and
+    left: eyes at −½ and +½, 0 and +1, −1 and 0 scene depths along the camera's right), scene
+    depth in % of the composition's width (3 by default), convergence to the point of interest
+    or the zoom plus a Z offset; left and right eye compositions holding the source collapsed
+    and seen by eye cameras that follow the master by expressions; an output composition
+    through 3D Glasses (balanced coloured red–blue by default);
+  - the orbit null at the point the camera looks at, the camera's keys moved into its space;
+  - a light controlled by a camera: parented at its eye, looking along it, let go where it is.
+  Our own:
+  - moves worked out in the world and written back in the parent's space;
+  - one-node cameras turned with the move (their orientation) rather than reset;
+  - look-at fitted exactly to the layers' corners with a margin;
+  - focus along the camera's view, linked by expression;
+  - the eye cameras' roll following the master;
+  - convergence to the focus distance as a third choice.
+- crates/effects/src/strokes.rs (the Paint effect), crates/engine/src/commands/paint.rs and
+  crates/engine/src/commands/puppet.rs follow EffectCraft's paint tools and puppet recording
+  (crates/effects/src/paint.rs and crates/engine/src/commands/{paint,puppet}.rs there) in what
+  they do and in these choices:
+  - a stroke as dabs of an elliptical tip spaced by a percentage of its diameter;
+  - each dab adding its flow (what is left uncovered multiplied by one less the dab's flow),
+    the stroke capped at its opacity;
+  - the 22 paint modes and the three channel choices (colour into alpha by its luminance);
+  - eraser modes for the layer and paint, paint only, or the last stroke only;
+  - clone strokes offset by the clone position less the stroke's first point, with a time shift
+    or a locked time;
+  - the duration choices (constant, write on keying End from 0 to 100 %, single frame, custom);
+  - a new Paint effect when the last effect is not Paint;
+  - brush tips of hard, soft and flat kinds;
+  - a recorded pin drag as a key a frame at a speed, then smoothed;
+  - follow-through as an expression adding the leader's delayed move from its rest, cascading
+    by distance.
+  Our own:
+  - strokes timed by from and length, in layer seconds;
+  - dab spacing following the tip as pressure shrinks it;
+  - clones copying the layer as painted so far;
+  - our tip set and names;
+  - smooth paths through the points;
+  - the recording core shared with Motion Sketch;
+  - follow-through falling back to the plainest property reference.
+- crates/track, crates/project/src/tracking.rs, crates/effects/src/steady.rs and
+  crates/engine/src/commands/track.rs follow EffectCraft's motion tracking (its track crate,
+  project tracking layout, Warp Stabilizer effect and track commands) in what they do and in
+  these choices:
+  - track points of a feature and a search area, with an attach point and offset;
+  - normalised cross-correlation searched over a pyramid, the best three places followed down,
+    refined by Lucas–Kanade with gain and bias (and optionally the patch's turn and scale);
+  - the four low-confidence actions and an 80 % threshold;
+  - the tracker kinds (transform, stabilize, parallel and perspective corner pin, raw) and how
+    each is applied;
+  - a stabilizer analysing frame-to-frame motion by corners followed with pyramidal
+    Lucas–Kanade and RANSAC fits for three models, smoothing the camera path with a Gaussian
+    average of neighbouring views (after Matsushita et al.) or locking it, then cropping to what
+    every frame covers and scaling up within a maximum.
+  The methods themselves are textbook: Lewis's fast normalised cross-correlation, Lucas–Kanade
+  and Baker–Matthews, Bouguet's pyramidal Lucas–Kanade, Shi–Tomasi corners, Fischler–Bolles
+  RANSAC, Hartley's normalised DLT. Our own:
+  - the code throughout;
+  - the forward-backward check on followed corners;
+  - the camera path mirrored past the clip's ends;
+  - Rolling Shutter Repair shifting each row by the frame's motion over its share of the read
+    time;
+  - a mask tracker re-finding corners inside the moved outline each frame;
+  - the analysis kept as text in the effect, so settings change without analysing again.
+- crates/model, crates/render/src/meshes.rs, the 3D model layer and
+  crates/engine/src/commands/model.rs follow EffectCraft's 3D models (its model crate, Advanced
+  3D renderer and model commands) in what they do and in these choices:
+  - glTF 2.0 and OBJ/MTL read into meshes of primitives with metallic-roughness materials, a
+    node tree, cameras, lights, skins and animations;
+  - OBJ shininess taken as roughness;
+  - flat normals for primitives without normals, and tangents made for normal maps;
+  - cameras and lights from a model made layers: a glTF camera's vertical field of view as zoom,
+    a light's unit as 100 % intensity, a spot's outer cone doubled as the cone angle and the
+    inner one as feather.
+  The formats are read from their public descriptions: the Khronos glTF 2.0 specification,
+  KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength, and the Wavefront
+  OBJ and MTL descriptions. Our own:
+  - the readers, the rasterizer (four samples a pixel, near-plane clipping, perspective-correct
+    shading per triangle per pixel, bands of rows in parallel);
+  - models joining the per-pixel depth sorting of flat 3D layers, receiving their shadows;
+  - the metallic-roughness material mapped onto layer material options;
+  - the default key and fill light where a composition has none;
+  - a unit as `unitScale` pixels, sized at first to fill half the composition's height, centred on
+    the model's box;
+  - pictures inside model files decoded through ImageIO from memory.
+- crates/render/src/extrude.rs, crates/path/src/caps.rs and the Geometry Options group follow
+  EffectCraft's extruded text and shape layers (its model crate's extrude and triangulate, and
+  the Geometry Options of its Advanced 3D renderer) in what they offer: bevel style (none,
+  angular, concave, convex), bevel depth, hole bevel depth and extrusion depth, caps cut into
+  triangles by ear clipping with holes bridged in. Our own:
+  - the solid made from the outlines traced from the layer's own picture (so fills, strokes,
+    gradients and effects all show on its faces);
+  - inset bevel rings untangled where they cross themselves, kept one to one with their
+    neighbours;
+  - sides coloured as the picture's edges;
+  - drawn, lit, shadowed and defocused as 3D models are.
+- crates/model/src/shapes.rs, crates/model/src/stl.rs, the 3D primitive layers, layer.newPrimitive
+  and material.set, material.reset and material.duplicateAssign follow EffectCraft's parametric
+  primitives (its model crate's prim and stl, and its model3d commands) in what they offer and in
+  these values: the six solids and how each is laid out (faces, poles, seams, caps, texture
+  points), the default sizes (300 px, a 400 px plane, radius 150, tube 50, 48 segments, 24 rings),
+  a plane seen from both sides, a primitive's base colour, metallic, roughness and emissive in its
+  Material Options, and copying a material onto layers that share its options. STL is read from
+  3D Systems' description of the format and its Magics and VisCAM colour extensions, turned from
+  Z-up to Y-up as theirs is. Our own: the solids made in the layer's own space and drawn by our
+  model renderer, kept between frames, and the commands built on layer.add and prop.set.
+- crates/psd and footage.import's `as` (a Photoshop document as a composition) follow
+  EffectCraft's Photoshop import (its psd crate and psd_import) in what they do and in these
+  choices: each pixel layer footage of that one layer (the document's size, or retaining its
+  own), groups as compositions with pass-through groups collapsed, blend mode keys mapped as
+  theirs are, opacity times fill opacity, hidden layers off, clipped layers preserving the
+  transparency under them; and the file read from Adobe's published Photoshop File Formats
+  Specification. Our own: the reader, its decompression (inflate from our zip crate), the
+  colour conversions, the small writer for test documents, and adjustment and fill layers left
+  out and listed rather than drawn from their stand-in pixels.
+- crates/svg and layer.shapesFromVector follow EffectCraft's SVG import (its svg crate) and
+  Create Shapes from Vector Layer in what they read and do: the elements, properties, units,
+  colour forms, gradients, `use`/`symbol`, nested viewports, style sheets with simple selectors
+  and their strength, and these choices: the 300 × 150 default size, a size kept in proportion
+  when only one is given, gradient stops never earlier than the last, a lone stop as a colour,
+  a focal point kept inside its circle, at most 500,000 elements made by `use`, text, pictures,
+  filters, clipping and masks passed over and listed. Written from the W3C SVG 1.1 Second Edition
+  and SVG 2 recommendations and CSS Color Level 3 (its named colours). Our own: the XML reader,
+  the drawing (our path filler and stroker, gradients pixel by pixel, groups that fade drawn on
+  their own), the picture drawn at the detail it is seen with, and the shape items it becomes.
+- crates/effects/src/blur.rs Zoom Blur and Camera-Shake Deblur follow EffectCraft's CC Radial Blur
+  and Camera-Shake Deblur (its effects crate's blur3) in what they do and in these values: the
+  five kinds and how each streak is sampled and weighed (a zoom as half the amount's part of the
+  distance, a turn as a quarter of its degrees, samples by Quality); the deblur's patches judged
+  by their mean squared brightness steps against the frames within Blur Duration, a sharper
+  neighbour's patch lined up by the least squared differences within the search range (half of
+  it for Standard) and blended between patch middles, Shake Sensitivity and Threshold setting how
+  much sharper it must be, Strength pushing past it. Our own: the code, reading neighbouring
+  frames through our effect host.
+- The environment light (an environment light kind with a source layer and rotation, the
+  environment layer and the environment background layer, layer.environment and
+  light.environmentBackground) follows EffectCraft's Environment light, Environment Layer and
+  Create Environment Light Background Layer in what they do and in these choices: the panorama
+  laid out as an equirectangular picture with up at its top (its u and v from a direction as
+  theirs are), turned about the vertical by the light's rotation; the picture halved down to 8
+  pixels for rougher shine, at most 1024 across; the light falling on a surface from a 32 × 16
+  map weighed by the cosine and the sphere's area; the split-sum shine with Karis's analytic fit
+  (from "Real Shading in Unreal Engine 4", 2013); the backdrop seen through the camera as if
+  endlessly far. Our own: the environment's light added to our flat 3D layers' lighting (their
+  diffuse and specular options at 50 % as it is, roughness from their shininess) and to our
+  models', and the panorama taken as the source layer's own rectangle.
+- crates/exr (reading) and EXR footage's passes follow EffectCraft's multi-layer OpenEXR channels
+  (its media crate's exr_channels) in what they do and in these choices: every channel of every
+  part a plane named `layer.channel` (the part's name, unless the channel already carries it, as
+  Blender 5 writes them), placed in the display window with nothing outside a part's data
+  window (the background's far depth for a depth), Cryptomatte manifests from the
+  `cryptomatte/<key>/name` and `…/manifest` attributes, and the picture of a file of many layers:
+  its unnamed colour layer, else the beauty pass by its name (combined, beauty, image, rgba, rgb,
+  color, colour), else the first colour layer that is not a data pass, else a first channel as
+  grey. Written from the OpenEXR file layout and technical introduction (Academy Software
+  Foundation, BSD-3-Clause) and its codecs as OpenEXR has them — PIZ's Huffman codes and
+  wavelet, PXR24, B44's blocks and its exp/log tables, DWA's channel rules, DCT, colour transform
+  and perceptual curve, and the luminance/chroma conversion — checked against files OpenEXR
+  writes. The reference read files with a third-party crate; ours is our own: the reader, every
+  decompressor (inflate from our zip crate), the threads it decodes on, the luminance/chroma
+  weights from the file's primaries, the colours made sRGB as the system makes other pictures
+  (premultiplied in linear light by default, as the format has them), and Blender's names for
+  its passes. The test files in crates/exr/fixtures were written by OpenEXR 3.4 through Blender
+  5.2 (its OpenImageIO, and a render of a small scene), with the scripts beside them.
+- A composition's render passes (render/src/passes.rs, for 3D Channel effects on a layer showing
+  it) follow EffectCraft's comp auxiliary pass (its render's three_d compose aux_pass) in what
+  they hold and in these choices: Z from the camera, ObjectID the layer's number in the
+  composition, MaterialID its source item's, Coverage, normals in the camera's space turned to
+  face it, UV across the layer, Cryptomatte by layer names and by source names with four ranks
+  each and their manifests; 2D layers lying flat at the depth of the composition's middle;
+  each pixel's pieces taken from the front, its values the first covering at least half (else
+  the one that shows most), ranks by coverage then ID. Our own: the pieces recorded by our 3D
+  renderer as it lays out its scene (so extruded text and shapes, primitives and models take
+  part, with their own normals and texture points, and a model's materials by their names), and
+  a layer inside a collapsed composition numbered by the layer it is in.

@@ -1,0 +1,10 @@
+[package]
+name = "veymelo-mcp"
+description = "The MCP server: an agent's way in, on its own or through the open app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-json.workspace = true
+veymelo-time.workspace = true
+veymelo-engine.workspace = true

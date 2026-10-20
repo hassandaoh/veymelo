@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-geom"
+description = "Geometry: vectors, rectangles, 3x3 and 4x4 matrices, quaternions, layer transforms and cameras"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

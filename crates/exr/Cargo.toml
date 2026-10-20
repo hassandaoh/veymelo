@@ -1,0 +1,11 @@
+[package]
+name = "veymelo-exr"
+description = "OpenEXR files read and written by our own code: every part, channel and level, in every compression"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-zip.workspace = true
+
+[dev-dependencies]
+veymelo-json.workspace = true

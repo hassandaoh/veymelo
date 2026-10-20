@@ -1,0 +1,10 @@
+[package]
+name = "veymelo-text"
+description = "Text laid out: fonts found and fallen back on, shaped, broken into lines and set in place"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-font.workspace = true
+veymelo-path.workspace = true
+veymelo-keyframe.workspace = true

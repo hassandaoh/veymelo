@@ -1,0 +1,8 @@
+[package]
+name = "veymelo-font"
+description = "Fonts read straight from their files, variable fonts included"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-path.workspace = true

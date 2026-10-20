@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-zip"
+description = "Deflate and inflate, zlib streams and zip archives, our own"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

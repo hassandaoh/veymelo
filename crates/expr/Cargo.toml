@@ -1,0 +1,13 @@
+[package]
+name = "veymelo-expr"
+description = "Expressions, our own language (written the way compositing tools' expressions are), and property values worked out with them"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-geom.workspace = true
+veymelo-keyframe.workspace = true
+veymelo-project.workspace = true
+veymelo-path.workspace = true

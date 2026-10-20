@@ -1,0 +1,10 @@
+[package]
+name = "veymelo-keyframe"
+description = "Values that change over time: keyframes and how a value moves between them"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-json.workspace = true
+veymelo-color.workspace = true

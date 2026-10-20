@@ -1,0 +1,7 @@
+[package]
+name = "veymelo-time"
+description = "Time as whole ticks (flicks), frame rates and timecode"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

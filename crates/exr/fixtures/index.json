@@ -1,0 +1,756 @@
+{
+ "lines-b44.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "b44",
+    "hashes": [
+     "253df281566ff188",
+     "27a58c79805659e4",
+     "4ff8ffc334704fc6",
+     "9ae814b73a1c9407",
+     "573be95155d0ae96",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-b44a.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "b44a",
+    "hashes": [
+     "253df281566ff188",
+     "27a58c79805659e4",
+     "4ff8ffc334704fc6",
+     "9ae814b73a1c9407",
+     "573be95155d0ae96",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-dwaa.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "dwaa",
+    "hashes": [
+     "2085a2f5f7082287",
+     "b52213c3a0da533c",
+     "bfd3714ea5985930",
+     "9f7aa0904162a210",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-dwab.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "dwab",
+    "hashes": [
+     "2085a2f5f7082287",
+     "b52213c3a0da533c",
+     "bfd3714ea5985930",
+     "9f7aa0904162a210",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-none.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "none",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-piz.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "piz",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-pxr24.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "pxr24",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "af84906a116dc23d",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-rle.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "rle",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-zip-down.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "zip",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-zip.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "zip",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "lines-zips.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "zips",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "parts.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "beauty",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "A"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "zip",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "f5e2e1296758d3fd"
+    ]
+   },
+   {
+    "name": "depth",
+    "channels": [
+     "depth.Z"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "piz",
+    "hashes": [
+     "a650aefc06656b4b"
+    ]
+   }
+  ]
+ },
+ "render-dwaa.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "ViewLayer.Combined",
+    "channels": [
+     "ViewLayer.Combined.R",
+     "ViewLayer.Combined.G",
+     "ViewLayer.Combined.B",
+     "ViewLayer.Combined.A"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "95bfbfbd97a15839",
+     "f99270e810cf174c",
+     "0af7474fe2e7e7e2",
+     "15b33da28f9779c1"
+    ]
+   },
+   {
+    "name": "ViewLayer.Depth",
+    "channels": [
+     "ViewLayer.Depth.Z"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "035347911b78a5fd"
+    ]
+   },
+   {
+    "name": "ViewLayer.Normal",
+    "channels": [
+     "ViewLayer.Normal.X",
+     "ViewLayer.Normal.Y",
+     "ViewLayer.Normal.Z"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "192874a8fafc1ce4",
+     "19bc8209447fb9ad",
+     "4305ccba80f9cc94"
+    ]
+   },
+   {
+    "name": "ViewLayer.Object Index",
+    "channels": [
+     "ViewLayer.Object Index.X"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "d39e359524ea8165"
+    ]
+   },
+   {
+    "name": "ViewLayer.Material Index",
+    "channels": [
+     "ViewLayer.Material Index.X"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "6ccbf7fa9ce5ba25"
+    ]
+   },
+   {
+    "name": "ViewLayer.CryptoObject00",
+    "channels": [
+     "ViewLayer.CryptoObject00.r",
+     "ViewLayer.CryptoObject00.g",
+     "ViewLayer.CryptoObject00.b",
+     "ViewLayer.CryptoObject00.a"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "a1832ac6095a7948",
+     "2d18892b69666091",
+     "12ce5768b648456f",
+     "9fb89e1632d7352e"
+    ]
+   },
+   {
+    "name": "ViewLayer.CryptoMaterial00",
+    "channels": [
+     "ViewLayer.CryptoMaterial00.r",
+     "ViewLayer.CryptoMaterial00.g",
+     "ViewLayer.CryptoMaterial00.b",
+     "ViewLayer.CryptoMaterial00.a"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "dwaa",
+    "hashes": [
+     "ea7ebd9a9d6cb8a2",
+     "cb8f0b129cbc905e",
+     "c8feeeeb79f01b26",
+     "bf514f35f186e801"
+    ]
+   }
+  ]
+ },
+ "render-zip.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "ViewLayer.Combined",
+    "channels": [
+     "ViewLayer.Combined.R",
+     "ViewLayer.Combined.G",
+     "ViewLayer.Combined.B",
+     "ViewLayer.Combined.A"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "1f04aa3aefb45d95",
+     "8bf3b71b09171898",
+     "698ce998bde5d159",
+     "15b33da28f9779c1"
+    ]
+   },
+   {
+    "name": "ViewLayer.Depth",
+    "channels": [
+     "ViewLayer.Depth.Z"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "035347911b78a5fd"
+    ]
+   },
+   {
+    "name": "ViewLayer.Normal",
+    "channels": [
+     "ViewLayer.Normal.X",
+     "ViewLayer.Normal.Y",
+     "ViewLayer.Normal.Z"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "192874a8fafc1ce4",
+     "e6ea3d6447aa5b62",
+     "4305ccba80f9cc94"
+    ]
+   },
+   {
+    "name": "ViewLayer.Object Index",
+    "channels": [
+     "ViewLayer.Object Index.X"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "d39e359524ea8165"
+    ]
+   },
+   {
+    "name": "ViewLayer.Material Index",
+    "channels": [
+     "ViewLayer.Material Index.X"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "6ccbf7fa9ce5ba25"
+    ]
+   },
+   {
+    "name": "ViewLayer.CryptoObject00",
+    "channels": [
+     "ViewLayer.CryptoObject00.r",
+     "ViewLayer.CryptoObject00.g",
+     "ViewLayer.CryptoObject00.b",
+     "ViewLayer.CryptoObject00.a"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "a1832ac6095a7948",
+     "2d18892b69666091",
+     "12ce5768b648456f",
+     "9fb89e1632d7352e"
+    ]
+   },
+   {
+    "name": "ViewLayer.CryptoMaterial00",
+    "channels": [
+     "ViewLayer.CryptoMaterial00.r",
+     "ViewLayer.CryptoMaterial00.g",
+     "ViewLayer.CryptoMaterial00.b",
+     "ViewLayer.CryptoMaterial00.a"
+    ],
+    "x": 0,
+    "y": 0,
+    "width": 48,
+    "height": 32,
+    "compression": "zip",
+    "hashes": [
+     "ea7ebd9a9d6cb8a2",
+     "cb8f0b129cbc905e",
+     "c8feeeeb79f01b26",
+     "bf514f35f186e801"
+    ]
+   }
+  ]
+ },
+ "tiles-b44a.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "b44a",
+    "hashes": [
+     "b1584e54cf06c38a",
+     "913835b5d062b190",
+     "29a5bb85d3f7ac39",
+     "27f357774267adeb",
+     "54d87f9361dcefc9",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "tiles-dwaa.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "dwaa",
+    "hashes": [
+     "5167995be68fea15",
+     "6bb6ca602708b42b",
+     "528b868287561f65",
+     "68a881e885617390",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "tiles-piz.exr": {
+  "levels": 1,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "piz",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ },
+ "tiles-zip-mip.exr": {
+  "levels": 6,
+  "parts": [
+   {
+    "name": "",
+    "channels": [
+     "R",
+     "G",
+     "B",
+     "Y",
+     "A",
+     "Z",
+     "id"
+    ],
+    "x": 3,
+    "y": 2,
+    "width": 34,
+    "height": 25,
+    "compression": "zip",
+    "hashes": [
+     "2e2fffef14d06f57",
+     "bfa55e6c16da4582",
+     "7a1a05de226650c2",
+     "6f55bb3033c885be",
+     "f5e2e1296758d3fd",
+     "a650aefc06656b4b",
+     "7f1787bcd4728d85"
+    ]
+   }
+  ]
+ }
+}

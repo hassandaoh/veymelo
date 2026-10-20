@@ -1,0 +1,18 @@
+[package]
+name = "veymelo-export"
+description = "Compositions made into files: video (through the system's encoders), picture sequences, animated GIFs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-time.workspace = true
+veymelo-color.workspace = true
+veymelo-project.workspace = true
+veymelo-raster.workspace = true
+veymelo-render.workspace = true
+veymelo-os.workspace = true
+veymelo-zip.workspace = true
+veymelo-exr.workspace = true
+
+[dev-dependencies]
+veymelo-effects.workspace = true
