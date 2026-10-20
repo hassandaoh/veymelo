@@ -16,8 +16,11 @@ impl BlendMode {
         matches!(self, BlendMode::StencilAlpha | BlendMode::StencilLuma | BlendMode::SilhouetteAlpha | BlendMode::SilhouetteLuma)
     }
 
-    /// Modes whose formulas hold for colours brighter than white (in floating-point work).
-    /// The others take their colours as 0 to 1.
+    /// Modes whose formulas hold for colours brighter than white (in floating-point work). The
+    /// others are made for colours from 0 to 1 and take them so: their formulas divide by what
+    /// is left to white (the dodges), measure from the middle grey or take a root of the colour
+    /// (the lights and Hard Mix), or move a colour within what can be shown (Hue, Saturation and
+    /// Color, which clip to it).
     pub fn keeps_over_range(self) -> bool {
         !matches!(
             self,
@@ -35,7 +38,9 @@ impl BlendMode {
         )
     }
 
-    /// For a classic mode, the source colour that leaves what is under it as it was.
+    /// For a classic mode, the source colour that leaves what is under it as it was: the one its
+    /// formula does nothing with (dodging by black, burning by white, the difference from black).
+    /// A classic mode at part opacity works as if its colour were that part of the way from it.
     fn classic_neutral(self) -> Option<f32> {
         match self {
             BlendMode::ClassicColorDodge | BlendMode::ClassicDifference => Some(0.0),
@@ -399,5 +404,35 @@ mod tests {
         assert!(close(lum([l[0], l[1], l[2]]), 0.9));
         let grey = blend(BlendMode::Saturation, below, solid(0.5), 0.5);
         assert!(close(grey[0], grey[1]) && close(grey[1], grey[2]), "no saturation makes grey: {grey:?}");
+    }
+
+    #[test]
+    fn a_classic_modes_neutral_changes_nothing() {
+        for m in [BlendMode::ClassicColorDodge, BlendMode::ClassicColorBurn, BlendMode::ClassicDifference] {
+            let n = m.classic_neutral().unwrap();
+            for b in [0.0f32, 0.1, 0.35, 0.5, 0.8, 0.99] {
+                assert!(close(channel(m, b, n), b), "{m:?} by {n} on {b}: {}", channel(m, b, n));
+            }
+        }
+    }
+
+    #[test]
+    fn modes_kept_to_white_are_those_whose_formulas_need_it() {
+        // past white the dodge's division by what is left to white turns negative: a dodge
+        // would darken
+        let dodge = |b: f32, s: f32| b / (1.0 - s);
+        assert!(dodge(0.5, 0.5) > 0.5 && dodge(0.5, 1.5) < 0.0);
+        // the soft light's b·(1 − b) turns round past white: a source that darkens below white
+        // brightens above it
+        assert!(soft_light(0.8, 0.2) < 0.8 && soft_light(2.0, 0.2) > 2.0);
+        // the lights measure from the middle grey of 0 to 1: past white a source lands in the
+        // half it does not belong to
+        assert!(hard_light(0.5, 0.75) > 0.5 && hard_light(0.5, 0.25) < 0.5);
+        // the formulas that hold past white give what they give below it, carried on
+        for m in [BlendMode::Add, BlendMode::Multiply, BlendMode::Screen, BlendMode::Lighten, BlendMode::Difference] {
+            assert!(m.keeps_over_range());
+            let (a, b) = (channel(m, 1.5, 0.5), channel(m, 1.25, 0.5));
+            assert!(a.is_finite() && b.is_finite() && (a - b).abs() > 0.0, "{m:?}");
+        }
     }
 }

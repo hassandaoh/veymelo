@@ -127,7 +127,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         {
             let before = held();
-            let v = vec![1u8; 64 << 20];
+            let v = std::hint::black_box(vec![1u8; 64 << 20]);
             let after = held();
             assert!(before > 0 && after >= before + (32 << 20), "{before} {after}");
             drop(v);

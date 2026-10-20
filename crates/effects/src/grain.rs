@@ -80,9 +80,12 @@ const BLEND_OF: [BlendMode; 24] = [
     BlendMode::LuminescentPremul,
 ];
 
-/// Soft linear (a quadratic B-spline) keeps 0.55 of the grid's spread over a pixel in each
-/// direction; this brings it up to that of a quintic fade (181/231 in each), so the noise has the
-/// contrast one expects.
+/// Soft linear's lift, so its noise has the contrast of the others. Between lattice values that
+/// are all alike and apart, a smoothing keeps, on average over a cell, the sum of its squared
+/// weights of their spread in each direction: the quadratic B-spline's weights (s²/2, ½ + ts,
+/// t²/2) keep 1/20 + 9/20 + 1/20 = 0.55 of it; a quintic fade between two keeps 2·∫f² = 181/231.
+/// Across both directions the spreads multiply, so the deviations differ by one direction's
+/// ratio.
 const SOFT_GAIN: f32 = (181.0 / 231.0) / 0.55;
 
 #[inline]

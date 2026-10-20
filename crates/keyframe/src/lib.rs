@@ -460,24 +460,44 @@ mod tests {
         }
     }
 
+    /// The curve at time `x`, found by halving the stretch of the curve the time lies in
+    /// (time only ever moves forward along it, even when the influences add up past 100 %).
+    fn by_halving(v0: f64, v1: f64, dur: f64, out: Ease, inn: Ease, x: f64) -> f64 {
+        let (i0, i1) = (out.influence, inn.influence);
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if cubic(0.0, i0, 1.0 - i1, 1.0, mid) < x {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        cubic(v0, v0 + out.speed * i0 * dur, v1 - inn.speed * i1 * dur, v1, 0.5 * (lo + hi))
+    }
+
     #[test]
-    fn overlapping_influences_match_measured_values() {
-        // values measured in a compositing app with influences adding up to more than 100 %
-        // (from the tests of EffectCraft, see NOTICE)
-        for (from, to, out, inn, samples) in [
-            (0.0, 100.0, (0.0, 0.8), (0.0, 0.8), [(0.1, 0.59243939036327), (0.25, 4.76438030608764), (0.4, 18.4284394271562), (0.75, 95.2356196939123)]),
-            (0.0, 100.0, (20.0, 0.8), (80.0, 0.6), [(0.1, 2.25754942621577), (0.25, 6.99841889412931), (0.4, 14.9334636959052), (0.75, 73.8196785378389)]),
-            (100.0, 0.0, (-20.0, 0.6), (-80.0, 0.8), [(0.1, 97.6395466334594), (0.25, 91.597048571292), (0.4, 74.5367957474338), (0.75, 22.3789127753126)]),
+    fn overlapping_influences_keep_both_handles_whole() {
+        // influences adding up past 100 % are not scaled down: each handle keeps its own reach,
+        // and the time still moves forward along the curve
+        for (from, to, dur, out, inn) in [
+            (0.0, 100.0, 1.0, (0.0, 0.9), (0.0, 0.7)),
+            (10.0, -50.0, 2.0, (35.0, 0.65), (-120.0, 0.85)),
+            (-3.0, 3.0, 0.5, (0.0, 1.0), (40.0, 0.95)),
+            (200.0, 0.0, 1.5, (-300.0, 0.55), (10.0, 0.75)),
         ] {
+            let (out, inn) = (Ease { speed: out.0, influence: out.1 }, Ease { speed: inn.0, influence: inn.1 });
             let mut a = Keyframe::new(s(0.0), Value::Number(from));
-            let mut b = Keyframe::new(s(1.0), Value::Number(to));
+            let mut b = Keyframe::new(s(dur), Value::Number(to));
             a.interp_out = Interp::Bezier;
             b.interp_in = Interp::Bezier;
-            a.ease_out = vec![Ease { speed: out.0, influence: out.1 }];
-            b.ease_in = vec![Ease { speed: inn.0, influence: inn.1 }];
+            a.ease_out = vec![out];
+            b.ease_in = vec![inn];
             let keys = two(a, b);
-            for (t, want) in samples {
-                assert!((num(&keys, t) - want).abs() < 1e-7, "{t}: {} vs {want}", num(&keys, t));
+            for k in 1..20 {
+                let x = k as f64 / 20.0;
+                let (got, want) = (num(&keys, x * dur), by_halving(from, to, dur, out, inn, x));
+                assert!((got - want).abs() < 1e-9, "{out:?} {inn:?} at {x}: {got} vs {want}");
             }
         }
     }

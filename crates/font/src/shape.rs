@@ -13,17 +13,13 @@
 //! `kerx`, `kern`, `trak`; see [`aat`]), which do for themselves what the shaping of each script
 //! would (Arabic joining, Thai marks, the reordering of Indic letters).
 //!
-//! The scripts of India are shaped as OpenType's Indic shaping lays down (see [`indic`]), and
-//! Khmer and Myanmar as their own shaping does (see [`khmer`] and [`myanmar`]).
+//! The scripts whose letters are put together inside each syllable (those of India, Khmer and
+//! Myanmar) are shaped by the system's own text engine, from the same font (see [`system`]).
 //!
 //! Positions are in font units, x to the right and y up.
 
 mod aat;
-mod indic;
-mod khmer;
-mod myanmar;
-
-pub use indic::Indic;
+mod system;
 
 use crate::{Font, i16_at, u16_at, u32_at};
 
@@ -46,7 +42,7 @@ pub enum Script {
     Arabic,
     Hebrew,
     /// One of the scripts of India.
-    Indic(Indic),
+    Indic,
     Khmer,
     Myanmar,
     /// Anything else, shaped by the font's default rules.
@@ -58,7 +54,6 @@ impl Script {
     /// table has it).
     fn tag_in(self, layout: &Layout, table: usize) -> [u8; 4] {
         match self {
-            Script::Indic(s) => s.tag_in(layout, table),
             Script::Myanmar if !layout.has_script(table, b"mym2") => *b"mymr",
             _ => *self.tag(),
         }
@@ -70,7 +65,7 @@ impl Script {
             Script::Thai => b"thai",
             Script::Arabic => b"arab",
             Script::Hebrew => b"hebr",
-            Script::Indic(s) => s.tag(),
+            Script::Indic => b"DFLT",
             Script::Khmer => b"khmr",
             Script::Myanmar => b"mym2",
             Script::Other => b"DFLT",
@@ -91,7 +86,7 @@ pub fn script_of(c: char) -> Option<Script> {
         0x41..=0x5A | 0x61..=0x7A | 0xC0..=0x24F | 0x1E00..=0x1EFF => Some(Script::Latin),
         0x0600..=0x06FF | 0x0750..=0x077F | 0x0870..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => Some(Script::Arabic),
         0x0590..=0x05FF | 0xFB1D..=0xFB4F => Some(Script::Hebrew),
-        0x0900..=0x0963 | 0x0966..=0x0D7F | 0xA8E0..=0xA8FF => Indic::of(c).map(Script::Indic),
+        0x0900..=0x0963 | 0x0966..=0x0D7F | 0xA8E0..=0xA8FF => Some(Script::Indic),
         0x1780..=0x17FF | 0x19E0..=0x19FF => Some(Script::Khmer),
         0x1000..=0x109F | 0xAA60..=0xAA7F | 0xA9E0..=0xA9FF => Some(Script::Myanmar),
         0x30..=0x39 | 0x20..=0x2F | 0x3A..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E | 0xA0..=0xBF | 0x2000..=0x206F | 0x0964 | 0x0965 | 0x1CD0..=0x1CFF | 0x25CC => None,
@@ -218,13 +213,6 @@ struct G {
     chain: Option<(usize, f64)>,
     /// Set on another glyph by Apple's tables, which leave it its own advance.
     keep: bool,
-    /// The features that may change it (bits Indic shaping sets; every one otherwise).
-    mask: u32,
-    /// The syllable it is in (Indic shaping; 0: none), which a syllable's features keep to.
-    syllable: u16,
-    /// Its Indic category and position (see `indic`).
-    cat: u8,
-    pos: u8,
     /// What substitution made of it: [`SUBSTITUTED`], [`LIGATED`], [`MULTIPLIED`].
     props: u8,
     /// A zero-width non-joiner (1) or joiner (2), which matching may pass over.
@@ -246,7 +234,7 @@ impl G {
             '\u{200D}' => 2,
             _ => 0,
         };
-        G { id, cluster, advance: 0.0, dx: 0.0, dy: 0.0, attach: None, form, chain: None, keep: false, mask: u32::MAX, syllable: 0, cat: 0, pos: 0, props: 0, joiner }
+        G { id, cluster, advance: 0.0, dx: 0.0, dy: 0.0, attach: None, form, chain: None, keep: false, props: 0, joiner }
     }
 }
 
@@ -415,6 +403,12 @@ fn prepare_hebrew(font: &Font, layout: &Layout, text: &[char], first: usize) -> 
 }
 
 fn shape_run(font: &Font, text: &[char], first: usize, script: Script, options: &Options) -> Vec<Glyph> {
+    // the scripts whose letters are put together inside each syllable, as the system sets them
+    if matches!(script, Script::Indic | Script::Khmer | Script::Myanmar)
+        && let Some(glyphs) = system::shape(font, text, first, options)
+    {
+        return glyphs;
+    }
     let rtl = options.rtl.unwrap_or(script.rtl());
     // a font with Apple's tables does each script's shaping itself (by them before OpenType's,
     // as the system does), but for Hebrew points made one with their letter where it has that
@@ -424,9 +418,6 @@ fn shape_run(font: &Font, text: &[char], first: usize, script: Script, options: 
         Script::Hebrew => prepare_hebrew(font, &Layout { font, d: font.data() }, text, first),
         _ if apple => text.iter().enumerate().map(|(i, &c)| (c, first + i)).collect(),
         Script::Thai => prepare_thai(text, first),
-        Script::Indic(_) => indic::prepare(font, text, first),
-        Script::Khmer => khmer::prepare(font, text, first),
-        Script::Myanmar => myanmar::prepare(text, first),
         _ => text.iter().enumerate().map(|(i, &c)| (c, first + i)).collect(),
     };
     let joined = if script == Script::Arabic && !apple { forms(&chars.iter().map(|c| c.0).collect::<Vec<_>>()) } else { vec![0; chars.len()] };
@@ -447,11 +438,7 @@ fn shape_run(font: &Font, text: &[char], first: usize, script: Script, options: 
         usual.extend(extra.iter());
         let tag = script.tag_in(&layout, font.gsub);
         // the shaping of a script, for a font with rules of its own for it (else the default)
-        let own = |t: &[u8; 4]| layout.has_script(font.gsub, t);
         match script {
-            Script::Indic(s) if own(&tag) => indic::substitute(&layout, &mut buf, s, &chars, options, &pick(&FIRST), &usual),
-            Script::Khmer => khmer::substitute(&layout, &mut buf, &chars, options, &pick(&FIRST), &usual),
-            Script::Myanmar if &tag == b"mym2" => myanmar::substitute(&layout, &mut buf, &chars, options, &pick(&FIRST), &usual),
             _ => {
                 for (li, _) in layout.lookups(font.gsub, &tag, &pick(&FIRST)) {
                     layout.substitute(&mut buf, li, &Apply::default());
@@ -503,7 +490,7 @@ fn shape_run(font: &Font, text: &[char], first: usize, script: Script, options: 
     }
     // marks set on others by OpenType's tables take no room of their own, and are drawn from
     // the glyph they sit on (Indic marks keep the room the font gives them)
-    if !matches!(script, Script::Indic(_) | Script::Khmer) {
+    if !matches!(script, Script::Indic | Script::Khmer) {
         for g in buf.iter_mut().filter(|g| g.attach.is_some() && !g.keep) {
             g.advance = 0.0;
         }
@@ -550,68 +537,34 @@ fn shape_run(font: &Font, text: &[char], first: usize, script: Script, options: 
 type Matched = (Vec<usize>, Vec<(usize, u16)>);
 
 /// How a match goes along the glyphs: those it passes over (by its lookup's flag and mark set,
-/// and the joiners it may pass over), and those it may take (with a feature's bit, in one
-/// syllable).
+/// and the joiners it may pass over).
 #[derive(Clone, Copy)]
 struct Walk {
     flag: u16,
     set: u16,
-    /// The feature bits a glyph needs to be taken (0: any glyph).
-    mask: u32,
-    /// The syllable the match keeps to (0: any).
-    syllable: u16,
     /// Zero-width joiners, and non-joiners, may be passed over.
     zwj: bool,
     zwnj: bool,
 }
 
 impl Walk {
-    /// As positioning goes: any glyph taken, joiners passed over.
+    /// As positioning goes: joiners passed over.
     fn any(flag: u16, set: u16) -> Walk {
-        Walk { flag, set, mask: 0, syllable: 0, zwj: true, zwnj: true }
+        Walk { flag, set, zwj: true, zwnj: true }
     }
 }
 
-/// How a substitution lookup is applied: only to glyphs of one joining form (Arabic; 0: any),
-/// only to glyphs with a feature's bit (0: any), within each syllable, and with joiners and
-/// non-joiners counted as glyphs (Indic features match them) rather than passed over.
+/// How a substitution lookup is applied: only to glyphs of one joining form (Arabic; 0: any).
 #[derive(Clone, Copy, Default)]
 struct Apply {
     form: u8,
-    mask: u32,
-    per_syllable: bool,
-    manual_zwj: bool,
-    manual_zwnj: bool,
 }
 
 impl Apply {
-    /// How a match from glyph `start` goes: through the glyphs it changes, and through those
-    /// before and after them that it looks at.
-    fn walks(&self, flag: u16, set: u16, start: &G) -> (Walk, Walk) {
-        let syllable = if self.per_syllable { start.syllable } else { 0 };
-        (Walk { flag, set, mask: self.mask, syllable, zwj: !self.manual_zwj, zwnj: false }, Walk { flag, set, mask: 0, syllable, zwj: true, zwnj: !self.manual_zwnj })
-    }
-}
-
-/// Glyphs `a` to `b` made one cluster (the first character any of them came from), with the
-/// glyphs around that shared a cluster with them.
-fn merge(buf: &mut [G], mut a: usize, mut b: usize) {
-    if b <= a + 1 || b > buf.len() {
-        return;
-    }
-    let cluster = buf[a..b].iter().map(|g| g.cluster).min().unwrap_or(0);
-    if cluster != buf[b - 1].cluster {
-        while b < buf.len() && buf[b - 1].cluster == buf[b].cluster {
-            b += 1;
-        }
-    }
-    if cluster != buf[a].cluster {
-        while a > 0 && buf[a - 1].cluster == buf[a].cluster {
-            a -= 1;
-        }
-    }
-    for g in &mut buf[a..b] {
-        g.cluster = cluster;
+    /// How a match goes: through the glyphs it changes (a non-joiner stops it, a joiner does
+    /// not), and through those before and after them that it looks at (both passed over).
+    fn walks(&self, flag: u16, set: u16, _start: &G) -> (Walk, Walk) {
+        (Walk { flag, set, zwj: true, zwnj: false }, Walk { flag, set, zwj: true, zwnj: true })
     }
 }
 
@@ -808,7 +761,7 @@ impl Layout<'_> {
             if self.skips(g.id, w.flag, w.set) {
                 continue;
             }
-            if (w.mask == 0 || g.mask & w.mask != 0) && (w.syllable == 0 || g.syllable == w.syllable) && test(g.id) {
+            if test(g.id) {
                 return Some(j);
             }
             if (g.joiner == 2 && w.zwj) || (g.joiner == 1 && w.zwnj) {
@@ -827,96 +780,6 @@ impl Layout<'_> {
         (0..self.u16(scripts) as usize).any(|k| self.tag(scripts + 2 + 6 * k) == tag)
     }
 
-    /// Whether one of substitution `lookups` changes exactly `glyphs` with nothing before or
-    /// after them (`zero_context`: rules that look at glyphs around them do not count).
-    fn would_substitute(&self, lookups: &[u16], glyphs: &[u16], zero_context: bool) -> bool {
-        let Some(&g) = glyphs.first() else { return false };
-        lookups.iter().any(|&li| {
-            let Some((ty, _, _, subs)) = self.lookup(self.font.gsub, li) else { return false };
-            subs.iter().any(|&s| {
-                let cov = s + self.u16(s + 2) as usize;
-                match ty {
-                    1..=3 => glyphs.len() == 1 && self.coverage(cov, g).is_some(),
-                    4 => {
-                        let Some(k) = self.coverage(cov, g) else { return false };
-                        let lset = s + self.u16(s + 6 + 2 * k) as usize;
-                        (0..self.u16(lset) as usize).any(|l| {
-                            let lig = lset + self.u16(lset + 2 + 2 * l) as usize;
-                            let comps = self.u16(lig + 2) as usize;
-                            comps == glyphs.len() && (1..comps).all(|c| self.u16(lig + 4 + 2 * (c - 1)) == glyphs[c])
-                        })
-                    }
-                    5 | 6 => self.would_match(ty, s, glyphs, zero_context),
-                    _ => false,
-                }
-            })
-        })
-    }
-
-    /// Whether a context (5) or chained context (6) subtable at `s` has a rule whose input is
-    /// exactly `glyphs` (`zero_context`: and that looks at nothing before or after).
-    fn would_match(&self, ty: u16, s: usize, glyphs: &[u16], zero_context: bool) -> bool {
-        let format = self.u16(s);
-        let g = glyphs[0];
-        let n = glyphs.len();
-        let cov = s + self.u16(s + 2) as usize;
-        match (ty, format) {
-            (5, 1) | (5, 2) | (6, 1) | (6, 2) => {
-                let chained = ty == 6;
-                let classes = match (chained, format) {
-                    (false, 2) => s + self.u16(s + 4) as usize,
-                    (true, 2) => s + self.u16(s + 6) as usize,
-                    _ => 0,
-                };
-                let sets_at = match (chained, format) {
-                    (false, 2) => s + 6,
-                    (true, 2) => s + 10,
-                    _ => s + 4,
-                };
-                let pick = if format == 2 {
-                    self.class(classes, g) as usize
-                } else {
-                    let Some(k) = self.coverage(cov, g) else { return false };
-                    k
-                };
-                if pick >= self.u16(sets_at) as usize {
-                    return false;
-                }
-                let off = self.u16(sets_at + 2 + 2 * pick) as usize;
-                if off == 0 {
-                    return false;
-                }
-                let rset = s + off;
-                let same = |value: u16, g: u16| if format == 2 { self.class(classes, g) == value } else { g == value };
-                (0..self.u16(rset) as usize).any(|r| {
-                    let rule = rset + self.u16(rset + 2 + 2 * r) as usize;
-                    let (around, inp) = if chained {
-                        let nb = self.u16(rule) as usize;
-                        let at = rule + 2 + 2 * nb;
-                        let ni = self.u16(at) as usize;
-                        let na = self.u16(at + 2 + 2 * ni.saturating_sub(1)) as usize;
-                        (nb + na, (ni, at + 2))
-                    } else {
-                        (0, (self.u16(rule) as usize, rule + 4))
-                    };
-                    (!zero_context || around == 0) && inp.0 == n && (1..n).all(|k| same(self.u16(inp.1 + 2 * (k - 1)), glyphs[k]))
-                })
-            }
-            (5, 3) => {
-                let count = self.u16(s + 2) as usize;
-                count == n && (0..n).all(|k| self.coverage(s + self.u16(s + 6 + 2 * k) as usize, glyphs[k]).is_some())
-            }
-            (6, 3) => {
-                let nb = self.u16(s + 2) as usize;
-                let at = s + 4 + 2 * nb;
-                let ni = self.u16(at) as usize;
-                let na = self.u16(at + 2 + 2 * ni) as usize;
-                (!zero_context || nb + na == 0) && ni == n && (0..n).all(|k| self.coverage(s + self.u16(at + 2 + 2 * k) as usize, glyphs[k]).is_some())
-            }
-            _ => false,
-        }
-    }
-
     // ---- substitution
 
     /// Apply substitution lookup `li` as `ap` says.
@@ -925,7 +788,7 @@ impl Layout<'_> {
         let mut i = 0;
         while i < buf.len() {
             let g = &buf[i];
-            if self.skips(g.id, flag, set) || (ap.form != 0 && g.form != ap.form) || (ap.mask != 0 && g.mask & ap.mask == 0) {
+            if self.skips(g.id, flag, set) || (ap.form != 0 && g.form != ap.form) {
                 i += 1;
                 continue;
             }

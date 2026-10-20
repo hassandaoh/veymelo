@@ -15,3 +15,6 @@ veymelo-path.workspace = true
 veymelo-text.workspace = true
 veymelo-font.workspace = true
 veymelo-track.workspace = true
+
+[dev-dependencies]
+veymelo-zip.workspace = true

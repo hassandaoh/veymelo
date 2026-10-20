@@ -472,25 +472,45 @@ pub const LENS_FLARE: Spec = Spec::new(&LENS_FLARE_DEF, CATEGORY, lens_flare).po
 /// middle), its size (of the diagonal), colour and strength, and whether it is a ring.
 struct Ghost(f64, f64, [f32; 3], f32, bool);
 
-fn ghosts(lens: u32) -> Vec<Ghost> {
-    match lens {
-        1 => vec![
-            Ghost(0.42, 0.028, [0.45, 0.75, 1.0], 0.2, false),
-            Ghost(0.85, 0.055, [0.55, 1.0, 0.65], 0.12, false),
-            Ghost(1.25, 0.11, [1.0, 0.62, 0.35], 0.1, true),
-            Ghost(1.6, 0.04, [0.8, 0.55, 1.0], 0.14, false),
-        ],
-        2 => vec![Ghost(0.6, 0.02, [1.0, 0.82, 0.55], 0.24, false), Ghost(1.1, 0.05, [0.62, 0.62, 1.0], 0.12, false), Ghost(1.45, 0.09, [0.45, 0.9, 1.0], 0.08, true)],
-        _ => vec![
-            Ghost(0.22, 0.02, [1.0, 0.9, 0.62], 0.24, false),
-            Ghost(0.48, 0.038, [0.35, 1.0, 0.55], 0.15, false),
-            Ghost(0.72, 0.024, [0.55, 0.62, 1.0], 0.2, false),
-            Ghost(1.12, 0.068, [1.0, 0.52, 0.32], 0.1, false),
-            Ghost(1.45, 0.1, [0.62, 0.45, 1.0], 0.08, true),
-            Ghost(1.78, 0.048, [0.45, 0.9, 1.0], 0.15, false),
-            Ghost(2.1, 0.135, [1.0, 0.82, 0.45], 0.06, true),
-        ],
+/// What a lens's flare is made of: the ghosts its pairs of glass surfaces throw (a zoom has many
+/// elements, a prime few), the blades of its iris (one streak a blade), how tight its core is and
+/// how far out its halo (of the diagonal; the longer the lens, the tighter the core and the wider
+/// the halo).
+struct Lens {
+    ghosts: usize,
+    blades: f64,
+    core: f64,
+    halo: f64,
+    seed: u64,
+}
+
+fn lens_of(kind: u32) -> Lens {
+    match kind {
+        // a 35 mm prime
+        1 => Lens { ghosts: 4, blades: 6.0, core: 0.036, halo: 0.17, seed: 35 },
+        // a 105 mm prime
+        2 => Lens { ghosts: 3, blades: 10.0, core: 0.022, halo: 0.3, seed: 105 },
+        // a 50 to 300 mm zoom
+        _ => Lens { ghosts: 7, blades: 8.0, core: 0.03, halo: 0.24, seed: 50 },
     }
+}
+
+/// The ghosts of `lens`: spread along the line through the middle, past it too; those farther
+/// from the middle bigger (more out of focus) and those smaller brighter (their light less
+/// spread); each tinted by the coating it bounced off (hues a golden turn apart, so neighbours
+/// differ); the big ones some of them rings.
+fn ghosts(lens: &Lens) -> Vec<Ghost> {
+    let u = |k: usize, what: u64| crate::noise::unit(crate::noise::mix(&[lens.seed, k as u64, what]));
+    (0..lens.ghosts)
+        .map(|k| {
+            let along = 0.25 + 1.85 * (k as f64 + 0.5) / lens.ghosts as f64 + 0.12 * (u(k, 0) - 0.5);
+            let size = 0.012 + 0.07 * u(k, 1).powf(1.3) * (0.5 + 0.5 * (along - 1.0).abs());
+            let hue = (0.07 + 0.618_034 * k as f64 + 0.1 * u(k, 2)).fract();
+            let colour = crate::util::rgb(hue as f32, 1.0, 0.75);
+            let strength = 0.06 + 0.22 * (0.025 / (size + 0.005)).min(1.0);
+            Ghost(along, size, colour, strength as f32, size > 0.045 && u(k, 3) > 0.4)
+        })
+        .collect()
 }
 
 fn lens_flare(ctx: &Ctx, mut b: Buf) -> Buf {
@@ -500,12 +520,9 @@ fn lens_flare(ctx: &Ctx, mut b: Buf) -> Buf {
     let keep = ctx.num("blendWithOriginal", 0.0) as f32 / 100.0;
     let r = ctx.bounds;
     let (mid, diag) = (r.center(), r.width().hypot(r.height()).max(1.0));
-    let gs = ghosts(lens);
-    let (core_k, rays, halo_r) = match lens {
-        1 => (0.035, 6.0, 0.18),
-        2 => (0.02, 12.0, 0.3),
-        _ => (0.03, 8.0, 0.25),
-    };
+    let lens = lens_of(lens);
+    let gs = ghosts(&lens);
+    let (core_k, rays, halo_r) = (lens.core, lens.blades, lens.halo);
     let g = b.clone_geometry();
     map_px(&mut b.img, |x, y, p| {
         let (lx, ly) = g.at(x, y);

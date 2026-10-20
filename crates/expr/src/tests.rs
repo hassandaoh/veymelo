@@ -393,3 +393,75 @@ fn boxes_colours_and_groups_above() {
     let rotation = p.comp(c).unwrap().layers[1].props.group("transform").unwrap().children.iter().position(|n| n.id() == "rotation").unwrap() + 1;
     assert!(near(run("thisProperty.propertyIndex", 0.0), rotation as f64));
 }
+
+/// What expressions give, kept to hold them while their code is written anew: each expression
+/// worked out on keyed properties every frame for four seconds. Run by hand:
+///   VEYMELO_GOLDENS=/tmp/g cargo test -p veymelo-expr --release expr_goldens -- --ignored
+/// The first run writes `/tmp/g/expr.txt`, later runs compare with it.
+#[test]
+#[ignore]
+fn expr_goldens() {
+    let Some(dir) = std::env::var_os("VEYMELO_GOLDENS").map(std::path::PathBuf::from) else { return };
+    let loops = ["cycle", "pingpong", "offset", "continue"];
+    let mut exprs: Vec<String> = vec![];
+    for kind in loops {
+        for n in [0, 1, 2] {
+            exprs.push(format!("loopOut(\"{kind}\", {n})"));
+            exprs.push(format!("loopIn(\"{kind}\", {n})"));
+        }
+        for d in [0.0, 0.5, 1.5] {
+            exprs.push(format!("loopOutDuration(\"{kind}\", {d})"));
+            exprs.push(format!("loopInDuration(\"{kind}\", {d})"));
+        }
+    }
+    for w in ["wiggle(2, 30)", "wiggle(5, 10, 3, 0.7)", "wiggle(1.5, 50, 1, 0.5, time * 2)", "wiggle(0.7, 80, 4, 0.3)", "temporalWiggle(2, 0.3)", "smooth(0.5, 7)", "smooth()"] {
+        exprs.push(w.into());
+    }
+    for r in ["seedRandom(3, true); random()", "seedRandom(5); random(10, 20)", "seedRandom(2, true); gaussRandom()", "seedRandom(9); gaussRandom(5, 15)", "gaussRandom([0, 0], [1, 1])[1]", "noise(time * 2) * 100", "noise([time, 3]) * 100", "random([10, 20])[0]"] {
+        exprs.push(r.into());
+    }
+    for t in ["timeToFrames()", "timeToFrames(time, 24)", "timeToFrames(time + 0.01, 25, true)", "framesToTime(37)", "posterizeTime(3); time", "posterizeTime(7); value", "posterizeTime(0.5); time * 10"] {
+        exprs.push(t.into());
+    }
+    for e in ["ease(time, 0.5, 2.5, 10, 90)", "easeIn(time, 0, 3, -20, 40)", "easeOut(time, 1, 2, 0, 100)", "linear(time, 1, 3, 5, 25)", "ease(time, 0, 4)", "easeIn(time, 2, 1)", "ease(time, 0, 2, [0, 10], [100, 30])[1]", "linear(time * 0.7)"] {
+        exprs.push(e.into());
+    }
+    let mut lines = vec![];
+    for keyset in [vec![(0.5, 0.0), (1.5, 90.0)], vec![(1.0, 10.0), (1.6, 40.0), (2.4, -30.0), (3.0, 5.0)]] {
+        for text in &exprs {
+            let (mut p, c) = scene();
+            keys(&mut p, c, "B", "transform/rotation", &keyset);
+            set(&mut p, c, "B", "transform/rotation", text);
+            let vals: Vec<String> = (0..=120).map(|k| format!("{:.12}", get(&p, c, "B", "transform/rotation", k as f64 / 30.0).0.as_f64())).collect();
+            lines.push(format!("{:?}\t{text}\t{}", keyset, vals.join(" ")));
+        }
+    }
+    let file = dir.join("expr.txt");
+    if !file.exists() || std::env::var_os("VEYMELO_GOLDENS_WRITE").is_some() {
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        eprintln!("{} expressions written", lines.len());
+        return;
+    }
+    let before = std::fs::read_to_string(&file).unwrap();
+    let mut changed = vec![];
+    for (was, now) in before.lines().zip(&lines) {
+        let (a, b): (Vec<&str>, Vec<&str>) = (was.split('\t').collect(), now.split('\t').collect());
+        let most = a[2].split(' ').zip(b[2].split(' ')).map(|(x, y)| (x.parse::<f64>().unwrap() - y.parse::<f64>().unwrap()).abs()).fold(0.0, f64::max);
+        if a[1] != b[1] || most > 1e-9 {
+            changed.push(format!("{} {}: most {most}", a[0], a[1]));
+        }
+    }
+    eprintln!("{} expressions, {} changed", lines.len(), changed.len());
+    for c in &changed {
+        eprintln!("  {c}");
+    }
+    assert!(changed.is_empty());
+}
+
+#[test]
+fn gauss_random_keeps_nine_in_ten_within_its_range() {
+    let (mut p, c) = scene();
+    set(&mut p, c, "B", "transform/rotation", "seedRandom(4, true); var n = 0; for (var i = 0; i < 20000; i++) { var g = gaussRandom(); if (g >= 0 && g <= 1) n++; } n / 20000");
+    let share = num(&p, c, "B", "transform/rotation", 0.0);
+    assert!((share - 0.9).abs() < 0.007, "{share}");
+}

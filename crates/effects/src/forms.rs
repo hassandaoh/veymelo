@@ -226,6 +226,7 @@ fn radio_waves(ctx: &Ctx, mut b: Buf) -> Buf {
     let freq = ctx.num("frequency", 1.0).max(0.01);
     let life_now = ctx.num("lifespan", 2.0).max(0.01);
     let at_birth = ctx.choice("parametersAreSetAt") == 0;
+    // the edge softened over half a pixel, and more the lower the quality asked (1.5 px at 1)
     let soft = 0.5 + 1.5 / ctx.num("renderQuality", 4.0).clamp(1.0, 10.0);
     let kind = ctx.choice("profile");
     let reflection = ctx.flag("reflection");
@@ -427,6 +428,8 @@ fn grow(g: &Growth, a: (f64, f64), z: (f64, f64), depth: u32, strength: f32, mai
         return;
     }
     let (nx, ny) = (-dy / len.max(1e-9), dx / len.max(1e-9));
+    // pushed aside by up to 0.22 of its length: its halves turn by up to about 24° (atan 0.44),
+    // the sharpest turns photographed bolts make between their steps
     let mut off = draws.signed() * len * 0.22 * g.turbulence * g.shape;
     // the alpha obstacle: of the two sides, the one with less (or more) of the layer
     if g.obstacle != 0.0 && g.alpha.is_some() && (main || !g.main_only) {

@@ -41,4 +41,4 @@ A project is a folder with a `.veymelo` file in it (JSON, readable by people and
 ## More
 
 - `PLAN.md`: how the program is put together and what comes next (in Thai)
-- `NOTICE`: what was learned from [EffectCraft](https://github.com/storytold/effectcraft) and where
+- `LICENSE`: all rights reserved

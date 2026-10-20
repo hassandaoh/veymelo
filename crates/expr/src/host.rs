@@ -155,9 +155,13 @@ impl<'e, 'a> Ctx<'e, 'a> {
     }
 
     /// Most numbers fall from 0 to 1 (nine in ten), more near the middle.
+    /// A draw from a bell round 0.5, nine in ten of them within 0 to 1: two plain draws made one
+    /// normal one (Box and Muller's way), spread so that 0.5 is as far as the 95th percentile.
     fn draw_gauss(&self) -> f64 {
+        // the normal distribution's 95th percentile, in standard deviations
+        const Z95: f64 = 1.644_853_626_951_472_2;
         let (u, v) = (self.draw().max(1e-12), self.draw());
-        0.5 + (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos() * 0.304
+        0.5 + (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos() * (0.5 / Z95)
     }
 
     fn index_of(&self, layer: &Layer, comp: &Comp) -> f64 {
@@ -557,6 +561,8 @@ impl<'e, 'a> Ctx<'e, 'a> {
                 } else {
                     ((t - t0) / (t1 - t0)).clamp(0.0, 1.0)
                 };
+                // cubics from 0 to 1: ease leaves and arrives at rest; easeIn leaves at rest and
+                // arrives at the speed of a straight line, easeOut the other way round
                 let k = match name {
                     "ease" => u * u * (3.0 - 2.0 * u),
                     "easeIn" => u * u * (2.0 - u),

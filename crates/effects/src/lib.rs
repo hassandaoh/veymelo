@@ -53,6 +53,10 @@ pub mod stylize;
 pub mod time;
 pub mod transition;
 #[cfg(test)]
+mod goldens;
+#[cfg(test)]
+mod showcase;
+#[cfg(test)]
 mod testing;
 mod util;
 pub mod utility;

@@ -15,94 +15,109 @@ use crate::{Font, i16_at, u16_at, u32_at};
 /// still see where it was.
 const DELETED: u16 = 0xFFFF;
 
-/// The OpenType features and Apple's settings for them: the feature type, the setting that
-/// turns it on, and the one that turns it off (none where the type's other settings are not an
-/// "off": asking for it off leaves the font's own choice).
-const SETTINGS: &[(&[u8; 4], u16, u16, Option<u16>)] = &[
-    (b"rlig", 1, 0, Some(1)),
-    (b"liga", 1, 2, Some(3)),
-    (b"dlig", 1, 4, Some(5)),
-    (b"clig", 1, 18, Some(19)),
-    (b"hlig", 1, 20, Some(21)),
-    (b"vert", 4, 0, Some(1)),
-    (b"vrt2", 4, 0, Some(1)),
-    (b"tnum", 6, 0, None),
-    (b"pnum", 6, 1, None),
-    (b"sups", 10, 1, None),
-    (b"subs", 10, 2, None),
-    (b"ordn", 10, 3, None),
-    (b"sinf", 10, 4, None),
-    (b"afrc", 11, 1, None),
-    (b"frac", 11, 2, None),
-    (b"zero", 14, 4, Some(5)),
-    (b"mgrk", 15, 10, Some(11)),
-    (b"titl", 19, 4, None),
-    (b"trad", 20, 0, None),
-    (b"smpl", 20, 1, None),
-    (b"jp78", 20, 2, None),
-    (b"jp83", 20, 3, None),
-    (b"jp90", 20, 4, None),
-    (b"expt", 20, 10, None),
-    (b"jp04", 20, 11, None),
-    (b"hojo", 20, 12, None),
-    (b"nlck", 20, 13, None),
-    (b"tnam", 20, 14, None),
-    (b"onum", 21, 0, None),
-    (b"lnum", 21, 1, None),
-    (b"pwid", 22, 0, None),
-    (b"fwid", 22, 1, None),
-    (b"hwid", 22, 2, None),
-    (b"twid", 22, 3, None),
-    (b"qwid", 22, 4, None),
-    (b"palt", 22, 5, None),
-    (b"halt", 22, 6, None),
-    (b"hngl", 23, 1, None),
-    (b"ruby", 28, 2, Some(3)),
-    (b"ital", 32, 2, Some(3)),
-    (b"case", 33, 0, Some(1)),
-    (b"cpsp", 33, 2, Some(3)),
-    (b"hkna", 34, 0, Some(1)),
-    (b"vkna", 34, 2, Some(3)),
-    (b"ss01", 35, 2, Some(3)),
-    (b"ss02", 35, 4, Some(5)),
-    (b"ss03", 35, 6, Some(7)),
-    (b"ss04", 35, 8, Some(9)),
-    (b"ss05", 35, 10, Some(11)),
-    (b"ss06", 35, 12, Some(13)),
-    (b"ss07", 35, 14, Some(15)),
-    (b"ss08", 35, 16, Some(17)),
-    (b"ss09", 35, 18, Some(19)),
-    (b"ss10", 35, 20, Some(21)),
-    (b"ss11", 35, 22, Some(23)),
-    (b"ss12", 35, 24, Some(25)),
-    (b"ss13", 35, 26, Some(27)),
-    (b"ss14", 35, 28, Some(29)),
-    (b"ss15", 35, 30, Some(31)),
-    (b"ss16", 35, 32, Some(33)),
-    (b"ss17", 35, 34, Some(35)),
-    (b"ss18", 35, 36, Some(37)),
-    (b"ss19", 35, 38, Some(39)),
-    (b"ss20", 35, 40, Some(41)),
-    (b"calt", 36, 0, Some(1)),
-    (b"swsh", 36, 2, Some(3)),
-    (b"cswh", 36, 4, Some(5)),
-    (b"smcp", 37, 1, None),
-    (b"pcap", 37, 2, None),
-    (b"c2sc", 38, 1, None),
-    (b"c2pc", 38, 2, None),
+/// OpenType's features as Apple's settings: the feature, Apple's feature type and the setting
+/// that turns it on, and the one that turns it off (none where the type's other settings are not
+/// an "off": asking for it off leaves the font's own choice). Each pair is made by meaning, from
+/// what OpenType's feature list says a feature does and what Apple's registry names its
+/// settings; the numbers are the registry's (`SFNTLayoutTypes.h`, which a test reads back).
+struct Pair {
+    tag: &'static [u8; 4],
+    kind: u16,
+    on: u16,
+    off: Option<u16>,
+    /// Apple's names for the settings.
+    #[cfg_attr(not(test), allow(dead_code))]
+    names: (&'static str, Option<&'static str>),
+}
+
+const PAIRS: &[Pair] = &[
+    Pair { tag: b"rlig", kind: 1, on: 0, off: Some(1), names: ("kRequiredLigaturesOnSelector", Some("kRequiredLigaturesOffSelector")) },
+    Pair { tag: b"liga", kind: 1, on: 2, off: Some(3), names: ("kCommonLigaturesOnSelector", Some("kCommonLigaturesOffSelector")) },
+    Pair { tag: b"dlig", kind: 1, on: 4, off: Some(5), names: ("kRareLigaturesOnSelector", Some("kRareLigaturesOffSelector")) },
+    Pair { tag: b"clig", kind: 1, on: 18, off: Some(19), names: ("kContextualLigaturesOnSelector", Some("kContextualLigaturesOffSelector")) },
+    Pair { tag: b"hlig", kind: 1, on: 20, off: Some(21), names: ("kHistoricalLigaturesOnSelector", Some("kHistoricalLigaturesOffSelector")) },
+    Pair { tag: b"vert", kind: 4, on: 0, off: Some(1), names: ("kSubstituteVerticalFormsOnSelector", Some("kSubstituteVerticalFormsOffSelector")) },
+    Pair { tag: b"vrt2", kind: 4, on: 0, off: Some(1), names: ("kSubstituteVerticalFormsOnSelector", Some("kSubstituteVerticalFormsOffSelector")) },
+    Pair { tag: b"tnum", kind: 6, on: 0, off: None, names: ("kMonospacedNumbersSelector", None) },
+    Pair { tag: b"pnum", kind: 6, on: 1, off: None, names: ("kProportionalNumbersSelector", None) },
+    Pair { tag: b"sups", kind: 10, on: 1, off: None, names: ("kSuperiorsSelector", None) },
+    Pair { tag: b"subs", kind: 10, on: 2, off: None, names: ("kInferiorsSelector", None) },
+    Pair { tag: b"ordn", kind: 10, on: 3, off: None, names: ("kOrdinalsSelector", None) },
+    Pair { tag: b"sinf", kind: 10, on: 4, off: None, names: ("kScientificInferiorsSelector", None) },
+    Pair { tag: b"afrc", kind: 11, on: 1, off: None, names: ("kVerticalFractionsSelector", None) },
+    Pair { tag: b"frac", kind: 11, on: 2, off: None, names: ("kDiagonalFractionsSelector", None) },
+    Pair { tag: b"zero", kind: 14, on: 4, off: Some(5), names: ("kSlashedZeroOnSelector", Some("kSlashedZeroOffSelector")) },
+    Pair { tag: b"mgrk", kind: 15, on: 10, off: Some(11), names: ("kMathematicalGreekOnSelector", Some("kMathematicalGreekOffSelector")) },
+    Pair { tag: b"titl", kind: 19, on: 4, off: None, names: ("kTitlingCapsSelector", None) },
+    Pair { tag: b"trad", kind: 20, on: 0, off: None, names: ("kTraditionalCharactersSelector", None) },
+    Pair { tag: b"smpl", kind: 20, on: 1, off: None, names: ("kSimplifiedCharactersSelector", None) },
+    Pair { tag: b"jp78", kind: 20, on: 2, off: None, names: ("kJIS1978CharactersSelector", None) },
+    Pair { tag: b"jp83", kind: 20, on: 3, off: None, names: ("kJIS1983CharactersSelector", None) },
+    Pair { tag: b"jp90", kind: 20, on: 4, off: None, names: ("kJIS1990CharactersSelector", None) },
+    Pair { tag: b"expt", kind: 20, on: 10, off: None, names: ("kExpertCharactersSelector", None) },
+    Pair { tag: b"jp04", kind: 20, on: 11, off: None, names: ("kJIS2004CharactersSelector", None) },
+    Pair { tag: b"hojo", kind: 20, on: 12, off: None, names: ("kHojoCharactersSelector", None) },
+    Pair { tag: b"nlck", kind: 20, on: 13, off: None, names: ("kNLCCharactersSelector", None) },
+    Pair { tag: b"tnam", kind: 20, on: 14, off: None, names: ("kTraditionalNamesCharactersSelector", None) },
+    Pair { tag: b"onum", kind: 21, on: 0, off: None, names: ("kLowerCaseNumbersSelector", None) },
+    Pair { tag: b"lnum", kind: 21, on: 1, off: None, names: ("kUpperCaseNumbersSelector", None) },
+    Pair { tag: b"pwid", kind: 22, on: 0, off: None, names: ("kProportionalTextSelector", None) },
+    Pair { tag: b"pkna", kind: 22, on: 0, off: None, names: ("kProportionalTextSelector", None) },
+    Pair { tag: b"fwid", kind: 22, on: 1, off: None, names: ("kMonospacedTextSelector", None) },
+    Pair { tag: b"hwid", kind: 22, on: 2, off: None, names: ("kHalfWidthTextSelector", None) },
+    Pair { tag: b"twid", kind: 22, on: 3, off: None, names: ("kThirdWidthTextSelector", None) },
+    Pair { tag: b"qwid", kind: 22, on: 4, off: None, names: ("kQuarterWidthTextSelector", None) },
+    Pair { tag: b"palt", kind: 22, on: 5, off: None, names: ("kAltProportionalTextSelector", None) },
+    Pair { tag: b"halt", kind: 22, on: 6, off: None, names: ("kAltHalfWidthTextSelector", None) },
+    Pair { tag: b"hngl", kind: 23, on: 1, off: None, names: ("kHanjaToHangulSelector", None) },
+    Pair { tag: b"ruby", kind: 28, on: 2, off: Some(3), names: ("kRubyKanaOnSelector", Some("kRubyKanaOffSelector")) },
+    Pair { tag: b"ital", kind: 32, on: 2, off: Some(3), names: ("kCJKItalicRomanOnSelector", Some("kCJKItalicRomanOffSelector")) },
+    Pair { tag: b"case", kind: 33, on: 0, off: Some(1), names: ("kCaseSensitiveLayoutOnSelector", Some("kCaseSensitiveLayoutOffSelector")) },
+    Pair { tag: b"cpsp", kind: 33, on: 2, off: Some(3), names: ("kCaseSensitiveSpacingOnSelector", Some("kCaseSensitiveSpacingOffSelector")) },
+    Pair { tag: b"hkna", kind: 34, on: 0, off: Some(1), names: ("kAlternateHorizKanaOnSelector", Some("kAlternateHorizKanaOffSelector")) },
+    Pair { tag: b"vkna", kind: 34, on: 2, off: Some(3), names: ("kAlternateVertKanaOnSelector", Some("kAlternateVertKanaOffSelector")) },
+    Pair { tag: b"ss01", kind: 35, on: 2, off: Some(3), names: ("kStylisticAltOneOnSelector", Some("kStylisticAltOneOffSelector")) },
+    Pair { tag: b"ss02", kind: 35, on: 4, off: Some(5), names: ("kStylisticAltTwoOnSelector", Some("kStylisticAltTwoOffSelector")) },
+    Pair { tag: b"ss03", kind: 35, on: 6, off: Some(7), names: ("kStylisticAltThreeOnSelector", Some("kStylisticAltThreeOffSelector")) },
+    Pair { tag: b"ss04", kind: 35, on: 8, off: Some(9), names: ("kStylisticAltFourOnSelector", Some("kStylisticAltFourOffSelector")) },
+    Pair { tag: b"ss05", kind: 35, on: 10, off: Some(11), names: ("kStylisticAltFiveOnSelector", Some("kStylisticAltFiveOffSelector")) },
+    Pair { tag: b"ss06", kind: 35, on: 12, off: Some(13), names: ("kStylisticAltSixOnSelector", Some("kStylisticAltSixOffSelector")) },
+    Pair { tag: b"ss07", kind: 35, on: 14, off: Some(15), names: ("kStylisticAltSevenOnSelector", Some("kStylisticAltSevenOffSelector")) },
+    Pair { tag: b"ss08", kind: 35, on: 16, off: Some(17), names: ("kStylisticAltEightOnSelector", Some("kStylisticAltEightOffSelector")) },
+    Pair { tag: b"ss09", kind: 35, on: 18, off: Some(19), names: ("kStylisticAltNineOnSelector", Some("kStylisticAltNineOffSelector")) },
+    Pair { tag: b"ss10", kind: 35, on: 20, off: Some(21), names: ("kStylisticAltTenOnSelector", Some("kStylisticAltTenOffSelector")) },
+    Pair { tag: b"ss11", kind: 35, on: 22, off: Some(23), names: ("kStylisticAltElevenOnSelector", Some("kStylisticAltElevenOffSelector")) },
+    Pair { tag: b"ss12", kind: 35, on: 24, off: Some(25), names: ("kStylisticAltTwelveOnSelector", Some("kStylisticAltTwelveOffSelector")) },
+    Pair { tag: b"ss13", kind: 35, on: 26, off: Some(27), names: ("kStylisticAltThirteenOnSelector", Some("kStylisticAltThirteenOffSelector")) },
+    Pair { tag: b"ss14", kind: 35, on: 28, off: Some(29), names: ("kStylisticAltFourteenOnSelector", Some("kStylisticAltFourteenOffSelector")) },
+    Pair { tag: b"ss15", kind: 35, on: 30, off: Some(31), names: ("kStylisticAltFifteenOnSelector", Some("kStylisticAltFifteenOffSelector")) },
+    Pair { tag: b"ss16", kind: 35, on: 32, off: Some(33), names: ("kStylisticAltSixteenOnSelector", Some("kStylisticAltSixteenOffSelector")) },
+    Pair { tag: b"ss17", kind: 35, on: 34, off: Some(35), names: ("kStylisticAltSeventeenOnSelector", Some("kStylisticAltSeventeenOffSelector")) },
+    Pair { tag: b"ss18", kind: 35, on: 36, off: Some(37), names: ("kStylisticAltEighteenOnSelector", Some("kStylisticAltEighteenOffSelector")) },
+    Pair { tag: b"ss19", kind: 35, on: 38, off: Some(39), names: ("kStylisticAltNineteenOnSelector", Some("kStylisticAltNineteenOffSelector")) },
+    Pair { tag: b"ss20", kind: 35, on: 40, off: Some(41), names: ("kStylisticAltTwentyOnSelector", Some("kStylisticAltTwentyOffSelector")) },
+    Pair { tag: b"calt", kind: 36, on: 0, off: Some(1), names: ("kContextualAlternatesOnSelector", Some("kContextualAlternatesOffSelector")) },
+    Pair { tag: b"swsh", kind: 36, on: 2, off: Some(3), names: ("kSwashAlternatesOnSelector", Some("kSwashAlternatesOffSelector")) },
+    Pair { tag: b"cswh", kind: 36, on: 4, off: Some(5), names: ("kContextualSwashAlternatesOnSelector", Some("kContextualSwashAlternatesOffSelector")) },
+    Pair { tag: b"smcp", kind: 37, on: 1, off: None, names: ("kLowerCaseSmallCapsSelector", None) },
+    Pair { tag: b"pcap", kind: 37, on: 2, off: None, names: ("kLowerCasePetiteCapsSelector", None) },
+    Pair { tag: b"c2sc", kind: 38, on: 1, off: None, names: ("kUpperCaseSmallCapsSelector", None) },
+    Pair { tag: b"c2pc", kind: 38, on: 2, off: None, names: ("kUpperCasePetiteCapsSelector", None) },
 ];
 
-/// The old "letter case" type's small capitals, which fonts still have: the same as `smcp`.
+/// The old "letter case" type's small capitals (`kSmallCapsSelector` of the deprecated
+/// `kLetterCaseType`), which fonts still have: taken as `smcp`, the way the system takes them
+/// (see apple_settings_as_the_system_sets_them).
 const OLD_SMALL_CAPS: (u16, u16) = (3, 3);
 
 /// The settings asked for, as Apple's (type, setting).
 fn asked(options: &Options) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
     for (tag, on) in &options.features {
-        if let Some(&(_, ty, yes, no)) = SETTINGS.iter().find(|s| s.0 == tag) {
-            match (on, no) {
-                (true, _) => out.push((ty, yes)),
-                (false, Some(no)) => out.push((ty, no)),
+        if let Some(p) = PAIRS.iter().find(|p| p.tag == tag) {
+            match (on, p.off) {
+                (true, _) => out.push((p.kind, p.on)),
+                (false, Some(no)) => out.push((p.kind, no)),
                 (false, None) => {}
             }
         }
@@ -126,8 +141,8 @@ pub(super) fn features(font: &Font) -> Vec<String> {
             if setting == OLD_SMALL_CAPS {
                 setting = (37, 1);
             }
-            for s in SETTINGS.iter().filter(|s| (s.1, s.2) == setting) {
-                out.push(String::from_utf8_lossy(s.0).to_string());
+            for p in PAIRS.iter().filter(|p| (p.kind, p.on) == setting) {
+                out.push(String::from_utf8_lossy(p.tag).to_string());
             }
         }
         if length == 0 {
@@ -877,5 +892,29 @@ pub(super) fn track(font: &Font, buf: &mut [G], size: f64) {
     }
     for g in buf.iter_mut().filter(|g| g.advance > 0.0 && g.attach.is_none()) {
         g.advance += v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PAIRS;
+
+    /// Each pair's numbers are the ones Apple's registry gives its names, where the SDK that
+    /// carries the registry is on this computer.
+    #[test]
+    fn pairs_are_the_registrys_numbers() {
+        let header = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreText.framework/Headers/SFNTLayoutTypes.h";
+        let Ok(text) = std::fs::read_to_string(header) else { return };
+        // the name where it is given its number (`name = 2,`)
+        let value = |name: &str| -> Option<u16> {
+            text.match_indices(name).find_map(|(at, _)| {
+                let rest = text[at + name.len()..].trim_start().strip_prefix('=')?.trim_start();
+                rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+            })
+        };
+        for p in PAIRS {
+            assert_eq!(value(p.names.0), Some(p.on), "{}", p.names.0);
+            assert_eq!(p.names.1.and_then(value), p.off, "{:?}", p.names.1);
+        }
     }
 }

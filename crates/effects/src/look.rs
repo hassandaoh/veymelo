@@ -195,22 +195,42 @@ impl Offsets {
     }
 }
 
-/// The looks made here (custom reads a file).
+/// The looks made here (custom reads a file), each from what the look is:
+/// - warm film: the light of a lower colour temperature (red up, blue down by white balance), on
+///   film's curve (blacks lifted a little, highlights rolled off);
+/// - cool night: the light of a higher colour temperature, a third of a stop darker, less
+///   colourful;
+/// - bleach bypass: the silver left in (half the colour, the brightness laid over itself for
+///   contrast);
+/// - teal and orange: shadows pushed toward teal and lights toward orange, brightness kept;
+/// - faded matte: blacks lifted and whites lowered, less colourful;
+/// - monochrome: brightness alone.
 fn made_look(look: u32, c: [f32; 3]) -> [f32; 3] {
     let l = luma(c);
+    let saturate = |c: [f32; 3], k: f32| {
+        let l = luma(c);
+        c.map(|v| l + (v - l) * k)
+    };
+    // film's curve: a gentle S about middle grey, black lifted to 0.025 and white held to 0.975
+    // (brighter than white carries on at half the slope)
+    let film = |v: f32| {
+        let u = v.clamp(0.0, 1.0);
+        0.025 + 0.95 * (0.65 * u + 0.35 * u * u * (3.0 - 2.0 * u)) + 0.5 * (v - 1.0).max(0.0)
+    };
     match look {
-        2 => [c[0] * 1.06 + 0.015, c[1] * 1.01 + 0.01, c[2] * 0.88],
-        3 => [c[0] * 0.82, c[1] * 0.92, c[2] * 1.08 + 0.02].map(|v| v * 0.92),
+        2 => saturate([c[0] * 1.07, c[1], c[2] * 0.86].map(film), 0.95),
+        3 => saturate([c[0] * 0.86, c[1] * 0.95, c[2] * 1.1].map(|v| v * 0.79), 0.85),
         4 => {
-            // silver kept: half the colour, the brightness laid over itself for contrast
             let over = |v: f32| if l < 0.5 { 2.0 * v * l } else { 1.0 - 2.0 * (1.0 - v) * (1.0 - l) };
-            c.map(|v| l + (v - l) * 0.45).map(|v| v * 0.5 + over(v) * 0.5)
+            saturate(c, 0.5).map(|v| v * 0.4 + over(v) * 0.6)
         }
         5 => {
-            let t = (l - 0.5).clamp(-0.5, 0.5);
-            [c[0] + 0.18 * t, c[1] + 0.03 * t, c[2] - 0.16 * t]
+            let (shadows, lights) = (1.0 - smoothstep(0.15, 0.55, l), smoothstep(0.45, 0.85, l));
+            let shift = [-0.06 * shadows + 0.08 * lights, 0.02 * shadows + 0.015 * lights, 0.06 * shadows - 0.07 * lights];
+            let d = luma(shift);
+            [c[0] + shift[0] - d, c[1] + shift[1] - d, c[2] + shift[2] - d]
         }
-        6 => c.map(|v| 0.08 + v * 0.84).map(|v| l + (v - l) * 0.8),
+        6 => saturate(c.map(|v| 0.1 + v * 0.85), 0.85),
         7 => [l; 3],
         _ => c,
     }

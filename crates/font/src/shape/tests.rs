@@ -516,3 +516,93 @@ fn khmer_myanmar_and_sinhala_shape_as_the_system_does() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Which of Apple's feature settings the system pairs with each OpenType feature, as it says of
+/// the fonts that come with macOS (each setting a font has, and the OpenType tag and value the
+/// system gives it). Run by hand to see them:
+///   cargo test -p veymelo-font apple_pairs_the_system_gives -- --ignored --nocapture
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn apple_pairs_the_system_gives() {
+    use std::collections::BTreeSet;
+    use std::ffi::c_void;
+    type Ref = *const c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFDataCreate(a: Ref, bytes: *const u8, len: isize) -> Ref;
+        fn CFArrayGetCount(a: Ref) -> isize;
+        fn CFArrayGetValueAtIndex(a: Ref, i: isize) -> Ref;
+        fn CFDictionaryGetValue(d: Ref, k: Ref) -> Ref;
+        fn CFNumberGetValue(n: Ref, kind: isize, out: *mut c_void) -> bool;
+        fn CFStringGetCString(s: Ref, buf: *mut u8, len: isize, enc: u32) -> bool;
+        fn CFStringCreateWithCString(a: Ref, s: *const u8, enc: u32) -> Ref;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGDataProviderCreateWithCFData(d: Ref) -> Ref;
+        fn CGFontCreateWithDataProvider(p: Ref) -> Ref;
+    }
+    #[link(name = "CoreText", kind = "framework")]
+    unsafe extern "C" {
+        fn CTFontCreateWithGraphicsFont(f: Ref, size: f64, m: Ref, attrs: Ref) -> Ref;
+        fn CTFontCopyFeatures(f: Ref) -> Ref;
+    }
+    let key = |s: &str| unsafe { CFStringCreateWithCString(std::ptr::null(), format!("{s}\0").as_ptr(), 0x0800_0100) };
+    let (ty_key, sels_key, sel_key, tag_key, val_key) = (key("CTFeatureTypeIdentifier"), key("CTFeatureTypeSelectors"), key("CTFeatureSelectorIdentifier"), key("CTFeatureOpenTypeTag"), key("CTFeatureOpenTypeValue"));
+    let num = |n: Ref| unsafe {
+        let mut v: i32 = -1;
+        if !n.is_null() {
+            CFNumberGetValue(n, 3, &raw mut v as *mut c_void);
+        }
+        v
+    };
+    let mut pairs = BTreeSet::new();
+    let mut dirs = vec![std::path::PathBuf::from("/System/Library/Fonts"), std::path::PathBuf::from("/System/Library/Fonts/Supplemental")];
+    let mut files = vec![];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "ttf" || x == "ttc" || x == "otf") {
+                files.push(p);
+            }
+        }
+    }
+    for path in files {
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        unsafe {
+            let data = CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize);
+            let cg = CGFontCreateWithDataProvider(CGDataProviderCreateWithCFData(data));
+            if cg.is_null() {
+                continue;
+            }
+            let font = CTFontCreateWithGraphicsFont(cg, 12.0, std::ptr::null(), std::ptr::null());
+            let features = CTFontCopyFeatures(font);
+            if features.is_null() {
+                continue;
+            }
+            for i in 0..CFArrayGetCount(features) {
+                let f = CFArrayGetValueAtIndex(features, i);
+                let ty = num(CFDictionaryGetValue(f, ty_key));
+                let sels = CFDictionaryGetValue(f, sels_key);
+                if sels.is_null() {
+                    continue;
+                }
+                for k in 0..CFArrayGetCount(sels) {
+                    let s = CFArrayGetValueAtIndex(sels, k);
+                    let tag = CFDictionaryGetValue(s, tag_key);
+                    if tag.is_null() {
+                        continue;
+                    }
+                    let mut buf = [0u8; 8];
+                    CFStringGetCString(tag, buf.as_mut_ptr(), 8, 0x0800_0100);
+                    let tag = String::from_utf8_lossy(&buf[..4]).to_string();
+                    pairs.insert((tag, ty, num(CFDictionaryGetValue(s, sel_key)), num(CFDictionaryGetValue(s, val_key))));
+                }
+            }
+        }
+    }
+    for (tag, ty, sel, val) in &pairs {
+        eprintln!("{tag} {ty} {sel} {val}");
+    }
+}

@@ -77,6 +77,10 @@ pub struct Font {
     hvar: usize,
     /// Where this instance is on each axis, from -1 to 1 (0: the usual design).
     coords: Vec<f64>,
+    /// The same as asked, in the axes' own units (only the axes asked for).
+    user: Vec<([u8; 4], f64)>,
+    /// Which font of its file it is (a collection holds several).
+    pub(crate) face: usize,
     /// Where the layout tables are (0: the font has none).
     pub(crate) gdef: usize,
     pub(crate) gsub: usize,
@@ -229,6 +233,8 @@ impl Font {
             hvar: table(b"HVAR").unwrap_or(0),
             axes,
             coords,
+            user: Vec::new(),
+            face: index,
             gdef: table(b"GDEF").unwrap_or(0),
             gsub: table(b"GSUB").unwrap_or(0),
             gpos: table(b"GPOS").unwrap_or(0),
@@ -253,6 +259,18 @@ impl Font {
 
     pub(crate) fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// The file's bytes, shared.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn shared_data(&self) -> Arc<Vec<u8>> {
+        self.data.clone()
+    }
+
+    /// Where this instance was asked to be on its axes, in their own units.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn user_coords(&self) -> &[([u8; 4], f64)] {
+        &self.user
     }
 
     /// What tells this font's file from others' (for keeping what is made from it).
@@ -490,6 +508,7 @@ impl Font {
                 self.avar_map(i, n)
             })
             .collect();
+        f.user = self.axes.iter().filter_map(|(tag, least, _, most)| settings.iter().find(|(t, _)| t.as_bytes() == tag).map(|s| (*tag, s.1.clamp(*least, *most)))).collect();
         f
     }
 

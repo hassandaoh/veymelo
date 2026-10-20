@@ -293,23 +293,39 @@ fn to_db(v: f64) -> f64 {
     if v > 0.0 { 20.0 * v.log10() } else { f64::NEG_INFINITY }
 }
 
-/// The K-weighting of BS.1770 at `rate`: a high shelf (+4 dB above about 1.5 kHz, as a head
-/// hears) then a high pass (under about 38 Hz), from their analogue forms by the bilinear
-/// transform.
+/// BS.1770's K-weighting as the recommendation gives it at 48 kHz: a high shelf (+4 dB above
+/// about 1.5 kHz, as a head hears), then a high pass (under about 38 Hz); each as (b, a).
+const SHELF_48K: ([f64; 3], [f64; 2]) = ([1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85], [-1.690_659_293_182_41, 0.732_480_774_215_85]);
+const HIGH_PASS_48K: [f64; 2] = [-1.990_047_454_833_98, 0.990_072_250_366_21];
+
+/// A biquad's poles (its a1 and a2) taken back to the analogue filter the bilinear transform made
+/// them from: the warped frequency k = tan(π·f0 / 48000), Q, and the shared divisor a0
+/// (1 + k/Q + k²). With 1 + a1 + a2 = 4k²/a0 and 1 − a1 + a2 = 4/a0 they come out exactly.
+fn analogue(a: [f64; 2]) -> (f64, f64, f64) {
+    let a0 = 4.0 / (1.0 - a[0] + a[1]);
+    let k = ((1.0 + a[0] + a[1]) / (1.0 - a[0] + a[1])).sqrt();
+    let q = 2.0 * k / ((1.0 - a[1]) * a0);
+    (k, q, a0)
+}
+
+/// The K-weighting at `rate`: the two analogue filters found from the 48 kHz ones (the shelf's
+/// gains from its zeros: b1 gives the high gain, b0 − b2 the band's), made again for `rate`.
 fn k_weighting(rate: f64) -> [([f64; 3], [f64; 2]); 2] {
-    let bilinear = |f0: f64, q: f64, gain_db: f64, shelf: bool| {
-        let k = (std::f64::consts::PI * f0 / rate).tan();
-        if shelf {
-            let vh = 10f64.powf(gain_db / 20.0);
-            let vb = vh.powf(0.499_666_774_154_541_6);
-            let a0 = 1.0 + k / q + k * k;
-            ([(vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0], [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0])
-        } else {
-            let a0 = 1.0 + k / q + k * k;
-            ([1.0, -2.0, 1.0], [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0])
-        }
+    let again = |k48: f64| (k48.atan() * 48_000.0 / rate).tan();
+    let poles = |k: f64, q: f64| {
+        let a0 = 1.0 + k / q + k * k;
+        (a0, [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0])
     };
-    [bilinear(1_681.974_450_955_533, 0.707_175_236_955_419_6, 3.999_843_853_973_347, true), bilinear(38.135_470_876_024_44, 0.500_327_037_323_877_3, 0.0, false)]
+    let (b, a) = SHELF_48K;
+    let (k48, q, a0) = analogue(a);
+    let high = k48 * k48 - b[1] * a0 / 2.0;
+    let band = (b[0] - b[2]) * a0 * q / (2.0 * k48);
+    let k = again(k48);
+    let (d, shelf_a) = poles(k, q);
+    let shelf = ([(high + band * k / q + k * k) / d, 2.0 * (k * k - high) / d, (high - band * k / q + k * k) / d], shelf_a);
+    let (k48, q, _) = analogue(HIGH_PASS_48K);
+    let (_, pass_a) = poles(again(k48), q);
+    [shelf, ([1.0, -2.0, 1.0], pass_a)]
 }
 
 /// How loud stereo sound at `rate` is.
@@ -405,3 +421,42 @@ pub fn waveform(samples: &[f32], w: usize, h: usize) -> Image {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod weighting {
+    use super::*;
+
+    #[test]
+    fn at_48_khz_it_is_the_recommendations_own() {
+        let [(b, a), (hb, ha)] = k_weighting(48_000.0);
+        for (x, y) in b.iter().chain(&a).zip(SHELF_48K.0.iter().chain(&SHELF_48K.1)) {
+            assert!((x - y).abs() < 1e-12, "{x} {y}");
+        }
+        assert_eq!(hb, [1.0, -2.0, 1.0]);
+        for (x, y) in ha.iter().zip(&HIGH_PASS_48K) {
+            assert!((x - y).abs() < 1e-12, "{x} {y}");
+        }
+    }
+
+    #[test]
+    fn the_shelf_lifts_highs_by_four_db_at_any_rate() {
+        for rate in [44_100.0, 48_000.0, 96_000.0] {
+            let [(b, a), _] = k_weighting(rate);
+            // the gain at a frequency, from the filter's response there
+            let gain = |f: f64| {
+                let w = std::f64::consts::TAU * f / rate;
+                let z = |c: &[f64]| {
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for (n, v) in c.iter().enumerate() {
+                        re += v * (w * n as f64).cos();
+                        im -= v * (w * n as f64).sin();
+                    }
+                    (re * re + im * im).sqrt()
+                };
+                20.0 * (z(&b) / z(&[1.0, a[0], a[1]])).log10()
+            };
+            assert!(gain(100.0).abs() < 0.1, "{rate}: {}", gain(100.0));
+            assert!((gain(12_000.0) - 4.0).abs() < 0.2, "{rate}: {}", gain(12_000.0));
+        }
+    }
+}

@@ -74,19 +74,21 @@ effect!(
 pub const BRIGHTNESS_CONTRAST: Spec = Spec::new(&BRIGHTNESS_CONTRAST_DEF, CATEGORY, brightness_contrast);
 
 /// One channel through Brightness & Contrast's modern curve: black and white stay where they
-/// are; brightness bends the tones up or down, contrast gives them an S.
+/// are. Brightness bends the tones by where it puts middle grey: up to 0.8 at +100, down to 0.2 at
+/// −100 (brightening and darkening mirror each other). Contrast gives them an S about middle
+/// grey whose slope there is 1.5 at +100 and 0.5 at −100.
 fn bc_modern(v: f32, b: f32, c: f32) -> f32 {
     if v >= 1.0 {
         return v;
     }
     let mut v = v.max(0.0);
-    if b > 0.0 {
-        v = 1.0 - (1.0 - v).powf(2f32.powf(1.24 * b));
-    } else if b < 0.0 {
-        v = v.powf(2f32.powf(-1.32 * b));
+    if b != 0.0 {
+        // the power that takes middle grey to 0.5 + 0.3·|b| (or as far down)
+        let k = (1.0 / (0.5 - 0.3 * b.abs())).log2();
+        v = if b > 0.0 { 1.0 - (1.0 - v).powf(k) } else { v.powf(k) };
     }
     if c != 0.0 {
-        let g = (1.0 + 0.53 * c).max(0.05);
+        let g = (1.0 + 0.5 * c).max(0.05);
         v = if v < 0.5 { 0.5 * (2.0 * v).powf(g) } else { 1.0 - 0.5 * (2.0 - 2.0 * v).max(0.0).powf(g) };
     }
     v

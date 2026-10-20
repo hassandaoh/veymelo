@@ -30,6 +30,7 @@ dependencies = [
  "veymelo-text",
  "veymelo-time",
  "veymelo-track",
+ "veymelo-zip",
 ]
 
 [[package]]

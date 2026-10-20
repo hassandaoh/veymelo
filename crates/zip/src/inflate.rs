@@ -1,6 +1,6 @@
-//! Inflate (RFC 1951): deflated data read back, written from the RFC. A Huffman code is read a
-//! bit at a time against how many codes each length has; canonical codes of one length are
-//! consecutive, so that count and the symbols in code order are all a table needs.
+//! Inflate (RFC 1951): deflated data read back. The codes are read from lookup tables: the
+//! next bits, as many as the shorter codes take, name either a symbol (with how long its code
+//! is) or a second table for the codes that are longer, which the bits after them index.
 //!
 //! Every read is checked: data that ends early, codes that lead nowhere, repeats reaching
 //! back before the start or output past a limit are errors, never a crash.
@@ -9,84 +9,165 @@ use crate::deflate::{DISTANCES, LENGTHS, ORDER};
 
 /// The longest a code can be.
 const MAX_BITS: usize = 15;
+/// How many bits the first table is indexed by (shorter for a code whose codes are all shorter).
+const FIRST: u32 = 10;
 
+/// The bits of the data, first bit first: a word of them kept ahead of where reading is.
 struct Bits<'a> {
     data: &'a [u8],
+    /// The next byte not yet in the word.
     pos: usize,
-    buf: u64,
+    word: u64,
     have: u32,
 }
 
 impl Bits<'_> {
-    fn need(&mut self, n: u32) -> Result<u32, String> {
-        while self.have < n {
-            let b = *self.data.get(self.pos).ok_or("the deflated data ends early")?;
+    /// Bytes into the word while there is room for a whole one.
+    fn fill(&mut self) {
+        while self.have <= 56 {
+            let Some(&b) = self.data.get(self.pos) else { break };
+            self.word |= u64::from(b) << self.have;
             self.pos += 1;
-            self.buf |= u64::from(b) << self.have;
             self.have += 8;
         }
-        let v = (self.buf & ((1u64 << n) - 1)) as u32;
-        self.buf >>= n;
+    }
+
+    /// The next `n` bits (up to 32) without taking them; past the end they read as zeros.
+    fn peek(&mut self, n: u32) -> u32 {
+        if self.have < n {
+            self.fill();
+        }
+        (self.word & ((1u64 << n) - 1)) as u32
+    }
+
+    /// Take `n` bits that have been looked at.
+    fn take(&mut self, n: u32) -> Result<(), String> {
+        if n > self.have {
+            return Err("the deflated data ends early".into());
+        }
+        self.word >>= n;
         self.have -= n;
+        Ok(())
+    }
+
+    /// The next `n` bits (up to 32), taken.
+    fn need(&mut self, n: u32) -> Result<u32, String> {
+        let v = self.peek(n);
+        self.take(n)?;
         Ok(v)
     }
 
-    /// To the next whole byte (the bits held are what is left of the byte being read).
+    /// To the next whole byte: what is left of the byte being read is dropped, and the whole
+    /// bytes still in the word are given back to be read as they are.
     fn align(&mut self) {
-        self.buf = 0;
+        let rest = self.have % 8;
+        self.word >>= rest;
+        self.have -= rest;
+        self.pos -= (self.have / 8) as usize;
+        self.word = 0;
         self.have = 0;
     }
 }
 
-/// A canonical Huffman code: how many codes of each length, and the symbols in code order.
+/// A table entry: a symbol and how many bits its code takes from here, or (`LINK` set) where a
+/// second table starts and how many bits index it. Zero: no code begins with these bits.
+const LINK: u32 = 1 << 5;
+
+fn leaf(symbol: u16, bits: u32) -> u32 {
+    u32::from(symbol) << 16 | bits
+}
+
+/// A Huffman code made into tables for reading.
 struct Huffman {
-    count: [u16; MAX_BITS + 1],
-    symbol: Vec<u16>,
+    /// The first table, then the second ones.
+    table: Vec<u32>,
+    first: u32,
 }
 
 impl Huffman {
-    /// The code with these lengths (0: the symbol is not used). An incomplete code is
-    /// allowed (a lone distance code is); one with too many codes is not.
+    /// The code with these lengths (0: the symbol is not used), its codes given as RFC 1951 says
+    /// (shorter codes first, each length's in the order of their symbols). An incomplete code
+    /// is allowed (a lone distance code is); one with too many codes is not.
     fn new(lengths: &[u8]) -> Result<Huffman, String> {
-        let mut count = [0u16; MAX_BITS + 1];
+        let mut count = [0u32; MAX_BITS + 1];
         for &l in lengths {
             count[l as usize] += 1;
         }
-        let mut left: i32 = 1;
+        count[0] = 0;
+        let mut room: i64 = 1;
         for &c in &count[1..] {
-            left = left * 2 - i32::from(c);
-            if left < 0 {
+            room = room * 2 - i64::from(c);
+            if room < 0 {
                 return Err("a Huffman code with too many codes".into());
             }
         }
-        let mut offs = [0u16; MAX_BITS + 2];
+        let mut next = [0u32; MAX_BITS + 2];
         for len in 1..=MAX_BITS {
-            offs[len + 1] = offs[len] + count[len];
+            next[len + 1] = (next[len] + count[len]) << 1;
         }
-        let mut symbol = vec![0u16; lengths.len()];
+        // each used symbol's code, its bits turned round to the order they arrive in
+        let mut codes: Vec<(u32, u32, u16)> = vec![];
         for (s, &l) in lengths.iter().enumerate() {
             if l != 0 {
-                symbol[offs[l as usize] as usize] = s as u16;
-                offs[l as usize] += 1;
+                let l = u32::from(l);
+                let code = next[l as usize];
+                next[l as usize] += 1;
+                codes.push((code.reverse_bits() >> (32 - l), l, s as u16));
             }
         }
-        count[0] = 0;
-        Ok(Huffman { count, symbol })
+        let longest = codes.iter().map(|c| c.1).max().unwrap_or(1);
+        let first = longest.min(FIRST);
+        let mut table = vec![0u32; 1 << first];
+        // the short codes: every index whose low bits are the code
+        for &(code, len, s) in codes.iter().filter(|c| c.1 <= first) {
+            let mut i = code as usize;
+            while i < table.len() {
+                table[i] = leaf(s, len);
+                i += 1 << len;
+            }
+        }
+        // the long ones: a second table for each first-table index they begin with, as wide as
+        // the longest of them needs
+        let mut long: Vec<_> = codes.iter().filter(|c| c.1 > first).copied().collect();
+        long.sort_by_key(|c| c.0 & ((1 << first) - 1));
+        let mut k = 0;
+        while k < long.len() {
+            let head = long[k].0 & ((1 << first) - 1);
+            let end = k + long[k..].iter().take_while(|c| c.0 & ((1 << first) - 1) == head).count();
+            let wide = long[k..end].iter().map(|c| c.1 - first).max().unwrap_or(1);
+            let at = table.len();
+            table.resize(at + (1 << wide), 0);
+            table[head as usize] = (at as u32) << 16 | LINK | wide;
+            for &(code, len, s) in &long[k..end] {
+                let rest = len - first;
+                let mut i = (code >> first) as usize;
+                while i < 1 << wide {
+                    table[at + i] = leaf(s, rest);
+                    i += 1 << rest;
+                }
+            }
+            k = end;
+        }
+        Ok(Huffman { table, first })
     }
 
     fn decode(&self, bits: &mut Bits) -> Result<u16, String> {
-        let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
-        for len in 1..=MAX_BITS {
-            code |= bits.need(1)? as i32;
-            let count = i32::from(self.count[len]);
-            if code - first < count {
-                return self.symbol.get((index + code - first) as usize).copied().ok_or_else(|| "a bad Huffman code".to_string());
+        let e = self.table[bits.peek(self.first) as usize];
+        if e & LINK == 0 {
+            if e == 0 {
+                return Err("a code that is in no table".into());
             }
-            index += count;
-            first = (first + count) << 1;
-            code <<= 1;
+            bits.take(e & 0x1F)?;
+            return Ok((e >> 16) as u16);
         }
-        Err("a code that is in no table".into())
+        bits.take(self.first)?;
+        let wide = e & 0x1F;
+        let e = self.table[(e >> 16) as usize + bits.peek(wide) as usize];
+        if e == 0 {
+            return Err("a code that is in no table".into());
+        }
+        bits.take(e & 0x1F)?;
+        Ok((e >> 16) as u16)
     }
 }
 
@@ -95,8 +176,8 @@ fn fixed() -> (Huffman, Huffman) {
     lit[144..256].fill(9);
     lit[256..280].fill(7);
     // the fixed codes are complete, so these cannot fail
-    let lit = Huffman::new(&lit).unwrap_or(Huffman { count: [0; MAX_BITS + 1], symbol: Vec::new() });
-    let dist = Huffman::new(&[5u8; 30]).unwrap_or(Huffman { count: [0; MAX_BITS + 1], symbol: Vec::new() });
+    let lit = Huffman::new(&lit).unwrap_or(Huffman { table: vec![0], first: 0 });
+    let dist = Huffman::new(&[5u8; 30]).unwrap_or(Huffman { table: vec![0], first: 0 });
     (lit, dist)
 }
 
@@ -138,7 +219,7 @@ pub fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// `data` inflated, as long as it comes to no more than `limit` bytes.
 pub fn inflate_up_to(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
-    let mut bits = Bits { data, pos: 0, buf: 0, have: 0 };
+    let mut bits = Bits { data, pos: 0, word: 0, have: 0 };
     let mut out: Vec<u8> = Vec::new();
     let too_big = || format!("it inflates to more than {limit} bytes");
     loop {
@@ -185,8 +266,13 @@ pub fn inflate_up_to(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
                         return Err(too_big());
                     }
                     let from = out.len() - back;
-                    for k in 0..len {
-                        out.push(out[from + k]);
+                    if back >= len && len >= 32 {
+                        out.extend_from_within(from..from + len);
+                    } else {
+                        // short, or reaching into what it is making: a byte at a time
+                        for k in 0..len {
+                            out.push(out[from + k]);
+                        }
                     }
                 }
             }

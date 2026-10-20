@@ -110,13 +110,20 @@ impl Grain {
             seed: crate::noise::mix(&[0x6a1, ctx.num("randomSeed", 0.0).max(0.0) as u64]),
             balance: three("redBalance", "greenBalance", "blueBalance"),
         };
-        // a film stock's look on top: strength, size, softness, colour, black and white
+        // a film stock's look on top: strength, size, softness, colour, black and white. Grain
+        // grows with the film's speed, and looks bigger the smaller the frame it is on (16 mm is
+        // about 2.2 times smaller than 35 mm, 8 mm about 4.4 times); a video sensor's noise is
+        // fine, sharp and fully coloured
         let (ki, ks, soft, ksat, mono) = match preset {
-            1 => (0.6, 0.7, 0.2, 0.6, false),
-            2 => (1.3, 1.8, 0.4, 0.8, false),
-            3 => (1.8, 2.5, 0.8, 0.5, false),
+            // slow 35 mm colour film
+            1 => (0.6, 0.75, 0.2, 0.6, false),
+            // faster 16 mm colour film
+            2 => (1.3, 0.75 * 2.2, 0.4, 0.75, false),
+            // 8 mm, faded
+            3 => (1.8, 0.6 * 4.4, 0.8, 0.5, false),
             4 => (1.0, 0.6, 0.0, 1.0, false),
-            5 => (1.6, 1.4, 0.3, 1.0, true),
+            // fast 35 mm black and white
+            5 => (1.6, 1.35, 0.3, 1.0, true),
             _ => return g,
         };
         g.intensity *= ki;

@@ -98,3 +98,19 @@ fn archives_both_ways() {
     assert!(unzip(&broken).unwrap_err().contains("check sum"));
     assert!(unzip(b"not an archive at all").is_err());
 }
+
+/// How fast inflate is (run by hand: cargo test -p veymelo-zip --release inflate_speed -- --ignored --nocapture).
+#[test]
+#[ignore]
+fn inflate_speed() {
+    let mut data = noise(4_000_000, 5);
+    for (i, b) in data.iter_mut().enumerate() {
+        *b = if i % 7 < 4 { (i / 300 % 40) as u8 + b'a' } else { *b % 16 };
+    }
+    let packed = deflate(&data);
+    let started = std::time::Instant::now();
+    for _ in 0..5 {
+        assert_eq!(inflate(&packed).unwrap().len(), data.len());
+    }
+    eprintln!("inflate: {:.1} MB/s", 5.0 * data.len() as f64 / 1e6 / started.elapsed().as_secs_f64());
+}

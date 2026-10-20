@@ -200,6 +200,11 @@ pub fn read(ctx: &Ctx) -> Vec<MeshAt> {
 /// The most cells across the grid a mesh is found on (bigger layers are looked at coarser).
 const GRID_MOST: f64 = 1024.0;
 
+/// How much the turn and scale a bend or advanced pin asks of the edges round it count against
+/// the mesh keeping its shape: ten times an edge's own, so the pin's turn wins where it is and
+/// eases out into the mesh (see bend_pins_turn_about_themselves).
+const TURN_WEIGHT: f64 = 10.0;
+
 /// Meshes made lately, by what they were made from.
 static MADE: Mutex<Vec<(u64, Arc<Mesh>)>> = Mutex::new(Vec::new());
 
@@ -319,7 +324,7 @@ pub fn bent(mesh: &Mesh, pins: &[Pin], refine: usize) -> Vec<[f64; 2]> {
             let (s, c) = p.rotation.to_radians().sin_cos();
             for &j in &neighbours[v] {
                 let e = [mesh.verts[j][0] - r[0], mesh.verts[j][1] - r[1]];
-                holds.sides.push(arap::Side { i: v, j, to: [p.scale * (e[0] * c - e[1] * s), p.scale * (e[0] * s + e[1] * c)], weight: 10.0 });
+                holds.sides.push(arap::Side { i: v, j, to: [p.scale * (e[0] * c - e[1] * s), p.scale * (e[0] * s + e[1] * c)], weight: TURN_WEIGHT });
             }
         }
     }
