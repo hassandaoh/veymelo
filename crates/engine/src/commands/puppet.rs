@@ -1,6 +1,6 @@
 //! A puppet's pins animated by hand: a pin dragged over time recorded as its position's keys
-//! (other pins dragged along with it), and pins that trail another the way hair, cloth or a tail
-//! trails what pulls it (follow-through), by expressions.
+//! (other pins dragged along with it), a pin sent along a path, and pins that trail another the
+//! way hair, cloth or a tail trails what pulls it (follow-through), by expressions.
 
 use veymelo_json::Value as Json;
 use veymelo_keyframe::Value;
@@ -9,7 +9,7 @@ use veymelo_project::{Group, Layer, Node};
 use super::assist::{Take, recorded};
 use super::key::store;
 use super::link::{plain_reference, reference};
-use super::{COMP, Command, LAYER, Run, layer_ids};
+use super::{COMP, Command, LAYER, Run, find_layer, layer_ids};
 use crate::{Args, Ctx, Error, Param, Result, Ty};
 
 pub fn commands() -> Vec<Command> {
@@ -32,6 +32,26 @@ pub fn commands() -> Vec<Command> {
             },
             returns: "{keys, start, end, pins}",
             run: Run::Edit(record),
+        },
+        Command {
+            id: "puppet.alongPath",
+            label: "Pin Along a Path",
+            summary: "Send a puppet pin along a path at one speed from `start` for `duration`: a mask's or shape's path (`path`, on this layer or on `from`), or points given in the layer's pixels. Its position gets a key at each of the path's corners, the curve between them the path's own, the keys between the first and the last roving (so it never speeds up or slows down); its keys there before are replaced.",
+            params: const {
+                &[
+                    COMP,
+                    LAYER,
+                    Param::need("pin", Ty::Text, "the pin: its path (puppet.pin gives it) or its name"),
+                    Param::opt("path", Ty::Text, "the path to follow: a property holding one, as \"masks/Mask 1/path\" or \"contents/Shape 1/contents/Path 1/path\""),
+                    Param::opt("from", Ty::Layer, "the layer `path` is on (default this one); its path is taken where it is in the composition at `start`"),
+                    Param::opt("points", Ty::List, "or the path as [[x, y], …] in the layer's pixels (straight between them)"),
+                    Param::opt("start", Ty::Time, "when it sets out (default: the view's time)"),
+                    Param::opt("duration", Ty::Number, "how long it takes, in seconds (default 2)"),
+                    Param::opt("reverse", Ty::Bool, "go the other way round"),
+                ]
+            },
+            returns: "{pin, keys, start, end}",
+            run: Run::Edit(along_path),
         },
         Command {
             id: "puppet.follow",
@@ -189,4 +209,100 @@ fn follow(cx: &mut Ctx, a: &Args) -> Result<Json> {
     }
     cx.label = Some("Follow-Through".into());
     Ok(Json::object([("leader", Json::from(leader)), ("pins", Json::Array(out))]))
+}
+
+/// A path's corners, their in and out tangents, and whether it closes.
+type Corners = (Vec<[f64; 2]>, Vec<[f64; 2]>, Vec<[f64; 2]>, bool);
+
+fn along_path(cx: &mut Ctx, a: &Args) -> Result<Json> {
+    let (cid, lid) = layer_ids(cx.project, cx.view, a)?;
+    let comp = cx.project.comp(cid).expect("found");
+    let layer = comp.layer(lid).expect("found");
+    let target = pin(layer, a.text("pin").unwrap_or(""))?;
+    let start = comp.frame_rate.snap_nearest(a.time("start").unwrap_or(cx.view.time));
+    let duration = a.num("duration").unwrap_or(2.0);
+    if !(duration > 0.0 && duration <= 3600.0) {
+        return Err(Error::params(format!("`duration` is more than 0 and at most 3600 seconds, not {duration}")));
+    }
+    // the path: its corners and their tangents, in this layer's pixels
+    let (mut points, mut ins, mut outs, closed): Corners = match (a.text("path"), a.json("points")) {
+        (Some(path), _) => {
+            let from = match a.json("from") {
+                Some(j) => find_layer(comp, j)?,
+                None => lid,
+            };
+            let other = comp.layer(from).expect("found");
+            let eval = veymelo_expr::Eval::new(cx.project);
+            let p = other.props.prop(path).map_err(Error::not_found)?;
+            let Value::Path(shape) = eval.value(p, eval.place(comp, other), start) else {
+                return Err(Error::params(format!("\"{path}\" on \"{}\" is not a path", other.name)));
+            };
+            // from its layer to the composition, then into this one
+            let there = eval.world(eval.place(comp, other), start, None);
+            let here = eval.world(eval.place(comp, layer), start, None).inverse().ok_or_else(|| Error::refused(format!("\"{}\" is squashed flat at that time", layer.name)))?;
+            let m = here * there;
+            let point = |q: [f64; 2]| {
+                let r = m.apply(veymelo_geom::vec3(q[0], q[1], 0.0));
+                [r.x, r.y]
+            };
+            let way = |q: [f64; 2]| {
+                let r = m.apply_vec(veymelo_geom::vec3(q[0], q[1], 0.0));
+                [r.x, r.y]
+            };
+            let n = shape.points.len();
+            let tangent = |list: &Vec<[f64; 2]>, i: usize| list.get(i).copied().unwrap_or([0.0; 2]);
+            (shape.points.iter().map(|q| point(*q)).collect(), (0..n).map(|i| way(tangent(&shape.in_tangents, i))).collect(), (0..n).map(|i| way(tangent(&shape.out_tangents, i))).collect(), shape.closed)
+        }
+        (None, Some(Json::Array(list))) => {
+            let pts: Vec<[f64; 2]> = list
+                .iter()
+                .enumerate()
+                .map(|(i, v)| match v.as_array().map(|q| q.iter().filter_map(Json::as_f64).collect::<Vec<_>>()) {
+                    Some(q) if q.len() == 2 => Ok([q[0], q[1]]),
+                    _ => Err(Error::params(format!("point {} is [x, y], not {}", i + 1, v.to_json()))),
+                })
+                .collect::<Result<_>>()?;
+            let n = pts.len();
+            (pts, vec![[0.0; 2]; n], vec![[0.0; 2]; n], false)
+        }
+        _ => return Err(Error::params("give `path` (a property holding a path) or `points`")),
+    };
+    if points.len() < 2 {
+        return Err(Error::params("the path needs two points at least"));
+    }
+    // round a closed path back to where it began
+    if closed {
+        points.push(points[0]);
+        ins.push(ins[0]);
+        outs.push(outs[0]);
+    }
+    if a.bool("reverse").unwrap_or(false) {
+        points.reverse();
+        ins.reverse();
+        outs.reverse();
+        std::mem::swap(&mut ins, &mut outs);
+    }
+    let (t0, t1) = (layer.layer_time(start), layer.layer_time(start + veymelo_time::Tick::from_seconds(duration)));
+    let pos = layer.props.prop(&format!("{target}/position")).map_err(Error::not_found)?;
+    // its keys outside the trip kept; one at each corner, the middle ones roving
+    let mut keys: Vec<veymelo_keyframe::Keyframe> = pos.keys.iter().filter(|k| k.time < t0 || k.time > t1).cloned().collect();
+    let n = points.len();
+    for i in 0..n {
+        let f = i as f64 / (n - 1) as f64;
+        let mut k = veymelo_keyframe::Keyframe::new(t0 + veymelo_time::Tick::from_seconds((t1 - t0).seconds() * f), Value::Vec2(points[i]));
+        k.spatial_auto = false;
+        k.spatial_in = [ins[i][0], ins[i][1], 0.0];
+        k.spatial_out = [outs[i][0], outs[i][1], 0.0];
+        k.roving = i > 0 && i < n - 1;
+        keys.push(k);
+    }
+    let layer = cx.project.comp_mut(cid).expect("found").layer_mut(lid).expect("found");
+    store(layer, &format!("{target}/position"), keys)?;
+    cx.label = Some("Pin Along a Path".into());
+    Ok(Json::object([
+        ("pin", Json::from(target)),
+        ("keys", Json::Number(n as f64)),
+        ("start", Json::Number(start.seconds())),
+        ("end", Json::Number(start.seconds() + duration)),
+    ]))
 }

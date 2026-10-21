@@ -290,12 +290,15 @@ pub struct Ctx<'r> {
     pub comp_time: Tick,
     /// The composition's frame rate.
     pub rate: FrameRate,
+    /// Draw what an effect's own tool shows over its result (a puppet's meshes and pins), for a
+    /// preview.
+    pub marks: bool,
     notes: RefCell<Vec<String>>,
 }
 
 impl<'r> Ctx<'r> {
     pub fn new(effect: &'r Group, read: &'r dyn Fn(&Property) -> Value, time: Tick, bounds: Rect, seed: u64) -> Ctx<'r> {
-        Ctx { effect, read, time, bounds, seed, adjustment: false, float: false, index: 0, frame: Tick::from_seconds(1.0 / 30.0), masks: &[], read_at: None, host: None, shutter: None, comp_time: time, rate: FrameRate::default(), notes: RefCell::new(Vec::new()) }
+        Ctx { effect, read, time, bounds, seed, adjustment: false, float: false, index: 0, frame: Tick::from_seconds(1.0 / 30.0), masks: &[], read_at: None, host: None, shutter: None, comp_time: time, rate: FrameRate::default(), marks: false, notes: RefCell::new(Vec::new()) }
     }
 
     /// The value of the setting at `path` of the effect at layer time `t` (now, when the
@@ -485,6 +488,8 @@ pub struct Run<'r> {
     /// The composition's time as it is shown, and its frame rate.
     pub comp_time: Tick,
     pub rate: FrameRate,
+    /// Draw what the effects' own tools show (see [`Ctx::marks`]).
+    pub marks: bool,
 }
 
 /// Run a layer's effects, top to bottom, on its pixels. What they said goes to `notes`.
@@ -512,6 +517,7 @@ pub fn run_all(effects: &Group, buf: Buf, how: &Run, notes: &mut Vec<String>) ->
         ctx.shutter = how.shutter;
         ctx.comp_time = how.comp_time;
         ctx.rate = how.rate;
+        ctx.marks = how.marks;
         buf = (spec.run)(&ctx, buf);
         if let Some(levels) = how.levels {
             buf.img.clamp();

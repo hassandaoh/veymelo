@@ -98,6 +98,23 @@ pub fn commands() -> Vec<Command> {
             run: Run::Edit(liquify_stroke),
         },
         Command {
+            id: "puppet.remesh",
+            label: "Remake Puppet Mesh",
+            summary: "A puppet mesh keeps the outline of the part of the layer it was made over, so it stays the same while the layer's picture changes under it. This takes that outline again from the layer's pixels at a time (the part under the mesh's seed); with follow, the mesh keeps none and is made each frame from the pixels as they are then.",
+            params: const {
+                &[
+                    COMP,
+                    LAYER,
+                    Param::need("mesh", Ty::Text, "the mesh (\"Mesh 1\"…)"),
+                    Param::opt("effect", Ty::Text, "the Puppet effect (default: the layer's first)"),
+                    Param::opt("time", Ty::Time, "when the layer's pixels are looked at (default: the view's time)"),
+                    Param::opt("follow", Ty::Bool, "keep no outline: the mesh follows the pixels every frame"),
+                ]
+            },
+            returns: "{mesh, points}",
+            run: Run::Edit(puppet_remesh),
+        },
+        Command {
             id: "puppet.info",
             label: "Puppet Meshes",
             summary: "A layer's puppet meshes at a time: how many triangles, what part of the layer each covers, and its pins, where they were put and where they are.",
@@ -231,7 +248,7 @@ fn puppet_pin(cx: &mut Ctx, a: &Args) -> Result<Json> {
     let (cid, lid) = layer_ids(cx.project, cx.view, a)?;
     let t = a.time("time").unwrap_or(cx.view.time);
     // which puppet and which mesh, from the layer's pixels as they are
-    let (effect, mesh, note) = {
+    let (effect, mesh, note, outline) = {
         let project: &veymelo_project::Project = cx.project;
         let layer = project.comp(cid).expect("found").layer(lid).expect("found");
         if layer.props.group("effects").is_err() {
@@ -269,7 +286,9 @@ fn puppet_pin(cx: &mut Ctx, a: &Args) -> Result<Json> {
             }
         };
         let note = (!on && mesh.is_none()).then(|| format!("[{}, {}] is not on the layer's pixels; the new mesh covers the part nearest to it", at[0], at[1]));
-        (effect, mesh, note)
+        // a new mesh keeps the outline of the part it covers now
+        let outline = mesh.is_none().then(|| puppet::outline_of(&buf, at));
+        (effect, mesh, note, outline)
     };
     // new ids for what is made, then the change
     let (effect_id, mesh_id, pin_id) = (effect.is_none().then(|| cx.project.alloc()), mesh.is_none().then(|| cx.project.alloc()), cx.project.alloc());
@@ -291,7 +310,7 @@ fn puppet_pin(cx: &mut Ctx, a: &Args) -> Result<Json> {
     let meshes = fx.group_mut("meshes").expect("a puppet has meshes");
     let mesh = match (mesh, mesh_id) {
         (Some(m), _) => m,
-        (None, id) => insert(meshes, &puppet::MESH, id.unwrap_or(0), None, None, Some(&Json::object([("seed", Json::from(at))])))?.0,
+        (None, id) => insert(meshes, &puppet::MESH, id.unwrap_or(0), None, None, Some(&Json::object([("seed", Json::from(at)), ("outline", outline_json(&outline.unwrap_or_default()))])))?.0,
     };
     let pins = meshes.group_mut(&format!("{mesh}/pins")).expect("a mesh has pins");
     // where it was put, then what was given
@@ -317,6 +336,43 @@ fn puppet_pin(cx: &mut Ctx, a: &Args) -> Result<Json> {
         o.insert("note", n);
     }
     Ok(Json::Object(o))
+}
+
+/// An outline as a path property takes it.
+fn outline_json(points: &[[f64; 2]]) -> Json {
+    Json::object([("points", Json::array(points.iter().map(|p| Json::from(*p)))), ("closed", Json::from(true))])
+}
+
+fn puppet_remesh(cx: &mut Ctx, a: &Args) -> Result<Json> {
+    let (cid, lid) = layer_ids(cx.project, cx.view, a)?;
+    let t = a.time("time").unwrap_or(cx.view.time);
+    let wanted = a.text("mesh").unwrap_or("").trim_start_matches("meshes/").to_string();
+    let follow = a.bool("follow").unwrap_or(false);
+    let (fx, outline) = {
+        let project: &veymelo_project::Project = cx.project;
+        let layer = project.comp(cid).expect("found").layer(lid).expect("found");
+        let fx = puppet_name(layer, a).ok_or_else(|| Error::not_found(format!("\"{}\" has no Puppet effect (puppet.pin adds one)", layer.name)))?;
+        let m = layer.props.group(&format!("effects/{fx}/meshes/{wanted}")).map_err(Error::not_found)?;
+        let seed = m.prop("seed").map(|p| p.value.as_vec2()).unwrap_or([0.0; 2]);
+        let outline = if follow {
+            Vec::new()
+        } else {
+            let buf = veymelo_render::layer_pixels(project, cid, lid, t).ok_or_else(|| Error::refused(format!("\"{}\" shows nothing at {}s to make a mesh over", layer.name, t.seconds())))?;
+            let o = puppet::outline_of(&buf, seed);
+            if o.is_empty() {
+                return Err(Error::refused(format!("\"{}\" has nothing of its own under the mesh's seed [{}, {}] at {}s", layer.name, seed[0], seed[1], t.seconds())));
+            }
+            o
+        };
+        (fx, outline)
+    };
+    let layer = cx.project.comp_mut(cid).expect("found").layer_mut(lid).expect("found");
+    let name = layer.name.clone();
+    let p = layer.props.prop_mut(&format!("effects/{fx}/meshes/{wanted}/outline")).map_err(Error::not_found)?;
+    let value = veymelo_keyframe::Value::from_json(veymelo_keyframe::Kind::Path, &outline_json(&outline)).map_err(Error::params)?;
+    p.set_value(value).map_err(Error::params)?;
+    cx.label = Some(format!("Remake {wanted} of {name}"));
+    Ok(Json::object([("mesh", Json::from(format!("effects/{fx}/meshes/{wanted}"))), ("points", Json::Number(outline.len() as f64))]))
 }
 
 fn liquify_stroke(cx: &mut Ctx, a: &Args) -> Result<Json> {

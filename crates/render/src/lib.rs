@@ -70,11 +70,13 @@ pub struct Options {
     pub gpu: bool,
     /// A composition seen other than through its own camera (a preview looked round).
     pub orbit: Option<veymelo_expr::Orbit>,
+    /// Draw puppet meshes and pins over the layers they bend (a preview).
+    pub puppet_meshes: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { scale: 1.0, background: true, motion_blur: true, guides: false, quality: None, effects: None, solo: true, depth: None, proxies: ProxyUse::Current, gpu: veymelo_os::gpu::available(), orbit: None }
+        Options { scale: 1.0, background: true, motion_blur: true, guides: false, quality: None, effects: None, solo: true, depth: None, proxies: ProxyUse::Current, gpu: veymelo_os::gpu::available(), orbit: None, puppet_meshes: false }
     }
 }
 
@@ -766,6 +768,7 @@ impl<'a> Renderer<'a> {
             shutter: self.blurs(comp, layer).then_some((comp.motion_blur.angle, comp.motion_blur.phase, comp.motion_blur.samples)),
             comp_time: t + comp.start,
             rate: comp.frame_rate,
+            marks: self.options.puppet_meshes,
         };
         let mut notes = Vec::new();
         let done = veymelo_effects::run_all(effects, below.clone(), &how, &mut notes);
@@ -1050,6 +1053,7 @@ impl<'a> Renderer<'a> {
             shutter: self.blurs(comp, layer).then_some((comp.motion_blur.angle, comp.motion_blur.phase, comp.motion_blur.samples)),
             comp_time: t + comp.start,
             rate: comp.frame_rate,
+            marks: self.options.puppet_meshes,
         };
         let mut notes = Vec::new();
         let buf = veymelo_effects::run_all(effects, buf, &how, &mut notes);

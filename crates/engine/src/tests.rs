@@ -669,6 +669,99 @@ fn puppet_pins_by_command() {
 }
 
 #[test]
+fn a_puppet_mesh_keeps_the_shape_it_was_made_over() {
+    let (mut s, _, _) = started();
+    // the solid cut by a mask that shrinks by 50 all round over a second
+    run(&mut s, "mask.add", r#"{"layer": "Solid 1", "rect": [0, 0, 400, 200]}"#);
+    run(&mut s, "prop.keys", r#"{"layer": "Solid 1", "path": "masks/Mask 1/expansion", "keys": [{"t": 0, "v": 0}, {"t": 1, "v": -50}]}"#);
+    run(&mut s, "puppet.pin", r#"{"layer": "Solid 1", "at": [300, 100], "time": 0}"#);
+    let bounds = |s: &mut Session, t: f64| {
+        let info = run(s, "puppet.info", &format!(r#"{{"layer": "Solid 1", "time": {t}}}"#));
+        info.get("meshes").unwrap().as_array().unwrap()[0].get("bounds").unwrap().to_json()
+    };
+    // made over the whole solid, and still so once the mask has shrunk
+    assert_eq!(bounds(&mut s, 0.0), "[-3,-3,403,203]");
+    assert_eq!(bounds(&mut s, 1.0), "[-3,-3,403,203]", "the mesh keeps its shape");
+    // following the pixels, it is made over what is left each frame
+    run(&mut s, "puppet.remesh", r#"{"layer": "Solid 1", "mesh": "Mesh 1", "follow": true}"#);
+    assert_eq!(bounds(&mut s, 1.0), "[47,47,353,153]");
+    assert_eq!(bounds(&mut s, 0.0), "[-3,-3,403,203]");
+    // made again from what is left at 1 s: that from then on
+    let made = run(&mut s, "puppet.remesh", r#"{"layer": "Solid 1", "mesh": "Mesh 1", "time": 1}"#);
+    assert!(made.get("points").and_then(Json::as_f64).unwrap() >= 4.0, "{}", made.to_json());
+    assert_eq!(bounds(&mut s, 0.0), "[47,47,353,153]");
+    assert!(fails(&mut s, "puppet.remesh", r#"{"layer": "Solid 1", "mesh": "Mesh 9"}"#).contains("Mesh 9"));
+    // a preview can show the mesh, bent, and its pin: yellow lines over the red
+    run(&mut s, "prop.keys", r#"{"layer": "Solid 1", "path": "effects/Puppet/meshes/Mesh 1/pins/Puppet Pin 1/position", "keys": [{"t": 0, "v": [300, 100]}, {"t": 1, "v": [300, 160]}]}"#);
+    run(&mut s, "puppet.pin", r#"{"layer": "Solid 1", "at": [100, 100]}"#);
+    run(&mut s, "view.set", r#"{"time": 1}"#);
+    let yellow = |img: &veymelo_raster::Image| img.px.iter().filter(|p| p[0] > 0.8 && p[1] > 0.6 && p[2] < 0.3).count();
+    let plain = s.render(None, None, &render::Options::default()).unwrap().image;
+    let shown = s.render(None, None, &render::Options { puppet_meshes: true, ..render::Options::default() }).unwrap().image;
+    assert_eq!(yellow(&plain), 0);
+    assert!(yellow(&shown) > 2000, "{}", yellow(&shown));
+    if let Ok(dir) = std::env::var("VEYMELO_LOOK") {
+        std::fs::write(format!("{dir}/puppet-mesh.png"), render::to_png(&shown)).unwrap();
+    }
+    // saved and read back with its outline
+    let text = s.project().to_text();
+    assert!(text.contains("\"outline\""));
+    assert_eq!(&project::Project::from_text(&text, &catalog()).unwrap(), s.project());
+}
+
+#[test]
+fn a_moving_puppet_is_motion_blurred() {
+    let (mut s, _, _) = started();
+    run(&mut s, "puppet.pin", r#"{"layer": "Solid 1", "at": [20, 100]}"#);
+    run(&mut s, "puppet.pin", r#"{"layer": "Solid 1", "at": [380, 100]}"#);
+    run(&mut s, "prop.keys", r#"{"layer": "Solid 1", "path": "effects/Puppet/meshes/Mesh 1/pins/Puppet Pin 2/position", "keys": [{"t": 0, "v": [380, 100]}, {"t": 1, "v": [380, 700]}]}"#);
+    run(&mut s, "view.set", r#"{"time": 0.5}"#);
+    // the red over black part-way at the bent end's edges: few pixels sharp, many blurred
+    let soft = |s: &Session| s.render(None, None, &render::Options::default()).unwrap().image.px.iter().filter(|p| p[0] > 0.1 && p[0] < 0.9).count();
+    let sharp = soft(&s);
+    run(&mut s, "layer.set", r#"{"layer": "Solid 1", "switches": {"motionBlur": true}}"#);
+    let blurred = soft(&s);
+    assert!(blurred > 4 * sharp.max(1), "{sharp} {blurred}");
+    // still where nothing moves: the pinned end's edge as sharp as before
+    let img = s.render(None, None, &render::Options::default()).unwrap().image;
+    assert_eq!(img.color_at(345, 960).to_hex(), "#ff0000");
+    if let Ok(dir) = std::env::var("VEYMELO_LOOK") {
+        std::fs::write(format!("{dir}/puppet-blur.png"), render::to_png(&img)).unwrap();
+    }
+}
+
+#[test]
+fn a_puppet_pin_goes_along_a_path() {
+    let (mut s, _, _) = started();
+    let pin = run(&mut s, "puppet.pin", r#"{"layer": "Solid 1", "at": [20, 100]}"#);
+    let path = pin.get("path").and_then(Json::as_str).unwrap().to_string();
+    let at = |s: &mut Session, t: f64| -> [f64; 2] {
+        let v = run(s, "prop.get", &format!(r#"{{"layer": "Solid 1", "path": "{path}/position", "time": {t}}}"#));
+        let v = v.get("value").and_then(Json::as_array).unwrap();
+        [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()]
+    };
+    // straight sides 100 and 300 long over 4 s: at one speed, the corner at 1 s
+    let r = run(&mut s, "puppet.alongPath", r#"{"layer": "Solid 1", "pin": "Puppet Pin 1", "points": [[0, 0], [100, 0], [100, 300]], "start": 0, "duration": 4}"#);
+    assert_eq!(r.get("keys").and_then(Json::as_f64), Some(3.0));
+    let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 0.5;
+    assert!(near(at(&mut s, 0.0), [0.0, 0.0]) && near(at(&mut s, 1.0), [100.0, 0.0]) && near(at(&mut s, 2.0), [100.0, 100.0]) && near(at(&mut s, 4.0), [100.0, 300.0]), "{:?} {:?}", at(&mut s, 1.0), at(&mut s, 2.0));
+    // round an ellipse mask: halfway, on its far side from where it set out
+    run(&mut s, "mask.add", r#"{"layer": "Solid 1", "ellipse": [100, 50, 300, 150]}"#);
+    // (x, y, width, height: its middle at (250, 125), 150 across and 75 down from it)
+    run(&mut s, "puppet.alongPath", r#"{"layer": "Solid 1", "pin": "Puppet Pin 1", "path": "masks/Mask 1/path", "start": 0, "duration": 2}"#);
+    let (p0, p1, p2) = (at(&mut s, 0.0), at(&mut s, 1.0), at(&mut s, 2.0));
+    assert!(near([(p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0], [250.0, 125.0]), "{p0:?} {p1:?}");
+    assert!(near(p0, p2), "back where it began: {p0:?} {p2:?}");
+    // on the ellipse all the way round
+    for k in 0..20 {
+        let p = at(&mut s, k as f64 / 10.0);
+        let e = ((p[0] - 250.0) / 150.0).powi(2) + ((p[1] - 125.0) / 75.0).powi(2);
+        assert!((e - 1.0).abs() < 0.02, "{k}: {p:?} {e}");
+    }
+    assert!(fails(&mut s, "puppet.alongPath", r#"{"layer": "Solid 1", "pin": "Puppet Pin 1"}"#).contains("`path`"));
+}
+
+#[test]
 fn effects_blur_layers_and_what_is_under_adjustment_layers() {
     let (mut s, _, _) = started();
     let frame = |s: &mut Session| s.render(None, None, &render::Options::default()).unwrap();

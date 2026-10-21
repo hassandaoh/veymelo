@@ -65,6 +65,7 @@ pub const TOOLS: &[Tool] = &[
             Param::opt("background", Ty::Bool, "draw the background colour (default true)"),
             Param::opt("motionBlur", Ty::Bool, "blur moving layers that have motion blur on (default true)"),
             Param::opt("guides", Ty::Bool, "draw guide layers too (default false)"),
+            Param::opt("puppetMeshes", Ty::Bool, "draw each puppet's mesh (its triangles as bent now) and pins over the layer it bends (default false)"),
         ],
     },
     Tool {
@@ -192,6 +193,7 @@ fn preview(session: &mut Session, a: &Args) -> Reply {
         background: a.bool("background").unwrap_or(true),
         motion_blur: a.bool("motionBlur").unwrap_or(true),
         guides: a.bool("guides").unwrap_or(false),
+        puppet_meshes: a.bool("puppetMeshes").unwrap_or(false),
         ..Options::default()
     };
     let time = a.time("time");
