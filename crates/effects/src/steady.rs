@@ -27,7 +27,7 @@ effect!(
     [
         choice("result", "Result", &["smoothMotion", "noMotion"], 0).doc("smoothMotion: the camera's moves kept, smoothed; noMotion: held still"),
         pct("smoothness", "Smoothness", 50.0, 0.0, 1000.0).doc("how smooth: 100 smooths over about a second either way"),
-        choice("method", "Method", &["position", "positionScaleRotation", "perspective"], 2).doc("how a frame may be moved: shifted; shifted, turned and scaled; or in perspective"),
+        choice("method", "Method", &["position", "positionScaleRotation", "perspective", "subspaceWarp"], 2).doc("how a frame may be moved: shifted; shifted, turned and scaled; in perspective; or in perspective and bent on a grid so each part is steadied on its own (things near and far, a rolling shutter's wobble)"),
         choice("framing", "Framing", &["stabilizeOnly", "stabilizeCrop", "stabilizeCropAutoScale", "synthesizeEdges"], 2).doc("the moved frames' edges shown, cut to what every frame has, cut so and scaled up to fill, or what they leave empty filled from the frames round them"),
         pct("maximumScale", "Maximum Scale", 150.0, 100.0, 1000.0).doc("the most it scales up to hide the edges"),
         pct("additionalScale", "Additional Scale", 100.0, 1.0, 1000.0).doc("a scale on top"),
@@ -128,20 +128,25 @@ fn warp_stabilizer(ctx: &Ctx, buf: Buf) -> Buf {
     let settings = Settings {
         aim: if ctx.choice("result") == 1 { Aim::Still } else { Aim::Smooth },
         smoothness: ctx.num("smoothness", 50.0),
-        method: [Method::Position, Method::Similar, Method::Perspective][ctx.choice("method").min(2) as usize],
+        method: [Method::Position, Method::Similar, Method::Perspective, Method::Subspace][ctx.choice("method").min(3) as usize],
         framing: [Framing::Stabilize, Framing::Crop, Framing::CropScale, Framing::Synthesize][ctx.choice("framing").min(3) as usize],
         most_scale: ctx.num("maximumScale", 150.0),
         extra_scale: ctx.num("additionalScale", 100.0),
     };
     let plan = planned(key, &a, &settings);
+    if settings.method == Method::Subspace && plan.bends.is_empty() && a.frames.len() > 1 {
+        ctx.note("Warp Stabilizer's Subspace Warp needs the parts' own moves, which this analysis lacks: effect.analyze again".into());
+    }
     let k = a.frame_at(ctx.time.seconds());
-    let Some(back) = plan.maps[k].inverse() else { return buf };
+    if plan.maps[k].inverse().is_none() {
+        return buf;
+    }
     if settings.framing == Framing::Synthesize {
         return synthesized(ctx, buf, &a, &plan, k);
     }
     let [x0, y0, x1, y1] = a.rect;
     let (mid, half) = ([(x0 + x1) / 2.0, (y0 + y1) / 2.0], [(x1 - x0) / 2.0 * plan.keep, (y1 - y0) / 2.0 * plan.keep]);
-    redrawn(&buf, |p| back.apply(p), |p| (p[0] - mid[0]).abs() <= half[0] + 1e-9 && (p[1] - mid[1]).abs() <= half[1] + 1e-9)
+    redrawn(&buf, |p| plan.source(k, p, a.rect).unwrap_or(p), |p| (p[0] - mid[0]).abs() <= half[0] + 1e-9 && (p[1] - mid[1]).abs() <= half[1] + 1e-9)
 }
 
 /// Frame `k` stabilized, shown whole, what it leaves empty filled from the frames round it (the
@@ -150,7 +155,7 @@ fn warp_stabilizer(ctx: &Ctx, buf: Buf) -> Buf {
 /// moved. Its own picture fades into that over the edge feather.
 fn synthesized(ctx: &Ctx, buf: Buf, a: &Analysis, plan: &Plan, k: usize) -> Buf {
     let [x0, y0, x1, y1] = a.rect;
-    let backs: Vec<Option<veymelo_track::Warp>> = plan.maps.iter().map(|m| m.inverse()).collect();
+    let source = |j: usize, p: [f64; 2]| plan.source(j, p, a.rect);
     let within = |q: [f64; 2]| q[0] >= x0 && q[0] <= x1 && q[1] >= y0 && q[1] <= y1;
     // how far a point is inside the frame's picture (0 at its edge)
     let depth = |q: [f64; 2]| (q[0] - x0).min(x1 - q[0]).min(q[1] - y0).min(y1 - q[1]);
@@ -161,7 +166,9 @@ fn synthesized(ctx: &Ctx, buf: Buf, a: &Analysis, plan: &Plan, k: usize) -> Buf 
         let p = to_layer.apply(vec2((i % w) as f64 + 0.5, (i / w) as f64 + 0.5));
         [p.x, p.y]
     };
-    let Some(own) = backs[k] else { return buf };
+    if source(k, [x0, y0]).is_none() {
+        return buf;
+    }
     // its own picture where it reaches, as much as the feather lets it
     let mut out = Image::new(w, h);
     let mut wanted = vec![0f32; w * h];
@@ -171,7 +178,7 @@ fn synthesized(ctx: &Ctx, buf: Buf, a: &Analysis, plan: &Plan, k: usize) -> Buf 
             if !within(p) {
                 continue;
             }
-            let q = own.apply(p);
+            let Some(q) = source(k, p) else { continue };
             if within(q) {
                 let at = buf.pixel(vec2(q[0], q[1]));
                 let c = buf.img.sample(Sampling::Bilinear, at.x, at.y);
@@ -183,25 +190,28 @@ fn synthesized(ctx: &Ctx, buf: Buf, a: &Analysis, plan: &Plan, k: usize) -> Buf 
     for (i, want) in wanted.iter_mut().enumerate() {
         let p = point(i);
         if within(p) {
-            let q = own.apply(p);
-            *want = if within(q) { if feather > 0.0 { 1.0 - (depth(q) / feather).clamp(0.0, 1.0) as f32 } else { 0.0 } } else { 1.0 };
+            *want = match source(k, p).filter(|q| within(*q)) {
+                Some(q) if feather > 0.0 => 1.0 - (depth(q) / feather).clamp(0.0, 1.0) as f32,
+                Some(_) => 0.0,
+                None => 1.0,
+            };
         }
     }
     // the frames round it, nearest first, each read only where it is still wanted
     let host = ctx.host;
     for d in 1..=reach {
         for j in [k as isize - d as isize, k as isize + d as isize] {
-            if j < 0 || j as usize >= backs.len() || wanted.iter().all(|v| *v <= 0.0) {
+            if j < 0 || j as usize >= plan.maps.len() || wanted.iter().all(|v| *v <= 0.0) {
                 continue;
             }
-            let Some(back) = backs[j as usize] else { continue };
-            let takes: Vec<usize> = (0..w * h).filter(|&i| wanted[i] > 0.0 && within(back.apply(point(i)))).collect();
+            let j = j as usize;
+            let takes: Vec<usize> = (0..w * h).filter(|&i| wanted[i] > 0.0 && source(j, point(i)).is_some_and(within)).collect();
             if takes.is_empty() {
                 continue;
             }
             let Some(other) = host.and_then(|h| h.this_at(veymelo_time::Tick::from_seconds(a.start + j as f64 * a.step), ctx.index)) else { continue };
             for i in takes {
-                let q = back.apply(point(i));
+                let Some(q) = source(j, point(i)) else { continue };
                 let at = other.pixel(vec2(q[0], q[1]));
                 let c = other.img.sample(Sampling::Bilinear, at.x, at.y);
                 let k = wanted[i];

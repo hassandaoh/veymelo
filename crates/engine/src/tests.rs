@@ -3236,6 +3236,13 @@ fn shaky_footage_held_still_and_rolling_shutter_taken_out() {
     assert!(bare > 500 && empty(&filled) < bare / 10, "{bare} {}", empty(&filled));
     let whole = differ(&first, &filled, [0, 0, 320, 240]);
     assert!(whole < 0.02, "{whole}");
+    // bent on a grid too (Subspace Warp): the same ground, held as still
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {shot}, "path": "effects/Warp Stabilizer/method", "value": "subspaceWarp"}}"#));
+    let bent = frame(&s, 0.44);
+    assert!(bent.notes.is_empty(), "{:?}", bent.notes);
+    let held = differ(&first, &bent, middle);
+    assert!(held < 0.01, "{held}");
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {shot}, "path": "effects/Warp Stabilizer/method", "value": "perspective"}}"#));
     run(&mut s, "effect.set", &format!(r#"{{"layer": {shot}, "effect": "Warp Stabilizer", "enabled": false}}"#));
     let shaking = differ(&first, &frame(&s, 0.2), middle);
     assert!(shaking > 0.05, "{shaking}");
