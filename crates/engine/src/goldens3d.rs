@@ -361,6 +361,26 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("reflections", s, c, vec![0.0]));
     }
+    // see-through models: their own far sides seen through their near ones, nearest last — a
+    // see-through cube round a solid ball, a see-through torus, a see-through ball by a cone
+    {
+        let (mut s, c, _) = stage("see-through");
+        let cube = primitive(&mut s, "cube", [150.0, 175.0, 160.0], "#5aa9ff", 0.0, 0.4);
+        set(&mut s, cube, "transform/rotationY", "30");
+        set(&mut s, cube, "transform/rotationX", "20");
+        set(&mut s, cube, "materialOptions/baseColor", "[0.35, 0.66, 1.0, 0.35]");
+        primitive(&mut s, "sphere", [150.0, 175.0, 160.0], "#edae49", 0.0, 0.4);
+        set(&mut s, cube, "transform/scale", "[130, 130, 130]");
+        let ring = primitive(&mut s, "torus", [290.0, 170.0, 140.0], "#d1495b", 0.0, 0.4);
+        set(&mut s, ring, "transform/rotationX", "60");
+        set(&mut s, ring, "materialOptions/baseColor", "[0.82, 0.29, 0.36, 0.5]");
+        let ball = primitive(&mut s, "sphere", [380.0, 180.0, 150.0], "#2a9d8f", 0.0, 0.3);
+        set(&mut s, ball, "materialOptions/baseColor", "[0.16, 0.62, 0.56, 0.4]");
+        primitive(&mut s, "cone", [410.0, 180.0, 230.0], "#3b3b3b", 0.0, 0.6);
+        light(&mut s, "parallel", [40.0, -200.0, -240.0], false);
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("see-through", s, c, vec![0.0]));
+    }
     // caustics: a clear glass ball focusing a point light into a bright spot on the floor, a
     // tinted glass cube throwing its coloured light bent, beside an opaque cone's shadow
     {

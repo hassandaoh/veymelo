@@ -11,6 +11,11 @@
 #define TILE_W 32
 #define TILE_H 8
 
+// how many see-through triangles in front of the solid one a sample lays over it, and how many
+// triangles' colours a pixel keeps once worked out (meshes.rs)
+#define LAYERS 4
+#define DONE 8
+
 struct Vert {
     float4 screen;   // on the canvas, from the shot's corner: x, y; 1 / its depth
     float4 world;
@@ -266,9 +271,13 @@ kernel void mesh(device float4 *color [[buffer(0)]],
     if (at.x >= w || at.y >= params.a.y) return;
     float x = float(at.x), y = float(at.y);
     uint tile = (at.y / TILE_H) * params.a.z + at.x / TILE_W;
-    // the nearest triangle at each of the four samples, and its depth
+    // the nearest solid triangle at each of the four samples and its depth, and the nearest
+    // see-through ones in front of it (nearest first)
     float depth[4] = { INFINITY, INFINITY, INFINITY, INFINITY };
     uint who[4] = { NONE, NONE, NONE, NONE };
+    float lz[4][LAYERS];
+    uint lid[4][LAYERS];
+    uint ln[4] = { 0, 0, 0, 0 };
     for (uint k = starts[tile]; k < starts[tile + 1]; k++) {
         uint id = listed[k];
         Tri t = tris[id];
@@ -287,6 +296,21 @@ kernel void mesh(device float4 *color [[buffer(0)]],
             if (iz <= 0.0) continue;
             float z = 1.0 / iz;
             if (z >= depth[n]) continue;
+            if (m.more.z == 2) {
+                uint c = ln[n];
+                if (c == LAYERS && z >= lz[n][LAYERS - 1]) continue;
+                // in its place by depth (the farthest let go when there are too many)
+                uint j = min(c, uint(LAYERS - 1));
+                while (j > 0 && lz[n][j - 1] > z) {
+                    lz[n][j] = lz[n][j - 1];
+                    lid[n][j] = lid[n][j - 1];
+                    j--;
+                }
+                lz[n][j] = z;
+                lid[n][j] = id;
+                ln[n] = min(c + 1, uint(LAYERS));
+                continue;
+            }
             if (m.more.z == 1) {
                 // a mask: shown where its alpha is at least the cutoff
                 float3 bw = float3(w0 * a.screen.z, w1 * b.screen.z, w2 * c.screen.z) / iz;
@@ -303,30 +327,45 @@ kernel void mesh(device float4 *color [[buffer(0)]],
     float4 sum = float4(0.0);
     float near = INFINITY;
     uint closest = NONE;
-    uint done_id[4] = { NONE, NONE, NONE, NONE };
-    float4 done[4];
+    uint done_id[DONE];
+    float4 done[DONE];
+    uint kept = 0;
     float cx = x + 0.5, cy = y + 0.5;
     for (uint n = 0; n < 4; n++) {
         uint id = who[n];
-        if (id == NONE) continue;
-        if (depth[n] < near) {
-            near = depth[n];
-            closest = id;
+        // the see-through ones in front of the solid one
+        uint front = 0;
+        while (front < ln[n] && lz[n][front] < depth[n]) front++;
+        if (id == NONE && front == 0) continue;
+        float z = front > 0 ? lz[n][0] : depth[n];
+        if (z < near) {
+            near = z;
+            closest = front > 0 ? lid[n][0] : id;
         }
         float4 col = float4(0.0);
-        bool found = false;
-        for (uint k = 0; k < 4; k++) {
-            if (done_id[k] == id) {
-                col = done[k];
-                found = true;
-                break;
+        for (int l = -1; l < int(front); l++) {
+            // the solid one, then each see-through one from the farthest to the nearest
+            uint which = l < 0 ? id : lid[n][front - 1 - uint(l)];
+            if (which == NONE) continue;
+            float4 c = float4(0.0);
+            bool found = false;
+            for (uint k = 0; k < kept; k++) {
+                if (done_id[k] == which) {
+                    c = done[k];
+                    found = true;
+                    break;
+                }
             }
-        }
-        if (!found) {
-            Tri t = tris[id];
-            col = shade(s, t, inside(verts[t.v.x], verts[t.v.y], verts[t.v.z], cx, cy));
-            done_id[n] = id;
-            done[n] = col;
+            if (!found) {
+                Tri t = tris[which];
+                c = shade(s, t, inside(verts[t.v.x], verts[t.v.y], verts[t.v.z], cx, cy));
+                if (kept < DONE) {
+                    done_id[kept] = which;
+                    done[kept] = c;
+                    kept++;
+                }
+            }
+            col = l < 0 ? c : c + col * (1.0 - c.w);
         }
         sum += col * 0.25;
     }

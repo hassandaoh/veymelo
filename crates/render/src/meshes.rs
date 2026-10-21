@@ -231,7 +231,9 @@ pub(crate) fn primitive(eval: &veymelo_expr::Eval, at: veymelo_expr::Place, when
     if let Some(m) = kept.lock().ok().and_then(|k| k.get(&key).cloned()) {
         return m;
     }
-    let material = veymelo_model::Material { name: "Primitive".into(), base, metallic: metallic.clamp(0.0, 1.0), roughness: roughness.clamp(0.0, 1.0), emissive: [glow[0], glow[1], glow[2]], ..veymelo_model::Material::default() };
+    // a base colour not wholly opaque: see-through
+    let alpha = if base[3] < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque };
+    let material = veymelo_model::Material { name: "Primitive".into(), base, metallic: metallic.clamp(0.0, 1.0), roughness: roughness.clamp(0.0, 1.0), emissive: [glow[0], glow[1], glow[2]], alpha, ..veymelo_model::Material::default() };
     let mut model = veymelo_model::shapes::model(shape, &sizes, material);
     // +Y up and +Z toward the viewer turned to the layer's y down and z away (a half turn about
     // x, so its triangles keep their way round)
@@ -779,6 +781,11 @@ pub(crate) fn shoot(look: &Look) -> Option<Shot> {
 }
 
 /// Triangles `tris` filled on the processor, on canvas pixels `area` (x0, y0, x1, y1).
+/// How many see-through triangles in front of the solid one a sample of a model lays over it (the
+/// nearest), and how many triangles' colours a pixel keeps once worked out.
+const LAYERS: usize = 4;
+const DONE: usize = 8;
+
 fn fill(look: &Look, tris: Vec<Tri>, area: [usize; 4]) -> Option<Shot> {
     let [x0, y0, x1, y1] = area;
     let (w, h) = (x1 - x0, y1 - y0);
@@ -793,15 +800,18 @@ fn fill(look: &Look, tris: Vec<Tri>, area: [usize; 4]) -> Option<Shot> {
         }
     }
     let masked: Vec<Option<f32>> = (0..look.model.materials.len().max(1)).map(|i| look.model.materials.get(i).and_then(|m| if let AlphaMode::Mask(c) = m.alpha { Some(c) } else { None })).collect();
+    let see_through: Vec<bool> = (0..look.model.materials.len().max(1)).map(|i| look.model.materials.get(i).is_some_and(|m| m.alpha == AlphaMode::Blend)).collect();
     let mut px = vec![(f64::INFINITY, [0.0f32; 4], Facts::default()); w * h];
     let tris = Arc::new(tris);
     par::chunks(&mut px, BAND * w, |band, out| {
         let rows = out.len() / w;
         let top = y0 + band * BAND;
-        // two samples across and down a pixel: the nearest triangle at each and its depth
+        // two samples across and down a pixel: the nearest solid triangle at each and its depth,
+        // and the nearest see-through ones in front of it (nearest first)
         let (sw, sh) = (2 * w, 2 * rows);
         let mut depth = vec![f64::INFINITY; sw * sh];
         let mut who = vec![u32::MAX; sw * sh];
+        let mut layers = vec![([(f64::INFINITY, u32::MAX); LAYERS], 0usize); sw * sh];
         for &i in &binned[band] {
             let t = &tris[i];
             let s = &t.screen;
@@ -835,6 +845,21 @@ fn fill(look: &Look, tris: Vec<Tri>, area: [usize; 4]) -> Option<Shot> {
                     if z >= depth[at] {
                         continue;
                     }
+                    if see_through.get(t.material.unwrap_or(0)).copied().unwrap_or(false) {
+                        let (list, n) = &mut layers[at];
+                        if *n == LAYERS && z >= list[LAYERS - 1].0 {
+                            continue;
+                        }
+                        // in its place by depth (the farthest let go when there are too many)
+                        let mut m = (*n).min(LAYERS - 1);
+                        while m > 0 && list[m - 1].0 > z {
+                            list[m] = list[m - 1];
+                            m -= 1;
+                        }
+                        list[m] = (z, i as u32);
+                        *n = (*n + 1).min(LAYERS);
+                        continue;
+                    }
                     if let Some(c) = cutoff {
                         let b = [w0 * t.inv_z[0] / iz, w1 * t.inv_z[1] / iz, w2 * t.inv_z[2] / iz];
                         let m = &look.model.materials[t.material.unwrap_or(0)];
@@ -855,25 +880,39 @@ fn fill(look: &Look, tris: Vec<Tri>, area: [usize; 4]) -> Option<Shot> {
                 let mut sum = [0f32; 4];
                 let mut near = f64::INFINITY;
                 let mut nearest = u32::MAX;
-                let mut done: [(u32, Px); 4] = [(u32::MAX, [0.0; 4]); 4];
-                for (n, (dj, di)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+                let mut done: [(u32, Px); DONE] = [(u32::MAX, [0.0; 4]); DONE];
+                let mut kept = 0;
+                let mut colour_of = |id: u32| match done[..kept].iter().find(|d| d.0 == id) {
+                    Some(d) => d.1,
+                    None => {
+                        let t = &tris[id as usize];
+                        let c = shade(look, t, inside(t, x0 as f64 + x as f64 + 0.5, top as f64 + r as f64 + 0.5));
+                        if kept < DONE {
+                            done[kept] = (id, c);
+                            kept += 1;
+                        }
+                        c
+                    }
+                };
+                for (dj, di) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
                     let at = (2 * r + dj) * sw + 2 * x + di;
                     let id = who[at];
-                    if id == u32::MAX {
+                    let (list, n) = &layers[at];
+                    // the see-through ones in front of the solid one
+                    let front = list[..*n].iter().take_while(|l| l.0 < depth[at]).count();
+                    if id == u32::MAX && front == 0 {
                         continue;
                     }
-                    if depth[at] < near {
-                        (near, nearest) = (depth[at], id);
+                    let (z, first) = if front > 0 { list[0] } else { (depth[at], id) };
+                    if z < near {
+                        (near, nearest) = (z, first);
                     }
-                    let color = match done.iter().find(|d| d.0 == id) {
-                        Some(d) => d.1,
-                        None => {
-                            let t = &tris[id as usize];
-                            let c = shade(look, t, inside(t, x0 as f64 + x as f64 + 0.5, top as f64 + r as f64 + 0.5));
-                            done[n] = (id, c);
-                            c
-                        }
-                    };
+                    let mut color = if id == u32::MAX { [0.0; 4] } else { colour_of(id) };
+                    // laid over it from the farthest to the nearest
+                    for l in list[..front].iter().rev() {
+                        let c = colour_of(l.1);
+                        color = std::array::from_fn(|k| c[k] + color[k] * (1.0 - c[3]));
+                    }
                     (0..4).for_each(|c| sum[c] += color[c] * 0.25);
                 }
                 let facts = match tris.get(nearest as usize) {
