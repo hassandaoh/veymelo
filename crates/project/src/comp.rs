@@ -76,6 +76,9 @@ pub struct Comp {
     pub draft_3d: bool,
     /// How light bounces in its 3D scenes.
     pub bounce: Bounce,
+    /// How much of the light glass bends lands where it is bent to (caustics: the bright
+    /// patterns glass focuses), 0 (none: glass shadows let light straight through) to 4 (1: all).
+    pub caustics: f64,
     /// What it opens to the layers that show it.
     pub essentials: crate::essential::Essentials,
 }
@@ -166,6 +169,7 @@ impl Comp {
             enable_frame_blending: true,
             draft_3d: false,
             bounce: Bounce::default(),
+            caustics: 0.0,
         }
     }
 
@@ -215,6 +219,9 @@ impl Comp {
         if self.bounce != Bounce::default() {
             o.insert("lightBounce", Json::object([("amount", self.bounce.amount), ("bounces", self.bounce.bounces as f64)]));
         }
+        if self.caustics != 0.0 {
+            o.insert("caustics", self.caustics);
+        }
         for (key, on, default) in [("hideShy", self.hide_shy, false), ("enableMotionBlur", self.enable_motion_blur, true), ("enableFrameBlending", self.enable_frame_blending, true), ("draft3d", self.draft_3d, false)] {
             if on != default {
                 o.insert(key, on);
@@ -229,8 +236,8 @@ impl Comp {
         o.insert("layers", Json::array(self.layers.iter().map(Layer::to_json)));
     }
 
-    pub(crate) const FIELDS: [&'static str; 17] =
-        ["width", "height", "pixelAspect", "fps", "duration", "start", "background", "workArea", "posterTime", "motionBlur", "lightBounce", "hideShy", "enableMotionBlur", "enableFrameBlending", "draft3d", "essentials", "layers"];
+    pub(crate) const FIELDS: [&'static str; 18] =
+        ["width", "height", "pixelAspect", "fps", "duration", "start", "background", "workArea", "posterTime", "motionBlur", "lightBounce", "caustics", "hideShy", "enableMotionBlur", "enableFrameBlending", "draft3d", "essentials", "layers"];
 
     /// A composition from the object of its item (whose other fields are the item's).
     pub(crate) fn read(o: &Obj, catalog: &Catalog) -> Result<Comp, LoadError> {
@@ -288,6 +295,10 @@ impl Comp {
             if !(0.0..=4.0).contains(&c.bounce.amount) {
                 return fail(&at, "how much light bounces is 0 to 4 (1: all of it)");
             }
+        }
+        c.caustics = o.num_or("caustics", 0.0)?;
+        if !(0.0..=4.0).contains(&c.caustics) {
+            return fail(&o.at("caustics"), "how much of the light glass bends lands where it is bent to is 0 to 4 (1: all of it)");
         }
         c.hide_shy = o.flag("hideShy", false)?;
         c.enable_motion_blur = o.flag("enableMotionBlur", true)?;

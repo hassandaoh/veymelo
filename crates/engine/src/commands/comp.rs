@@ -61,6 +61,7 @@ pub fn commands() -> Vec<Command> {
                 Param::opt("hideShy", Ty::Bool, "leave shy layers out of the layer list"),
                 Param::opt("lightBounce", Ty::Number, "how much light bounces from surface to surface in its 3D scenes, in percent (global illumination: a red wall tints the floor by it, shadows fill with the light round them); 0 (the default) none, 100 all of it"),
                 Param::opt("bounces", Ty::Whole, "how many times light bounces on, 1 to 4 (default 2)"),
+                Param::opt("caustics", Ty::Number, "how much of the light glass bends lands where it is bent to, in percent (caustics: the bright patch a glass ball focuses on the floor, the ripples a glass shape throws); 0 (the default) none: glass shadows then let light straight through; 100 all of it"),
             ] },
             returns: "{comp}",
             run: Run::Edit(comp_set),
@@ -214,6 +215,12 @@ fn comp_set(cx: &mut Ctx, a: &Args) -> Result<Json> {
         }
         c.bounce.bounces = v as u32;
     }
+    if let Some(v) = a.num("caustics") {
+        if !(0.0..=400.0).contains(&v) {
+            return Err(Error::params(format!("`caustics` is 0 to 400 percent, not {v}")));
+        }
+        c.caustics = v / 100.0;
+    }
     Ok(Json::object([("comp", id as f64)]))
 }
 
@@ -248,6 +255,7 @@ fn comp_info(l: &Look, a: &Args) -> Result<Json> {
         ("workArea", Json::array([Json::Number(c.work_area.start.seconds()), Json::Number(c.work_area.end().seconds())])),
         ("posterTime", Json::Number(c.poster.seconds())),
         ("lightBounce", Json::object([("amount", Json::Number(c.bounce.amount * 100.0)), ("bounces", Json::Number(c.bounce.bounces as f64))])),
+        ("caustics", Json::Number(c.caustics * 100.0)),
         ("layers", Json::array(layers)),
     ]))
 }

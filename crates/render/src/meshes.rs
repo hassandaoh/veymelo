@@ -518,6 +518,11 @@ impl Caster {
         at
     }
 
+    /// The box round all its triangles: its lowest and highest corners (none: it has none).
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        self.nodes.first().map(|n| (n.0, n.1))
+    }
+
     /// Whether the ray from `from` along unit `dir` meets a triangle between `near` and `far`.
     pub fn blocks(&self, from: Vec3, dir: Vec3, near: f64, far: f64) -> bool {
         self.walk(from, dir, near, far, true).is_some()

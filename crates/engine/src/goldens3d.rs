@@ -298,6 +298,28 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("glass-shadows", s, c, vec![0.0]));
     }
+    // caustics: a clear glass ball focusing a point light into a bright spot on the floor, a
+    // tinted glass cube throwing its coloured light bent, beside an opaque cone's shadow
+    {
+        let (mut s, c, _) = stage("caustics");
+        run(&mut s, "comp.set", &format!(r#"{{"comp": {c}, "caustics": 100}}"#));
+        let ball = primitive(&mut s, "sphere", [175.0, 150.0, 150.0], "#f2f6ff", 0.0, 0.05);
+        set(&mut s, ball, "materialOptions/transparency", "95");
+        set(&mut s, ball, "materialOptions/indexOfRefraction", "1.5");
+        let box_ = primitive(&mut s, "cube", [300.0, 185.0, 130.0], "#7cc4ff", 0.0, 0.05);
+        set(&mut s, box_, "transform/rotationY", "35");
+        set(&mut s, box_, "transform/rotationX", "20");
+        set(&mut s, box_, "materialOptions/transparency", "85");
+        set(&mut s, box_, "materialOptions/indexOfRefraction", "1.4");
+        let cone = primitive(&mut s, "cone", [390.0, 180.0, 170.0], "#3b3b3b", 0.0, 0.6);
+        for m in [ball, box_, cone] {
+            set(&mut s, m, "materialOptions/castsShadows", "\"on\"");
+        }
+        let l = light(&mut s, "point", [200.0, -260.0, 60.0], true);
+        set(&mut s, l, "lightOptions/shadowDiffusion", "4");
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("caustics", s, c, vec![0.0]));
+    }
     // many layers: 120 cards in rows (more than the GPU once took), and a stack of 24 see-through
     // ones on one spot (more at a pixel than it keeps: those pixels are drawn by the processor)
     {

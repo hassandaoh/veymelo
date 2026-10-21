@@ -157,6 +157,8 @@ pub(crate) struct Plane {
     pub mirror: [f32; 4],
     pub map: [u32; 4],
     pub cell: [f32; 4],
+    pub caustic: [u32; 4],
+    pub bent: [f32; 4],
 }
 
 #[repr(C)]
@@ -216,6 +218,8 @@ pub(crate) struct Caster {
     pub map: [u32; 4],
     pub cell: [f32; 4],
     pub mirror: [f32; 4],
+    pub caustic: [u32; 4],
+    pub bent: [f32; 4],
 }
 
 impl Caster {
@@ -452,8 +456,8 @@ mod tests {
 
     #[test]
     fn the_structs_are_as_big_as_the_kernel_reads_them() {
-        assert_eq!(std::mem::size_of::<Plane>(), 19 * 16);
-        assert_eq!(std::mem::size_of::<Caster>(), 12 * 16);
+        assert_eq!(std::mem::size_of::<Plane>(), 21 * 16);
+        assert_eq!(std::mem::size_of::<Caster>(), 14 * 16);
         assert_eq!(std::mem::size_of::<crate::meshes::Face>(), 8 * 16);
         assert_eq!(std::mem::size_of::<Probe>(), 2 * 16);
         assert_eq!(std::mem::size_of::<BounceParams>(), 2 * 16);

@@ -26,6 +26,8 @@ use veymelo_time::Tick;
 use crate::scene::{self, Camera, Focus, Light, Material, NEAR};
 use crate::{Renderer, Take};
 
+mod caustics;
+
 /// A layer standing in the scene.
 struct Plane<'d> {
     /// Its place in the stack (higher: above).
@@ -60,6 +62,8 @@ struct Plane<'d> {
     keep_under: bool,
     /// The points the light bouncing onto it is gathered at (none: none bounces onto it).
     grid: Option<crate::bounce::Grid>,
+    /// The cells the light glass bends onto it is gathered in (none: none is).
+    caustic: Option<crate::bounce::Grid>,
 }
 
 impl Plane<'_> {
@@ -635,6 +639,7 @@ impl<'a> Renderer<'a> {
                 matte: matte.clone(),
                 keep_under: layer.preserve_transparency,
                 grid: None,
+                caustic: None,
             });
         }
         if planes.is_empty() && models.is_empty() {
@@ -653,14 +658,14 @@ impl<'a> Renderer<'a> {
             })
             .collect();
         let casting_models: Vec<usize> = (0..models.len()).filter(|&i| posed[i].0.casts != 0 && !lights.is_empty()).collect();
-        let mut casting = Casting { models: casting_models.iter().map(|&i| (&*models[i].0.model.as_ref().expect("a model").0, &posed[i].1, posed[i].2)).collect(), trees: std::sync::OnceLock::new(), glass: Vec::new() };
+        let mut casting = Casting { models: casting_models.iter().map(|&i| (&*models[i].0.model.as_ref().expect("a model").0, &posed[i].1, posed[i].2)).collect(), trees: std::sync::OnceLock::new(), glass: Vec::new(), caustics: false };
         // every model (seen, or casting a shadow alone), for what hides the sky from a point and
         // what a mirror sees (each of its triangles as a reflection sees it, one after another)
         let open_reach = scene::occlusion_reach(&lights, env);
         let mirrors = planes.iter().map(|p| &p.material).chain(posed.iter().map(|(m, ..)| m)).any(|m| m.reflection > 0.0) || posed.iter().any(|(m, ..)| m.transparency > 0.0);
         // light bouncing (where there is light to bounce)
         let bounce = if comp.bounce.amount > 0.0 && (!lights.is_empty() || env.is_some()) { comp.bounce.amount as f32 } else { 0.0 };
-        let everything = Casting { models: if open_reach.is_some() || mirrors || bounce > 0.0 { models.iter().zip(&posed).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect() } else { Vec::new() }, trees: std::sync::OnceLock::new(), glass: Vec::new() };
+        let everything = Casting { models: if open_reach.is_some() || mirrors || bounce > 0.0 { models.iter().zip(&posed).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect() } else { Vec::new() }, trees: std::sync::OnceLock::new(), glass: Vec::new(), caustics: false };
         // the points the bouncing light is gathered at: a grid over each flat layer that takes
         // light (on the side the camera sees), then every model's vertices
         let mut probes: Vec<crate::bounce::Probe> = Vec::new();
@@ -691,15 +696,27 @@ impl<'a> Renderer<'a> {
             }
         }
         // each casting model's glass (a see-through model has its faces, mirrors or not)
-        casting.glass = casting_models.iter().map(|&i| (posed[i].0.transparency > 0.0 && i < face_first.len()).then(|| (posed[i].0.transparency, posed[i].0.clear_rolloff, face_first[i]))).collect();
+        casting.glass = casting_models.iter().map(|&i| (posed[i].0.transparency > 0.0 && i < face_first.len()).then(|| Glass { clear: posed[i].0.transparency, rolloff: posed[i].0.clear_rolloff, ior: posed[i].0.ior, first: face_first[i] })).collect();
+        // the light glass bends, landing where it is bent to (its cells after the bounce's
+        // points in the scene's light)
+        let mut bent: Vec<[f32; 3]> = Vec::new();
+        if comp.caustics > 0.0 && casting.glass.iter().any(Option::is_some) && lights.iter().any(|l| l.shadows) {
+            casting.caustics = true;
+            let none: Vec<[f32; 3]> = Vec::new();
+            let found = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None }.caustics(comp.caustics as f32);
+            for c in found {
+                planes[c.plane].caustic = Some(crate::bounce::Grid { first: probes.len() + bent.len(), ..c.grid });
+                bent.extend(c.light);
+            }
+        }
         // for the GPU: whether any casting model is glass, then each casting triangle's face (a
         // triangle of a model not glass: none)
         let glass_faces: Vec<u32> = if casting.glass.iter().any(Option::is_some) {
-            let mut v = vec![1u32];
+            let mut v = vec![if casting.caustics { 2u32 } else { 1 }];
             for (ci, &i) in casting_models.iter().enumerate() {
                 let triangles = crate::meshes::corners(casting.models[ci].0, casting.models[ci].1, &casting.models[ci].2).len() / 3;
                 match casting.glass[ci] {
-                    Some((.., first)) => v.extend((0..triangles).map(|j| (first + j) as u32)),
+                    Some(g) => v.extend((0..triangles).map(|j| (g.first + j) as u32)),
                     None => v.extend(std::iter::repeat_n(crate::gpu::NONE, triangles)),
                 }
                 let _ = i;
@@ -727,6 +744,8 @@ impl<'a> Renderer<'a> {
                         map: crate::gpu::Caster::grid(p.grid).0,
                         cell: crate::gpu::Caster::grid(p.grid).1,
                         mirror: [p.material.reflection, p.material.rolloff, 0.0, 0.0],
+                        caustic: crate::gpu::Caster::grid(p.caustic).0,
+                        bent: crate::gpu::Caster::grid(p.caustic).1,
                     };
                     (caster, &p.own.img)
                 })
@@ -764,6 +783,10 @@ impl<'a> Renderer<'a> {
             }
         };
         crate::bounce::smooth(&mut light, &planes.iter().filter_map(|p| p.grid).collect::<Vec<_>>());
+        if !bent.is_empty() {
+            light.resize(probes.len(), [0.0; 3]);
+            light.extend(bent);
+        }
         // the model layers, drawn with the shadows falling on them
         let shots: Vec<ModelShot> = {
             let lit = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None };
@@ -938,9 +961,21 @@ fn gather_on_gpu(sh: &crate::gpu::Shadows, probes: &[crate::bounce::Probe], ligh
 struct Casting<'m> {
     models: Vec<(&'m veymelo_model::Model, &'m veymelo_model::Pose, Mat4)>,
     trees: std::sync::OnceLock<Vec<crate::meshes::Caster>>,
-    /// Each model's glass, if it is see-through (how much, how much less face on, and where its
-    /// faces start): its shadow lets light through, tinted.
-    glass: Vec<Option<(f32, f32, usize)>>,
+    /// Each model's glass, if it is see-through: its shadow lets light through, tinted.
+    glass: Vec<Option<Glass>>,
+    /// Whether the light glass bends lands where it is bent to (caustics): then glass lets no
+    /// light straight through to a flat layer.
+    caustics: bool,
+}
+
+/// A see-through model casting a shadow: how much it is seen through and how much less face
+/// on, how much light bends going into it, and where its faces start.
+#[derive(Clone, Copy)]
+struct Glass {
+    clear: f32,
+    rolloff: f32,
+    ior: f32,
+    first: usize,
 }
 
 /// The most glass surfaces a shadow's ray is followed through, and how far past one the next is
@@ -1123,6 +1158,8 @@ impl Scene<'_> {
                 mirror: [p.material.reflection, p.material.sharpness, p.material.rolloff, 0.0],
                 map: gpu::Caster::grid(p.grid).0,
                 cell: gpu::Caster::grid(p.grid).1,
+                caustic: gpu::Caster::grid(p.caustic).0,
+                bent: gpu::Caster::grid(p.caustic).1,
             });
         }
         // depths from the middle of the scene, so they keep their precision
@@ -1419,6 +1456,11 @@ impl Scene<'_> {
             let k = p.material.diffuse * 2.0 * self.bounce;
             (0..3).for_each(|c| lit[c] += rgb[c] * k * e[c]);
         }
+        // the light glass bends onto it
+        if let Some(g) = p.caustic {
+            let e = g.at(self.light, u, v);
+            (0..3).for_each(|c| lit[c] += rgb[c] * p.material.diffuse * e[c]);
+        }
         // what it mirrors, mixed in
         if p.material.reflection > 0.0 {
             let facing = if p.normal.dot(viewer) < 0.0 { -p.normal } else { p.normal };
@@ -1551,7 +1593,11 @@ impl Scene<'_> {
             }
             let rgb = [t[0] / t[3], t[1] / t[3], t[2] / t[3]];
             let nn = if facing > 0.0 { -p.normal } else { p.normal };
-            let fell = p.grid.filter(|_| self.bounce > 0.0).map_or([0.0; 3], |g| g.at(self.light, hit.x, hit.y).map(|v| v * self.bounce));
+            let mut fell = p.grid.filter(|_| self.bounce > 0.0).map_or([0.0; 3], |g| g.at(self.light, hit.x, hit.y).map(|v| v * self.bounce));
+            if let Some(g) = p.caustic {
+                let e = g.at(self.light, hit.x, hit.y);
+                (0..3).for_each(|c| fell[c] += e[c] * 0.5);
+            }
             let lit = scene::seen_in_mirror(rgb, q + dir * s, nn, p.material.ambient, p.material.diffuse, p.material.lit, self.lights, self.env, fell);
             best = Some(Met { d: s, lit, n: nn, mirror: (p.material.reflection, p.material.rolloff), own: k });
         }
@@ -1571,14 +1617,18 @@ impl Scene<'_> {
                         return [0.0; 3];
                     }
                 }
-                // through glass, surface after surface: each lets through its part, tinted
-                Some((clear, rolloff, first)) => {
+                // through glass, surface after surface: each lets through its part, tinted (none
+                // to a flat layer when the light it bends lands where it is bent to)
+                Some(g) => {
                     let mut near = 1.0;
                     for _ in 0..GLASS_CROSSINGS {
                         let Some((d, which, u, v)) = tree.nearest(q, dir, near, len - 1.0) else { break };
-                        let (n, rgb) = glass_at(&self.faces[first + which as usize], u, v);
+                        if self.casting.caustics && own != usize::MAX {
+                            return [0.0; 3];
+                        }
+                        let (n, rgb) = glass_at(&self.faces[g.first + which as usize], u, v);
                         for c in 0..3 {
-                            pass[c] *= through_glass(clear, rolloff, n, dir, rgb[c]);
+                            pass[c] *= through_glass(g.clear, g.rolloff, n, dir, rgb[c]);
                         }
                         near = d + GLASS_STEP;
                     }

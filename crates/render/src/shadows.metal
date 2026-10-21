@@ -66,6 +66,8 @@ struct Caster {
     uint4 map;       // the points the light bouncing onto it is gathered at: the first, across, down; whether it has them
     float4 cell;     // where they are: the grid's corner (its own units), a cell across and down
     float4 mirror;   // how much it mirrors, how much less face on
+    uint4 caustic;   // the cells the light glass bends onto it is gathered in, as `map`
+    float4 bent;     // and where they are, as `cell`
 };
 
 // The light bouncing onto a flat layer at its point (u, v), between the points of its grid
@@ -139,6 +141,9 @@ static float3 pass_from(thread const Shadows &sh, uint own, float3 q, float3 dir
             if (h.type != intersection_type::triangle) break;
             uint fi = sh.glass[1 + h.primitive_id];
             if (fi == NONE) return float3(0.0);
+            // none straight through to a flat layer when the light glass bends lands where it
+            // is bent to
+            if (sh.glass[0] == 2 && own != NONE) return float3(0.0);
             const device Face &f = sh.faces[fi];
             float2 b = h.triangle_barycentric_coord;
             float3 wt = float3(1.0 - b.x - b.y, b.x, b.y);
@@ -378,6 +383,7 @@ static Met meet(thread const Shadows &sh, thread const Seen &by, uint own, float
         if (t.w < 0.5) continue;
         float3 nn = facing > 0.0 ? -p.normal.xyz : p.normal.xyz;
         float3 fell = (by.amount > 0.0 && p.map.w != 0) ? grid_at(by.light, p.map, p.cell, hit.x, hit.y) * by.amount : float3(0.0);
+        if (p.caustic.w != 0) fell += grid_at(by.light, p.caustic, p.bent, hit.x, hit.y) * 0.5;
         m = { true, s, seen_in_mirror(by, t.xyz / t.w, q + dir * s, nn, p.mat.x, p.mat.y, p.mat.z > 0.5, fell), nn, p.mirror.xy, p.img.w };
     }
     return m;

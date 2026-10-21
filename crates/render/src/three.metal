@@ -31,6 +31,8 @@ struct Plane {
     float4 mirror;   // how much it mirrors, how sharply, how much less face on
     uint4 map;       // the points the light bouncing onto it is gathered at (Caster's)
     float4 cell;
+    uint4 caustic;   // the cells the light glass bends onto it is gathered in, as `map`
+    float4 bent;     // and where they are, as `cell`
 };
 
 // A model layer as drawn (lit already): its colours and its depths (from the scene's middle,
@@ -337,6 +339,8 @@ static float4 light(thread const World &s, uint i, float u, float v, float4 tx) 
     if (s.params->d.z > 0.0 && p.map.w != 0) {
         lit += rgb * (p.mat0.y * 2.0 * s.params->d.z) * grid_at(s.bounce, p.map, p.cell, u, v);
     }
+    // the light glass bends onto it
+    if (p.caustic.w != 0) lit += rgb * p.mat0.y * grid_at(s.bounce, p.caustic, p.bent, u, v);
     // what it mirrors, mixed in
     if (p.mirror.x > 0.0) {
         float r = p.mirror.x * (1.0 - p.mirror.z * clamp(dot(n, viewer), 0.0, 1.0));

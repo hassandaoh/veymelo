@@ -37,8 +37,13 @@ impl Grid {
     /// A grid over the rectangle from (`u0`, `v0`), `w` × `h` (its own units), its first point
     /// `first`.
     pub fn over(u0: f64, v0: f64, w: f64, h: f64, first: usize) -> Grid {
-        let cell = (w.max(h) / CELLS as f64).max(1e-6);
-        let (nx, ny) = (((w / cell).ceil() as usize).clamp(1, CELLS), ((h / cell).ceil() as usize).clamp(1, CELLS));
+        Grid::over_cells(u0, v0, w, h, first, CELLS)
+    }
+
+    /// The same with `cells` cells along its longer side (at most).
+    pub fn over_cells(u0: f64, v0: f64, w: f64, h: f64, first: usize, cells: usize) -> Grid {
+        let cell = (w.max(h) / cells as f64).max(1e-6);
+        let (nx, ny) = (((w / cell).ceil() as usize).clamp(1, cells), ((h / cell).ceil() as usize).clamp(1, cells));
         Grid { u0, v0, du: w / nx as f64, dv: h / ny as f64, nx, ny, first }
     }
 
