@@ -490,8 +490,8 @@ mod tests {
         let mut names = Vec::new();
         g.walk(&mut |path, _| names.push(path.to_string()));
         assert_eq!(names[0], "transform/anchor");
-        // transform's 11 and the material options' 15 (styles and the rest are empty lists)
-        assert_eq!(names.len(), 26);
+        // transform's 11 and the material options' 16 (styles and the rest are empty lists)
+        assert_eq!(names.len(), 27);
     }
 
     #[test]

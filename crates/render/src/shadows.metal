@@ -65,7 +65,7 @@ struct Caster {
     float4 mat;      // how it takes light: ambient, diffuse, takes light; seen (0: it casts its shadow alone)
     uint4 map;       // the points the light bouncing onto it is gathered at: the first, across, down; whether it has them
     float4 cell;     // where they are: the grid's corner (its own units), a cell across and down
-    float4 mirror;   // how much it mirrors, how much less face on
+    float4 mirror;   // how much it mirrors, how much less face on; whether it is seen in reflections
     uint4 caustic;   // the cells the light glass bends onto it is gathered in, as `map`
     float4 bent;     // and where they are, as `cell`
 };
@@ -89,7 +89,7 @@ struct Face {
     float4 colours[3];  // its corners' (w: how much the layer mirrors, how much less face on)
     float4 glow;
     uint4 probes;       // the points its corners' bouncing light was gathered at, its picture (NONE: none)
-    float4 uvs[2];      // its corners' points on its picture (u, v each); whether colours are worked in linear light
+    float4 uvs[2];      // its corners' points on its picture (u, v each); whether colours are worked in linear light, whether it is seen in reflections
 };
 
 // A picture as the GPU reads it, among others one after another.
@@ -412,11 +412,20 @@ struct Met {
 static Met meet(thread const Shadows &sh, thread const Seen &by, uint own, float3 q, float3 dir) {
     Met m = { false, INFINITY, float3(0.0), float3(0.0), float2(0.0), NONE };
 #if RAYS
-    // the nearest model (a pixel off the surface, so it does not see itself where it is)
-    ray r(q, dir, 1.0, INFINITY);
-    intersector<triangle_data> it;
-    intersection_result<triangle_data> h = it.intersect(r, sh.everything);
-    if (h.type == intersection_type::triangle) {
+    // the nearest model seen in reflections (a pixel off the surface, so it does not see itself
+    // where it is; past those that are not)
+    intersection_result<triangle_data> h;
+    bool hit = false;
+    float near = 1.0;
+    for (uint k = 0; k < GLASS_CROSSINGS && !hit; k++) {
+        ray r(q, dir, near, INFINITY);
+        intersector<triangle_data> it;
+        h = it.intersect(r, sh.everything);
+        if (h.type != intersection_type::triangle) break;
+        if (by.faces[h.primitive_id].uvs[1].w > 0.5) hit = true;
+        else near = h.distance + GLASS_STEP;
+    }
+    if (hit) {
         Face f = by.faces[h.primitive_id];
         float2 b = h.triangle_barycentric_coord;
         float3 w = float3(1.0 - b.x - b.y, b.x, b.y);
@@ -437,7 +446,7 @@ static Met meet(thread const Shadows &sh, thread const Seen &by, uint own, float
     for (uint c = 0; c < sh.count; c++) {
         const device Caster &p = sh.casters[c];
         float facing = dot(dir, p.normal.xyz);
-        if (p.img.w == own || p.mat.w == 0.0 || fabs(facing) < 1e-12) continue;
+        if (p.img.w == own || p.mat.w == 0.0 || p.mirror.z == 0.0 || fabs(facing) < 1e-12) continue;
         float s = dot(p.origin.xyz - q, p.normal.xyz) / facing;
         if (s <= 1e-6 || s >= m.d) continue;
         float3 hit = apply(p.unworld, q + dir * s);

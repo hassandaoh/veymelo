@@ -27,7 +27,7 @@ struct Plane {
     float4 mat1;     // metal, transmission, shine exponent
     uint4 flags;     // casts shadows (0 off, 1 on, 2 only), accepts them (0, 1, 2 only), takes light, blend mode
     uint4 more;      // seed, matte's first value (NONE: no matte), only over what is under, lit already
-    uint4 order;     // its place in the stack
+    uint4 order;     // its place in the stack; whether it is seen only in reflections
     float4 mirror;   // how much it mirrors, how sharply, how much less face on
     uint4 map;       // the points the light bouncing onto it is gathered at (Caster's)
     float4 cell;
@@ -396,7 +396,7 @@ static void gather(thread const World &s, uint x, uint y, float cx, float cy, th
     int xi = int(x), yi = int(y);
     for (uint i = 0; i < planes; i++) {
         const device Plane &p = s.planes[i];
-        if (xi < p.reach.x || xi >= p.reach.z || yi < p.reach.y || yi >= p.reach.w || p.flags.x == 2) continue;
+        if (xi < p.reach.x || xi >= p.reach.z || yi < p.reach.y || yi >= p.reach.w || p.flags.x == 2 || p.order.y != 0) continue;
         float du, dv, z;
         if (!under(p, cx, cy, du, dv, z)) continue;
         if (sample(s, p, du, dv, cx, cy).w <= 1e-5) continue;

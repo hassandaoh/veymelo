@@ -434,7 +434,7 @@ pub(crate) fn corners(model: &Model, pose: &Pose, place: &Mat4) -> Vec<[f32; 3]>
 /// see-through it is, in their w), the light it gives off (and how much less clear its glass is
 /// face on, in its w), the points the light bouncing onto its corners was gathered at and its
 /// picture among the scene's (`u32::MAX`: none), and its corners' points on that picture (u, v
-/// each; then whether colours are worked in linear light).
+/// each; then whether colours are worked in linear light, and whether it is seen in reflections).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Face {
@@ -513,7 +513,7 @@ pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, line
             let picture = mat.base_map.filter(|b| b.texture < model.textures.len()).map_or(u32::MAX, |b| pictures.get(b.texture).copied().unwrap_or(u32::MAX));
             let set = mat.base_map.map_or(0, |b| (b.set as usize).min(1));
             let uv = |i: usize| corner(t[i]).uv[set].map(|c| c as f32);
-            let uvs = [[uv(0)[0], uv(0)[1], uv(1)[0], uv(1)[1]], [uv(2)[0], uv(2)[1], linear as u32 as f32, 0.0]];
+            let uvs = [[uv(0)[0], uv(0)[1], uv(1)[0], uv(1)[1]], [uv(2)[0], uv(2)[1], linear as u32 as f32, (m.appears != 0) as u32 as f32]];
             let probes = [0, 1, 2, 3].map(|i| match first_probe {
                 Some(f) if i < 3 => (f + part_first + t[i] as usize) as u32,
                 _ if i == 3 => picture,
@@ -1248,7 +1248,8 @@ pub(crate) fn defocus(shot: Shot, focus: &crate::scene::Focus, k: f64, width: us
             } else if focus.sides == 0 {
                 veymelo_raster::filter::boxes(&img, d, d * focus.aspect.min(4.0), 1, veymelo_raster::filter::Edge::Clear)
             } else {
-                veymelo_raster::filter::boxes(&img, d / 3f64.sqrt(), d / 3f64.sqrt() * focus.aspect.min(4.0), 3, veymelo_raster::filter::Edge::Clear)
+                // the iris's own shape
+                veymelo_effects::blur::iris_blur(&img, d, focus.sides, focus.rotation, focus.roundness, focus.aspect.min(4.0), focus.fringe)
             }
         })
         .collect();
@@ -1339,7 +1340,7 @@ mod tests {
             light(veymelo_project::LightKind::Spot, vec3(250.0, -100.0, -400.0), vec3(-0.4, 0.15, 1.0).normalize(), 0.7),
             light(veymelo_project::LightKind::Ambient, Vec3::default(), vec3(0.0, 0.0, 1.0), 0.3),
         ];
-        let material = Material { casts: 0, transmission: 0.2, accepts: 1, lit, ambient: 1.0, diffuse: 0.6, specular: 0.5, shininess: 0.5, metal: 1.0, reflection: 0.0, sharpness: 1.0, rolloff: 0.0, transparency: 0.0, clear_rolloff: 0.0, ior: 1.0 };
+        let material = Material { casts: 0, transmission: 0.2, accepts: 1, lit, ambient: 1.0, diffuse: 0.6, specular: 0.5, shininess: 0.5, metal: 1.0, reflection: 0.0, sharpness: 1.0, rolloff: 0.0, transparency: 0.0, clear_rolloff: 0.0, ior: 1.0, appears: 1 };
         let unshadowed = |_: usize, _: Vec3| [1.0; 3];
         let pose = model.pose(None, 0.0);
         let (w, h) = (320, 240);

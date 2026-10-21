@@ -172,6 +172,30 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("focus", s, c, vec![0.0]));
     }
+    // bokeh: small bright lights far out of focus open into the iris's shape (a hexagon, turned,
+    // its rim brighter), a sphere in focus
+    {
+        let (mut s, c, cam) = stage("bokeh");
+        run(&mut s, "comp.set", &format!(r##"{{"comp": {c}, "background": "#10141c"}}"##));
+        primitive(&mut s, "sphere", [240.0, 170.0, 140.0], "#edae49", 0.0, 0.4);
+        for k in 0..7 {
+            let l = id(&run(&mut s, "layer.add", &format!(r##"{{"type": "solid", "color": "{}", "width": 40, "height": 40}}"##, ["#ffffff", "#ffd27a", "#9ad1ff"][k % 3])), "layer");
+            three_d(&mut s, l);
+            set(&mut s, l, "transform/position", &format!("[{}, {}, 900]", -60.0 + 100.0 * k as f64, 120.0 + 30.0 * (k % 3) as f64));
+            set(&mut s, l, "materialOptions/acceptsLights", "false");
+        }
+        set(&mut s, cam, "cameraOptions/depthOfField", "true");
+        set(&mut s, cam, "cameraOptions/focusDistance", "640");
+        set(&mut s, cam, "cameraOptions/aperture", "90");
+        set(&mut s, cam, "cameraOptions/irisShape", "\"hexagon\"");
+        set(&mut s, cam, "cameraOptions/irisRotation", "15");
+        set(&mut s, cam, "cameraOptions/irisDiffractionFringe", "40");
+        set(&mut s, cam, "cameraOptions/highlightGain", "100");
+        set(&mut s, cam, "cameraOptions/highlightThreshold", "150");
+        light(&mut s, "parallel", [40.0, -200.0, -240.0], false);
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("bokeh", s, c, vec![0.0]));
+    }
     // ambient occlusion: models standing on the floor and in a corner, a card leaning on one,
     // the ambient light kept out of the nooks
     {
@@ -317,6 +341,25 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "parallel", [40.0, -200.0, -240.0], false);
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("mirror-pictures", s, c, vec![0.0]));
+    }
+    // what mirrors show: a cube not seen in them, a ball seen only in them, a card seen in them
+    // and a torus not, over a mirror floor
+    {
+        let (mut s, c, _) = stage("reflections");
+        let floor = s.project().comp(c).and_then(|cp| cp.layers.iter().find(|l| l.name == "Floor").map(|l| l.id)).expect("the floor");
+        set(&mut s, floor, "materialOptions/reflectionIntensity", "80");
+        let cube = primitive(&mut s, "cube", [150.0, 185.0, 170.0], "#d1495b", 0.0, 0.5);
+        set(&mut s, cube, "materialOptions/appearsInReflections", "\"off\"");
+        let ball = primitive(&mut s, "sphere", [250.0, 180.0, 150.0], "#edae49", 0.0, 0.5);
+        set(&mut s, ball, "materialOptions/appearsInReflections", "\"only\"");
+        let card = id(&run(&mut s, "layer.add", r##"{"type": "solid", "color": "#30638e", "width": 70, "height": 90}"##), "layer");
+        three_d(&mut s, card);
+        set(&mut s, card, "transform/position", "[340, 175, 180]");
+        let ring = primitive(&mut s, "torus", [420.0, 200.0, 140.0], "#00798c", 0.0, 0.6);
+        set(&mut s, ring, "materialOptions/appearsInReflections", "\"off\"");
+        light(&mut s, "parallel", [40.0, -200.0, -240.0], false);
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("reflections", s, c, vec![0.0]));
     }
     // caustics: a clear glass ball focusing a point light into a bright spot on the floor, a
     // tinted glass cube throwing its coloured light bent, beside an opaque cone's shadow

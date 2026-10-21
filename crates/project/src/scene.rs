@@ -128,6 +128,7 @@ macro_rules! material_body {
             p(pct("transparency", "Transparency", 0.0).three_d().doc("a model seen through, as glass: what is behind it bent by its index of refraction and tinted by its colour")),
             p(pct("transparencyRolloff", "Transparency Rolloff", 0.0).three_d().doc("how much less clear it is seen edge on than face on")),
             p(num("indexOfRefraction", "Index of Refraction", 1.0).range(1.0, 3.0).three_d().doc("how much light bends going into it: 1 not at all, 1.33 water, 1.5 glass, 2.4 diamond")),
+            p(choice("appearsInReflections", "Appears in Reflections", SHADOW_CHOICES, 1).three_d().doc("seen in what mirrors and glass show (only: seen there and nowhere else)")),
             $($more,)*
         ])
     };

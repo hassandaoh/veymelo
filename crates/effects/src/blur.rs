@@ -744,6 +744,91 @@ fn iris(r: f64, sides: u32, rotation: f64, roundness: f64, aspect: f64) -> Rows 
     rows
 }
 
+/// How wide an iris (its radius, pixels) `iris_blur` blurs with at the picture's own size.
+const IRIS_WIDEST: f64 = 24.0;
+
+/// A picture blurred as an out-of-focus lens with an iris `d` pixels across blurs it (a 3D
+/// camera's depth of field): `sides` 3 to 10 (fewer: a circle), turned `rotation` degrees,
+/// `roundness` of the way to a circle (0 to 1), `tall` times as tall as it is wide, its rim
+/// `fringe` (0 to 1) brighter; clear past the picture's edges. A wider iris blurs the picture
+/// halved (and halved again) until it is no wider than IRIS_WIDEST, and is brought back up
+/// between those pixels: a blur so wide has no detail finer than them.
+pub fn iris_blur(img: &Image, d: f64, sides: u32, rotation: f64, roundness: f64, tall: f64, fringe: f64) -> Image {
+    let r = d / 2.0;
+    if r < 0.5 || img.is_empty() {
+        return img.clone();
+    }
+    let mut small = std::borrow::Cow::Borrowed(img);
+    let mut f = 1.0;
+    while r / f > IRIS_WIDEST {
+        small = std::borrow::Cow::Owned(small.half());
+        f *= 2.0;
+    }
+    let blurred = iris_here(&small, r / f, sides, rotation, roundness, tall.max(1e-3), fringe);
+    if f == 1.0 {
+        return blurred;
+    }
+    let mut out = Image::new(img.width, img.height);
+    par::rows(&mut out.px, img.width, |y, row| {
+        for (x, p) in row.iter_mut().enumerate() {
+            *p = blurred.sample(Sampling::Bilinear, (x as f64 + 0.5) / f, (y as f64 + 0.5) / f);
+        }
+    });
+    out
+}
+
+/// `iris_blur` at the picture's own size: each pixel the mean of those under the iris round it
+/// (its rows' sums from each row's running sum), the rim's more with a fringe.
+fn iris_here(img: &Image, r: f64, sides: u32, rotation: f64, roundness: f64, tall: f64, fringe: f64) -> Image {
+    let (w, h) = (img.width, img.height);
+    let shape = |r: f64| iris(r * tall, sides, rotation, roundness, 1.0 / tall);
+    let outer = shape(r);
+    let inner = if fringe > 0.0 && r * 0.8 >= 1.0 { shape(r * 0.8) } else { Vec::new() };
+    let sums: Vec<[f64; 4]> = {
+        let mut s = vec![[0f64; 4]; h * (w + 1)];
+        par::rows(&mut s, w + 1, |y, row| {
+            for x in 0..w {
+                let p = img.px[y * w + x];
+                row[x + 1] = std::array::from_fn(|c| row[x][c] + p[c] as f64);
+            }
+        });
+        s
+    };
+    let total = |rows: &[(i64, i64, i64)], x: usize, y: usize| -> [f64; 4] {
+        let mut acc = [0f64; 4];
+        for &(dy, l, rr) in rows {
+            let yy = y as i64 + dy;
+            if yy < 0 || yy >= h as i64 {
+                continue;
+            }
+            let (a, z) = ((x as i64 + l).max(0), (x as i64 + rr).min(w as i64 - 1));
+            if a <= z {
+                let row = &sums[yy as usize * (w + 1)..];
+                (0..4).for_each(|c| acc[c] += row[z as usize + 1][c] - row[a as usize][c]);
+            }
+        }
+        acc
+    };
+    let count = |rows: &[(i64, i64, i64)]| rows.iter().map(|(_, l, r)| (r - l + 1) as f64).sum::<f64>();
+    let (no, ni) = (count(&outer), count(&inner));
+    // the rim (outside the inner iris) takes more of the light with the fringe
+    let (inner_w, rim_w) = (1.0 - fringe, 1.0 + 4.0 * fringe);
+    let mut out = Image::new(w, h);
+    par::rows(&mut out.px, w, |y, row| {
+        for (x, p) in row.iter_mut().enumerate() {
+            let acc = if inner.is_empty() {
+                total(&outer, x, y).map(|v| v / no.max(1.0))
+            } else {
+                let (so, si) = (total(&outer, x, y), total(&inner, x, y));
+                let norm = (inner_w * ni + rim_w * (no - ni)).max(1e-9);
+                std::array::from_fn(|c| (inner_w * si[c] + rim_w * (so[c] - si[c])) / norm)
+            };
+            *p = acc.map(|v| v as f32);
+        }
+    });
+    out
+}
+
 fn lens(ctx: &Ctx, mut b: Buf) -> Buf {
     let r = ctx.num("blurRadius", 10.0).max(0.0) * b.scale;
     if r < 0.5 {

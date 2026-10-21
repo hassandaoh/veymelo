@@ -23,11 +23,13 @@ pub struct Focus {
     pub aperture: f64,
     /// 1 for 100 %.
     pub level: f64,
-    /// The iris: its sides (0 for a fast rectangle), turn (degrees), roundness and aspect.
+    /// The iris: its sides (0 for a fast rectangle), turn (degrees), roundness and aspect, and
+    /// how much brighter its rim is (0 to 1).
     pub sides: u32,
     pub rotation: f64,
     pub roundness: f64,
     pub aspect: f64,
+    pub fringe: f64,
     /// Highlights out of focus: gain, threshold (0 to 1), saturation.
     pub gain: f64,
     pub threshold: f64,
@@ -68,13 +70,14 @@ pub fn camera(eval: &Eval, comp: &Comp, t: Tick) -> Camera {
         distance: read("focusDistance", zoom),
         aperture: read("aperture", veymelo_project::scene::aperture_for(w)).max(0.0),
         level: read("blurLevel", 100.0).max(0.0) / 100.0,
-        sides: match read("irisShape", 0.0) as u32 {
+        sides: match opts.and_then(|g| g.prop("irisShape").ok()).map_or(0, |p| eval.value(p, at, t).as_choice()) {
             0 => 0,
             k => k + 2,
         },
         rotation: read("irisRotation", 0.0),
         roundness: (read("irisRoundness", 0.0) / 100.0).clamp(0.0, 1.0),
         aspect: read("irisAspectRatio", 1.0).max(0.01),
+        fringe: (read("irisDiffractionFringe", 0.0) / 500.0).clamp(0.0, 1.0),
         gain: (read("highlightGain", 0.0) / 100.0).clamp(0.0, 1.0),
         threshold: (read("highlightThreshold", 255.0) / 255.0).clamp(0.0, 1.0),
         saturation: (read("highlightSaturation", 0.0) / 100.0).clamp(0.0, 1.0),
@@ -216,6 +219,8 @@ pub struct Material {
     pub transparency: f32,
     pub clear_rolloff: f32,
     pub ior: f32,
+    /// Whether it is seen in what mirrors and glass show: 0 not, 1 yes, 2 only there.
+    pub appears: u32,
 }
 
 impl Material {
@@ -239,6 +244,7 @@ impl Material {
             transparency: part("transparency", 0.0).min(1.0),
             clear_rolloff: part("transparencyRolloff", 0.0).min(1.0),
             ior: value("indexOfRefraction").map_or(1.0, |v| v.as_f64()).clamp(1.0, 3.0) as f32,
+            appears: value("appearsInReflections").map_or(1, |v| v.as_choice()),
         }
     }
 

@@ -601,23 +601,7 @@ impl<'a> Renderer<'a> {
             if normal.length() < 1e-12 {
                 continue;
             }
-            // the canvas pixels its picture can cover
-            let (bw, bh) = (buf.img.width as f64 / buf.scale, buf.img.height as f64 / buf.scale);
-            let corners = [(0.0, 0.0), (bw, 0.0), (bw, bh), (0.0, bh)].map(|(dx, dy)| (buf.origin.x + dx, buf.origin.y + dy));
-            let mut reach = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
-            let mut behind = false;
-            for (u, v) in corners {
-                if depth_of[0] * u + depth_of[1] * v + depth_of[2] < NEAR {
-                    behind = true;
-                    continue;
-                }
-                let p = onto.apply(vec2(u, v));
-                reach = [reach[0].min(p.x.floor() as i64 - 1), reach[1].min(p.y.floor() as i64 - 1), reach[2].max(p.x.ceil() as i64 + 1), reach[3].max(p.y.ceil() as i64 + 1)];
-            }
-            if behind {
-                reach = [0, 0, canvas.width as i64, canvas.height as i64];
-            }
-            let reach = [reach[0].max(0), reach[1].max(0), reach[2].min(canvas.width as i64), reach[3].min(canvas.height as i64)];
+            let reach = reach_of(buf, depth_of, onto, canvas.width, canvas.height);
             planes.push(Plane {
                 order: *order,
                 own: buf,
@@ -746,7 +730,7 @@ impl<'a> Renderer<'a> {
                         mat: [p.material.ambient, p.material.diffuse, p.material.lit as u32 as f32, if p.material.casts == 2 { 0.0 } else { 1.0 }],
                         map: crate::gpu::Caster::grid(p.grid).0,
                         cell: crate::gpu::Caster::grid(p.grid).1,
-                        mirror: [p.material.reflection, p.material.rolloff, 0.0, 0.0],
+                        mirror: [p.material.reflection, p.material.rolloff, (p.material.appears != 0) as u32 as f32, 0.0],
                         caustic: crate::gpu::Caster::grid(p.caustic).0,
                         bent: crate::gpu::Caster::grid(p.caustic).1,
                     };
@@ -813,7 +797,7 @@ impl<'a> Renderer<'a> {
                 let layer = d.layer;
                 let model = &d.model.as_ref().expect("a model").0;
                 // its shadow alone
-                if material.casts == 2 {
+                if material.casts == 2 || material.appears == 2 {
                     continue;
                 }
                 let look = crate::meshes::Look {
@@ -873,6 +857,8 @@ impl<'a> Renderer<'a> {
                 let size = cam.zoom * p.across.length().max(p.down.length());
                 p.buf = Cow::Owned(defocus(b, focus, p.depth, size));
                 p.lit = true;
+                // as far as it spreads now
+                p.reach = reach_of(&p.buf, p.depth, p.onto, canvas.width, canvas.height);
             }
         }
         let reach = planes.iter().map(|p| p.reach).chain(shots.iter().map(|s| s.shot.reach())).fold([i64::MAX, i64::MAX, i64::MIN, i64::MIN], |r, p| [r[0].min(p[0]), r[1].min(p[1]), r[2].max(p[2]), r[3].max(p[3])]);
@@ -906,6 +892,28 @@ impl<'a> Renderer<'a> {
         }
         self.settle(canvas);
     }
+}
+
+/// The canvas pixels (x0, y0, x1, y1; on a canvas `width` × `height`) a layer's picture `buf`
+/// can cover, seen through `onto` (its depth at its point (u, v) by `depth`): all of them when
+/// part of it is behind the eye.
+fn reach_of(buf: &Buf, depth: [f64; 3], onto: Mat3, width: usize, height: usize) -> [i64; 4] {
+    let (bw, bh) = (buf.img.width as f64 / buf.scale, buf.img.height as f64 / buf.scale);
+    let corners = [(0.0, 0.0), (bw, 0.0), (bw, bh), (0.0, bh)].map(|(dx, dy)| (buf.origin.x + dx, buf.origin.y + dy));
+    let mut reach = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+    let mut behind = false;
+    for (u, v) in corners {
+        if depth[0] * u + depth[1] * v + depth[2] < NEAR {
+            behind = true;
+            continue;
+        }
+        let p = onto.apply(vec2(u, v));
+        reach = [reach[0].min(p.x.floor() as i64 - 1), reach[1].min(p.y.floor() as i64 - 1), reach[2].max(p.x.ceil() as i64 + 1), reach[3].max(p.y.ceil() as i64 + 1)];
+    }
+    if behind {
+        reach = [0, 0, width as i64, height as i64];
+    }
+    [reach[0].max(0), reach[1].max(0), reach[2].min(width as i64), reach[3].min(height as i64)]
 }
 
 /// How a layer's piece lays over what is behind it: its place in the stack, opacity, blend
@@ -1171,7 +1179,7 @@ impl Scene<'_> {
                 mat1: [p.material.metal, p.material.transmission, f(p.material.exponent()), 0.0],
                 flags: [p.material.casts, p.material.accepts, p.material.lit as u32, p.blend as u32],
                 more: [p.seed, matte_of(p.matte.as_ref()), p.keep_under as u32, p.lit as u32],
-                order: [p.order as u32, 0, 0, 0],
+                order: [p.order as u32, (p.material.appears == 2) as u32, 0, 0],
                 mirror: [p.material.reflection, p.material.sharpness, p.material.rolloff, 0.0],
                 map: gpu::Caster::grid(p.grid).0,
                 cell: gpu::Caster::grid(p.grid).1,
@@ -1289,7 +1297,7 @@ impl Scene<'_> {
         let mut out = Vec::new();
         for (i, p) in self.planes.iter().enumerate() {
             let (xi, yi) = (x as i64, y as i64);
-            if xi < p.reach[0] || xi >= p.reach[2] || yi < p.reach[1] || yi >= p.reach[3] || p.material.casts == 2 {
+            if xi < p.reach[0] || xi >= p.reach[2] || yi < p.reach[1] || yi >= p.reach[3] || p.material.casts == 2 || p.material.appears == 2 {
                 continue;
             }
             let Some((u, v, z)) = p.under(cx, cy) else { continue };
@@ -1321,7 +1329,7 @@ impl Scene<'_> {
         let mut out = Vec::new();
         for p in self.planes {
             let (xi, yi) = (x as i64, y as i64);
-            if xi < p.reach[0] || xi >= p.reach[2] || yi < p.reach[1] || yi >= p.reach[3] || p.material.casts == 2 {
+            if xi < p.reach[0] || xi >= p.reach[2] || yi < p.reach[1] || yi >= p.reach[3] || p.material.casts == 2 || p.material.appears == 2 {
                 continue;
             }
             let Some((u, v, z)) = p.under(cx, cy) else { continue };
@@ -1579,6 +1587,10 @@ impl Scene<'_> {
         // the nearest model (a pixel off the surface, so it does not see itself where it is)
         let mut best: Option<Met> = None;
         for (k, tree) in self.everything.trees().iter().enumerate() {
+            // (a model not seen in reflections: past it)
+            if self.faces.get(self.face_first[k]).is_some_and(|f| f.uvs[1][3] < 0.5) {
+                continue;
+            }
             let far = best.as_ref().map_or(f64::INFINITY, |b| b.d);
             if let Some((d, which, u, v)) = tree.nearest(q, dir, 1.0, far) {
                 let f = &self.faces[self.face_first[k] + which as usize];
@@ -1599,7 +1611,7 @@ impl Scene<'_> {
         // the nearest flat layer nearer still
         for (k, p) in self.planes.iter().enumerate() {
             let facing = dir.dot(p.normal);
-            if k == own || p.material.casts == 2 || facing.abs() < 1e-12 {
+            if k == own || p.material.casts == 2 || p.material.appears == 0 || facing.abs() < 1e-12 {
                 continue;
             }
             let s = (p.origin - q).dot(p.normal) / facing;
@@ -1852,7 +1864,7 @@ impl Scene<'_> {
 /// A layer's picture blurred as the camera sees it out of focus: each point as much as its depth
 /// is from the focus distance (`depth` gives the depth at layer point (u, v)), `size` the
 /// composition pixels a layer unit is at depth 1. Bright parts are first made brighter, as
-/// light out of focus is; a fast rectangle iris blurs into squares, the others into rounds.
+/// light out of focus is; a fast rectangle iris blurs into squares, the others into their shape.
 fn defocus(mut buf: Buf, focus: &Focus, depth: [f64; 3], size: f64) -> Buf {
     // how wide (the picture's pixels) a point at layer point (u, v) spreads
     let scale = buf.scale;
@@ -1896,8 +1908,8 @@ fn defocus(mut buf: Buf, focus: &Focus, depth: [f64; 3], size: f64) -> Buf {
             } else if focus.sides == 0 {
                 veymelo_raster::filter::boxes(&buf.img, d, d * focus.aspect.min(4.0), 1, veymelo_raster::filter::Edge::Clear)
             } else {
-                // three boxes a third as wide each: round
-                veymelo_raster::filter::boxes(&buf.img, d / 3f64.sqrt(), d / 3f64.sqrt() * focus.aspect.min(4.0), 3, veymelo_raster::filter::Edge::Clear)
+                // the iris's own shape
+                veymelo_effects::blur::iris_blur(&buf.img, d, focus.sides, focus.rotation, focus.roundness, focus.aspect.min(4.0), focus.fringe)
             }
         })
         .collect();
