@@ -97,6 +97,37 @@ fn turbulent(ctx: &Ctx, mut b: Buf) -> Buf {
     // how far in from a held edge the push is back to full
     let edge = (lw.min(lh) * if locked { 0.25 } else { 0.1 }).max(1.0);
     let seed = crate::noise::mix(&[0x7d15, ctx.num("randomSeed", 0.0).max(0.0) as u64]);
+    if veymelo_raster::gpu::wanted(b.img.px.len())
+        && let Some(oct) = crate::noise::gpu_octaves(octaves, falloff)
+    {
+        use crate::noise::split;
+        let p = GpuTurbulent {
+            w: b.img.width as u32,
+            h: b.img.height as u32,
+            kind,
+            pin,
+            locked: locked as u32,
+            pad: 0,
+            off_x: split(off.0),
+            off_y: split(off.1),
+            inv_size: split(1.0 / size),
+            lx: split(lx),
+            ly: split(ly),
+            lw: lw as f32,
+            lh: lh as f32,
+            edge: edge as f32,
+            amount: amount as f32,
+            e: split(0.05),
+            seed,
+            z: crate::noise::gpu_depth(z, period),
+        };
+        use veymelo_raster::gpu;
+        let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("warp.metal")]), name: "turbulent_displace" };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel, &p, [b.img.width, b.img.height]).with(&[oct])]) {
+            b.img = img;
+            return b;
+        }
+    }
     let noise = |u: f64, v: f64, k: u64| crate::noise::fractal(u, v, z, seed ^ k, octaves, falloff, period);
     b.img = remap(&b.img, false, |x, y| {
         let (u, v) = ((x - off.0) / size, (y - off.1) / size);
@@ -135,6 +166,32 @@ fn turbulent(ctx: &Ctx, mut b: Buf) -> Buf {
     });
     b
 }
+
+/// Turbulent Displace's settings as the GPU takes them (warp.metal's Turbulent).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuTurbulent {
+    w: u32,
+    h: u32,
+    kind: u32,
+    pin: u32,
+    locked: u32,
+    pad: u32,
+    off_x: [f32; 2],
+    off_y: [f32; 2],
+    inv_size: [f32; 2],
+    lx: [f32; 2],
+    ly: [f32; 2],
+    lw: f32,
+    lh: f32,
+    edge: f32,
+    amount: f32,
+    e: [f32; 2],
+    seed: u64,
+    z: crate::noise::GpuDepth,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuTurbulent {}
 
 /// What a map's pixel says, from 0 to 1: a channel of it, all the way, half way, or nothing.
 const SOURCES: &[&str] = &["red", "green", "blue", "alpha", "luminance", "hue", "lightness", "saturation", "full", "half", "off"];

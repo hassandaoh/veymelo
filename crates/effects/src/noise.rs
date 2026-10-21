@@ -80,3 +80,114 @@ pub fn fractal(x: f64, y: f64, z: f64, seed: u64, octaves: f64, falloff: f64, pe
     }
     sum / total.max(1e-9)
 }
+
+/// A double as two floats that add up to it (the second what the first leaves out), as the GPU
+/// holds places (noise.metal's df).
+pub(crate) fn split(v: f64) -> [f32; 2] {
+    let hi = v as f32;
+    [hi, (v - hi as f64) as f32]
+}
+
+/// What z is to [`smooth`] on the GPU, worked out once (noise.metal's Depth): its whole part, the
+/// period (0: none), how far past the whole part, and that faded.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct GpuDepth {
+    iz: i64,
+    period: i64,
+    w: f32,
+    c: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuDepth {}
+
+pub(crate) fn gpu_depth(z: f64, period: Option<i64>) -> GpuDepth {
+    let fz = z.floor();
+    let w = z - fz;
+    GpuDepth { iz: fz as i64, period: period.filter(|p| *p > 0).unwrap_or(0), w: w as f32, c: (w * w * w * (w * (w * 6.0 - 15.0) + 10.0)) as f32 }
+}
+
+/// The most octaves the GPU takes.
+pub(crate) const GPU_OCTAVES: usize = 24;
+
+/// [`fractal`]'s settings worked out once for the GPU (noise.metal's Octaves): how many octaves,
+/// the last one's part, the fall in strength, what the strengths add up to, the turn between
+/// octaves, and each octave's shift.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct GpuOctaves {
+    n: u32,
+    part: f32,
+    falloff: f32,
+    total: f32,
+    turn_c: [f32; 2],
+    turn_s: [f32; 2],
+    shift: [[f32; 4]; GPU_OCTAVES],
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuOctaves {}
+
+/// [`fractal`]'s `octaves` and `falloff` for the GPU (None: more octaves than it takes).
+pub(crate) fn gpu_octaves(octaves: f64, falloff: f64) -> Option<GpuOctaves> {
+    let n = octaves.ceil().max(1.0) as usize;
+    if n > GPU_OCTAVES {
+        return None;
+    }
+    let part = octaves - octaves.floor();
+    let (mut total, mut strength) = (0.0, 1.0);
+    let mut shift = [[0f32; 4]; GPU_OCTAVES];
+    for (o, s) in shift.iter_mut().enumerate().take(n) {
+        let weight = if o + 1 == n && part > 0.0 { part } else { 1.0 };
+        total += strength * weight;
+        strength *= falloff;
+        let (x, y) = (split(o as f64 * 17.3), split(o as f64 * 31.7));
+        *s = [x[0], x[1], y[0], y[1]];
+    }
+    let (s, c) = 0.61f64.sin_cos();
+    Some(GpuOctaves { n: n as u32, part: part as f32, falloff: falloff as f32, total: total as f32, turn_c: split(c), turn_s: split(s), shift })
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    /// The GPU's noise is the processor's to within a millionth (its places exact, its sums in
+    /// floats), over many places, octaves and depths.
+    #[test]
+    fn the_gpu_noise_is_the_processors() {
+        if !veymelo_raster::gpu::available() {
+            return;
+        }
+        use veymelo_raster::gpu;
+        const PROBE: &str = "struct Probe { uint w; float scale; df origin; ulong seed; Depth z; };\n\
+            kernel void probe(device float4 *out [[buffer(0)]], const device float4 *src [[buffer(1)]], constant Octaves &oct [[buffer(2)]], constant Probe &p [[buffer(3)]], uint2 g [[thread_position_in_grid]]) {\n\
+                df x = df_add(df_mul(df_of(float(g.x)), df_of(p.scale)), p.origin);\n\
+                df y = df_add(df_mul(df_of(float(g.y)), df_of(p.scale)), p.origin);\n\
+                out[g.y * p.w + g.x] = float4(fractal_noise(x, y, p.z, p.seed, oct), 0.0, 0.0, 0.0);\n\
+            }";
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Probe {
+            w: u32,
+            scale: f32,
+            origin: [f32; 2],
+            seed: u64,
+            z: super::GpuDepth,
+        }
+        unsafe impl gpu::Plain for Probe {}
+        let (w, h) = (128, 96);
+        let img = veymelo_raster::Image::new(w, h);
+        for (octaves, falloff, origin, scale, z) in [(1.0, 0.5, 0.0, 0.037, 0.3), (4.6, 0.5, -3.7, 0.11, 2.75), (10.0, 0.3, 120.25, 0.013, 7.0)] {
+            let p = Probe { w: w as u32, scale: scale as f32, origin: super::split(origin), seed: 99, z: super::gpu_depth(z, None) };
+            let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("noise.metal"), PROBE]), name: "probe" };
+            let out = gpu::apply(&img, &[gpu::Op::new(kernel, &p, [w, h]).with(&[super::gpu_octaves(octaves, falloff).unwrap()])]).unwrap();
+            let mut most = 0f64;
+            for y in 0..h {
+                for x in 0..w {
+                    let (u, v) = (x as f32 as f64 * scale as f32 as f64 + origin, y as f32 as f64 * scale as f32 as f64 + origin);
+                    let cpu = super::fractal(u, v, z, 99, octaves, falloff, None);
+                    most = most.max((out.px[y * w + x][0] as f64 - cpu).abs());
+                }
+            }
+            assert!(most <= 1e-6, "octaves {octaves}: {most:e}");
+        }
+    }
+}

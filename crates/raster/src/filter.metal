@@ -3,8 +3,7 @@
 // turned). A group of threads makes a stretch of a row together: the pixels it reads are fetched
 // once into memory the group shares, and each thread reads its own from there.
 
-#include <metal_stdlib>
-using namespace metal;
+// (after common.metal)
 
 // A pass: the picture's rows (`w` long, `h` of them), whether nothing lies past their ends
 // (else the end pixels go on), a bell's weights, and a box's width with where its ends lie
@@ -125,24 +124,6 @@ kernel void turn(device float4 *out [[buffer(0)]], const device float4 *src [[bu
             out[to.y * size.y + to.x] = square[t.x][k];
         }
     }
-}
-
-// Pixel (x, y) of a picture `w` × `h` (nothing outside it).
-inline float4 pixel(const device float4 *src, uint w, uint h, int x, int y) {
-    if (x < 0 || y < 0 || x >= int(w) || y >= int(h)) {
-        return float4(0.0);
-    }
-    return src[uint(y) * w + uint(x)];
-}
-
-// The picture between its pixels, `t` past pixel (x0, y0) toward the next across and down, as
-// the processor mixes them (across first, then down).
-inline float4 between(const device float4 *src, uint w, uint h, int x0, int y0, float2 t) {
-    float4 a = pixel(src, w, h, x0, y0), b = pixel(src, w, h, x0 + 1, y0);
-    float4 c = pixel(src, w, h, x0, y0 + 1), d = pixel(src, w, h, x0 + 1, y0 + 1);
-    float4 top = a + (b - a) * t.x;
-    float4 bottom = c + (d - c) * t.x;
-    return top + (bottom - top) * t.y;
 }
 
 struct Along {

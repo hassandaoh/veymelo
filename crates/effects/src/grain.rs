@@ -281,12 +281,137 @@ impl Fractal {
         if self.kind == 7 { best } else { sum / total.max(1e-6) }
     }
 
+    /// Each layer's place, turn, size, seed and strength as [`Fractal::raw`] works them out (the
+    /// same for every pixel), for the GPU; and what their strengths add up to.
+    fn gpu_layers(&self) -> (Vec<GpuLayer>, f32) {
+        let n = self.layers.ceil() as usize;
+        let part = self.layers - self.layers.floor();
+        let (mut total, mut strength, mut fine, mut depth) = (0f32, 1f32, 1f32, 1f32);
+        let mut out = Vec::with_capacity(n);
+        for o in 0..n {
+            let w = if o + 1 == n && part > 0.0 { part } else { 1.0 };
+            let of = o as f32;
+            let k = if self.perspective { depth } else { 1.0 } * (1.0 + self.turbulence * of);
+            let mut org = self.origin;
+            if k != 1.0 {
+                org = [self.centre[0] + (self.origin[0] - self.centre[0]) * k, self.centre[1] + (self.origin[1] - self.centre[1]) * k];
+            }
+            if !self.centre_subscale {
+                org = [org[0] + self.sub_offset[0] * of, org[1] + self.sub_offset[1] * of];
+            }
+            let (sub_s, sub_c) = (self.sub_turn * of).sin_cos();
+            let z = of * 7.31;
+            let e = if self.period.is_some() { self.evolution } else { self.evolution * (1.0 + self.turbulence * of) };
+            out.push(GpuLayer {
+                seed: crate::noise::mix(&[self.seed, o as u64]),
+                org_x: org[0],
+                org_y: org[1],
+                sub_s,
+                sub_c,
+                fine,
+                ez: e + z,
+                ez_a: e + (z + 3.1),
+                ez_c: e + (z + 5.7),
+                strength,
+                w,
+                push: if self.kind == 6 { 0.5 + of * 0.35 } else { 1.0 },
+                pad: 0.0,
+            });
+            total += strength * w;
+            strength *= self.influence;
+            fine /= self.sub_scaling;
+            depth *= self.sub_scaling;
+        }
+        (out, total)
+    }
+
+    /// The noise put on `img` by `mode` (0: alone, else a blend mode's number and one) at
+    /// `opacity`, on the GPU; None when the GPU is not to be used.
+    fn on_gpu(&self, img: &veymelo_raster::Image, opacity: f32, mode: u32) -> Option<veymelo_raster::Image> {
+        use veymelo_raster::gpu;
+        if !gpu::wanted(img.px.len()) {
+            return None;
+        }
+        let (layers, total) = self.gpu_layers();
+        let settings = GpuNoise {
+            w: img.width as u32,
+            h: img.height as u32,
+            kind: self.kind,
+            noise: self.noise,
+            overflow: self.overflow,
+            invert: self.invert as u32,
+            mode,
+            layers: layers.len() as u32,
+            period: self.period.unwrap_or(0),
+            sub_turn: (self.sub_turn != 0.0) as u32,
+            contrast: self.contrast,
+            brightness: self.brightness,
+            opacity,
+            total,
+            turn_s: self.turn.0,
+            turn_c: self.turn.1,
+            size_x: self.size[0],
+            size_y: self.size[1],
+            pad: 0.0,
+        };
+        let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("grain.metal")]), name: "fractal_noise" };
+        gpu::apply(img, &[gpu::Op::new(kernel, &settings, [img.width, img.height]).with(&layers)])
+    }
+
     /// The grey at buffer pixel (x, y): contrast, brightness, overflow and invert done.
     pub fn grey(&self, x: f32, y: f32) -> f32 {
         let v = overflow((self.raw(x, y) - 0.5) * self.contrast + 0.5 + self.brightness, self.overflow);
         if self.invert { 1.0 - v } else { v }
     }
 }
+
+/// A layer of the noise as the GPU takes it (grain.metal's Layer).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuLayer {
+    seed: u64,
+    org_x: f32,
+    org_y: f32,
+    sub_s: f32,
+    sub_c: f32,
+    fine: f32,
+    ez: f32,
+    ez_a: f32,
+    ez_c: f32,
+    strength: f32,
+    w: f32,
+    push: f32,
+    pad: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuLayer {}
+
+/// The noise's settings as the GPU takes them (grain.metal's Noise).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuNoise {
+    w: u32,
+    h: u32,
+    kind: u32,
+    noise: u32,
+    overflow: u32,
+    invert: u32,
+    mode: u32,
+    layers: u32,
+    period: i64,
+    sub_turn: u32,
+    contrast: f32,
+    brightness: f32,
+    opacity: f32,
+    total: f32,
+    turn_s: f32,
+    turn_c: f32,
+    size_x: f32,
+    size_y: f32,
+    pad: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuNoise {}
 
 macro_rules! noise_effect {
     ($def:ident, $id:literal, $name:literal, $doc:literal, $kind:expr, $over:expr, [$($sub:expr),*], [$($evo:expr),*]) => {
@@ -366,6 +491,11 @@ fn noise_on(ctx: &Ctx, mut b: Buf, turbulent: bool) -> Buf {
     let f = Fractal::of(ctx, &b, turbulent);
     let opacity = (ctx.num("opacity", 100.0) / 100.0).clamp(0.0, 1.0) as f32;
     let mode = ctx.choice("blendingMode");
+    let gpu_mode = if mode == 0 { 0 } else { BLEND_OF[(mode as usize).min(23)] as u32 + 1 };
+    if let Some(img) = f.on_gpu(&b.img, opacity, gpu_mode) {
+        b.img = img;
+        return b;
+    }
     map_px(&mut b.img, |x, y, p| put(p, f.grey(x as f32 + 0.5, y as f32 + 0.5), opacity, mode));
     b
 }
@@ -413,6 +543,36 @@ fn curl(ctx: &Ctx, mut b: Buf) -> Buf {
     let steps = ctx.num("flowSteps", 4.0).round().clamp(1.0, 16.0) as usize;
     let wrap = ctx.choice("edgeBehavior") == 1;
     let (w, h) = (b.img.width, b.img.height);
+    if veymelo_raster::gpu::wanted(w * h)
+        && let Some(oct) = crate::noise::gpu_octaves(octaves, 0.5)
+    {
+        use crate::noise::split;
+        use veymelo_raster::gpu;
+        let p = GpuCurl {
+            w: w as u32,
+            h: h as u32,
+            steps: steps as u32,
+            wrap: wrap as u32,
+            off_x: split(o.x),
+            off_y: split(o.y),
+            turn_c: split(cr),
+            turn_s: split(sr),
+            inv_size: split(1.0 / size),
+            size: size as f32,
+            dt: (amount / steps as f64) as f32,
+            seed,
+            z: crate::noise::gpu_depth(z, None),
+        };
+        let source = gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("grain.metal")]);
+        let kernel = |name| gpu::Kernel { source, name };
+        let grid = [w, h];
+        let mut ops = vec![gpu::Op::new(kernel("curl_field"), &p, grid).with(&[oct]), gpu::Op::new(kernel("curl_flow"), &p, grid)];
+        ops.push(if view == 1 { gpu::Op::new(kernel("curl_view"), &p, grid) } else { gpu::Op { original: true, ..gpu::Op::new(kernel("curl_carry"), &p, grid) } });
+        if let Some(img) = gpu::apply(&b.img, &ops) {
+            b.img = img;
+            return b;
+        }
+    }
     // the noise field over the pixels, then the flow round its contours (its curl)
     let field: Vec<f64> = (0..w * h)
         .map(|k| {
@@ -453,6 +613,27 @@ fn curl(ctx: &Ctx, mut b: Buf) -> Buf {
     });
     b
 }
+
+/// Curl Noise's settings as the GPU takes them (grain.metal's Curl).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuCurl {
+    w: u32,
+    h: u32,
+    steps: u32,
+    wrap: u32,
+    off_x: [f32; 2],
+    off_y: [f32; 2],
+    turn_c: [f32; 2],
+    turn_s: [f32; 2],
+    inv_size: [f32; 2],
+    size: f32,
+    dt: f32,
+    seed: u64,
+    z: crate::noise::GpuDepth,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuCurl {}
 
 /// A number from 0 to 1 for a pixel of the layer (its units) and a seed.
 #[inline]

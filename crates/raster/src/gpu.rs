@@ -1,23 +1,35 @@
-//! Filters drawn by the GPU, where there is one and the picture is big enough to be worth
-//! handing over: the same as the processor makes them (to a hundred-thousandth). A thread can
-//! keep its drawing on the processor ([`on_processor`]); the GPU, once it fails, is not asked
-//! again.
+//! Pictures worked on by the GPU, where there is one and the picture is big enough to be worth
+//! handing over: the filters here, and the steps effects hand over ([`apply`]), the same as the
+//! processor makes them (to a hundred-thousandth). Their programs start with what they share
+//! ([`COMMON`]: pixels read, the picture between its pixels, the blend modes). A thread can keep
+//! its drawing on the processor ([`on_processor`]); the GPU, once it fails, is not asked again.
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use veymelo_os::gpu::{Arg, Buffer, Kernel, Plain, Step, bytes_of};
+use veymelo_os::gpu::{Arg, Buffer, Step, bytes_of};
+pub use veymelo_os::gpu::{Kernel, Plain};
 
 use crate::filter::Edge;
 use crate::{Image, Px};
 
-const SOURCE: &str = include_str!("filter.metal");
-const BELL: Kernel = Kernel { source: SOURCE, name: "bell_rows" };
-const BOX: Kernel = Kernel { source: SOURCE, name: "box_rows" };
-const WIDE_BOX: Kernel = Kernel { source: SOURCE, name: "wide_box_rows" };
-const TURN: Kernel = Kernel { source: SOURCE, name: "turn" };
-const ALONG: Kernel = Kernel { source: SOURCE, name: "along_blur" };
-const ROUND: Kernel = Kernel { source: SOURCE, name: "round_blur" };
+/// What the GPU's picture programs share (put first in each).
+pub const COMMON: &str = include_str!("common.metal");
+const FILTERS: &str = include_str!("filter.metal");
+
+/// A program made of `parts` one after another (made once for each list of parts).
+pub fn program(parts: &[&'static str]) -> &'static str {
+    type Made = std::sync::Mutex<std::collections::HashMap<Vec<usize>, &'static str>>;
+    static MADE: std::sync::OnceLock<Made> = std::sync::OnceLock::new();
+    let key: Vec<usize> = parts.iter().map(|p| p.as_ptr() as usize).collect();
+    let mut made = MADE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    made.entry(key).or_insert_with(|| Box::leak(parts.concat().into_boxed_str()))
+}
+
+/// A kernel of the filters' program.
+fn filter(name: &'static str) -> Kernel {
+    Kernel { source: program(&[COMMON, FILTERS]), name }
+}
 
 /// The threads that make a stretch of a row together, the most a pass reaches either side of a
 /// pixel for its stretch to be fetched whole, and how many pixels side by side a box's thread
@@ -53,6 +65,16 @@ pub fn with_mode<R>(processor: bool, f: impl FnOnce() -> R) -> R {
 
 static GIVEN_UP: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+    /// How many pictures the GPU has worked on for this thread.
+    static RAN: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many pictures the GPU has worked on for this thread (for tests to see it did).
+pub fn ran() -> usize {
+    RAN.with(Cell::get)
+}
+
 /// The fewest pixels a picture has for the GPU to filter it (`VEYMELO_GPU_FROM` sets another:
 /// 0 hands every picture over, to test with).
 fn fewest() -> usize {
@@ -60,8 +82,13 @@ fn fewest() -> usize {
     *FROM.get_or_init(|| std::env::var("VEYMELO_GPU_FROM").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(256 * 256))
 }
 
-/// Whether a picture of `px` pixels is filtered by the GPU here.
-fn wanted(px: usize) -> bool {
+/// Whether there is a GPU to work on pictures (and it has not been given up on).
+pub fn available() -> bool {
+    !GIVEN_UP.load(Ordering::Relaxed) && veymelo_os::gpu::available()
+}
+
+/// Whether a picture of `px` pixels is worked on by the GPU here.
+pub fn wanted(px: usize) -> bool {
     px > 0 && px >= fewest() && !processor_only() && !GIVEN_UP.load(Ordering::Relaxed) && veymelo_os::gpu::available()
 }
 
@@ -104,19 +131,27 @@ impl Pass {
     }
 }
 
-/// A step done to a picture on the GPU: a kernel run over it (taking the picture out, the
-/// picture in, perhaps a list of numbers, and its settings), its grid, and its groups.
-struct Op {
-    kernel: &'static Kernel,
-    numbers: Option<Vec<f32>>,
-    settings: Vec<u8>,
-    grid: [usize; 2],
-    group: Option<[usize; 2]>,
+/// A step done to a picture on the GPU: a kernel run over it, its grid, and its groups. The
+/// kernel takes the picture out, the picture in (what the step before made), then its numbers
+/// (if it has some), the picture as it first was (if it asks), and its settings.
+pub struct Op {
+    pub kernel: Kernel,
+    pub data: Option<Vec<u8>>,
+    pub original: bool,
+    pub settings: Vec<u8>,
+    pub grid: [usize; 2],
+    pub group: Option<[usize; 2]>,
 }
 
 impl Op {
-    fn new<T: Plain>(kernel: &'static Kernel, settings: &T, grid: [usize; 2]) -> Op {
-        Op { kernel, numbers: None, settings: bytes_of(settings).to_vec(), grid, group: None }
+    /// `kernel` with `settings`, over `grid`.
+    pub fn new<T: Plain>(kernel: Kernel, settings: &T, grid: [usize; 2]) -> Op {
+        Op { kernel, data: None, original: false, settings: bytes_of(settings).to_vec(), grid, group: None }
+    }
+
+    /// The step with `data` (numbers it reads) too.
+    pub fn with<T: Plain>(self, data: &[T]) -> Op {
+        Op { data: Some(veymelo_os::gpu::bytes_of_slice(data).to_vec()), ..self }
     }
 }
 
@@ -129,7 +164,7 @@ fn bell_ops(w: usize, h: usize, sigma: f64, edge: Edge, bell: &dyn Fn(f64) -> Op
         Some(weights) => {
             let pad = [0f32; BELL_RUN - 1];
             let pass = Pass { taps: weights.len() as u32, ..pass };
-            vec![Op { numbers: Some([&pad[..], &weights, &pad[..]].concat()), group: Some([STRETCH / BELL_RUN, 1]), ..Op::new(&BELL, &pass, [w.div_ceil(BELL_RUN), h]) }]
+            vec![Op { group: Some([STRETCH / BELL_RUN, 1]), ..Op::new(filter("bell_rows"), &pass, [w.div_ceil(BELL_RUN), h]).with(&[&pad[..], &weights, &pad[..]].concat()) }]
         }
         None => (0..3).map(|_| box_op(pass.boxed(2.0 * sigma))).collect(),
     }
@@ -140,15 +175,15 @@ fn bell_ops(w: usize, h: usize, sigma: f64, edge: Edge, bell: &dyn Fn(f64) -> Op
 fn box_op(pass: Pass) -> Op {
     let (w, h) = (pass.w as usize, pass.h as usize);
     if -pass.first <= REACH && pass.last <= REACH {
-        Op { group: Some([BOX_THREADS, 1]), ..Op::new(&BOX, &pass, [w.div_ceil(RUN), h]) }
+        Op { group: Some([BOX_THREADS, 1]), ..Op::new(filter("box_rows"), &pass, [w.div_ceil(RUN), h]) }
     } else {
-        Op::new(&WIDE_BOX, &pass, [w, h])
+        Op::new(filter("wide_box_rows"), &pass, [w, h])
     }
 }
 
 /// The picture `w` × `h` turned on its diagonal.
 fn turn(w: usize, h: usize) -> Op {
-    Op { group: Some([32, 8]), ..Op::new(&TURN, &[w as u32, h as u32], [w.div_ceil(32) * 32, h.div_ceil(32) * 8]) }
+    Op { group: Some([32, 8]), ..Op::new(filter("turn"), &[w as u32, h as u32], [w.div_ceil(32) * 32, h.div_ceil(32) * 8]) }
 }
 
 /// `across` (passes along the rows of a picture `w` × `h`) and then `down` (along its columns:
@@ -193,8 +228,9 @@ fn keep(slot: usize, b: Buffer) {
     });
 }
 
-/// `ops` done to `img` on the GPU: the picture after them, or None when the GPU could not.
-fn run(img: &Image, ops: &[Op]) -> Option<Image> {
+/// `ops` done to `img` on the GPU, one after another: the picture after them, or None when the
+/// GPU could not (it is then given up on: the processor does the rest).
+pub fn apply(img: &Image, ops: &[Op]) -> Option<Image> {
     if ops.is_empty() {
         return Some(img.clone());
     }
@@ -203,18 +239,21 @@ fn run(img: &Image, ops: &[Op]) -> Option<Image> {
         let mut source = take(0, len)?;
         source.slice_mut::<Px>()[..img.px.len()].copy_from_slice(&img.px);
         let (a, b) = (take(1, len)?, take(2, len)?);
-        let numbers: Vec<Option<Buffer>> = ops.iter().map(|op| op.numbers.as_deref().map(Buffer::of).transpose()).collect::<Result<_, _>>()?;
+        let data: Vec<Option<Buffer>> = ops.iter().map(|op| op.data.as_deref().map(Buffer::of).transpose()).collect::<Result<_, _>>()?;
         let mut steps = Vec::with_capacity(ops.len());
         for (k, op) in ops.iter().enumerate() {
             // from the picture, then back and forth between the two
             let from = if k == 0 { &source } else if k % 2 == 1 { &a } else { &b };
             let to = if k % 2 == 0 { &a } else { &b };
             let mut args = vec![Arg::Pass(to), Arg::Pass(from)];
-            if let Some(n) = &numbers[k] {
+            if let Some(n) = &data[k] {
                 args.push(Arg::Read(n));
             }
+            if op.original {
+                args.push(Arg::Pass(&source));
+            }
             args.push(Arg::Bytes(&op.settings));
-            steps.push(Step { kernel: op.kernel, args, grid: op.grid, group: op.group });
+            steps.push(Step { kernel: &op.kernel, args, grid: op.grid, group: op.group });
         }
         veymelo_os::gpu::run_steps(&steps)?;
         drop(steps);
@@ -226,7 +265,10 @@ fn run(img: &Image, ops: &[Op]) -> Option<Image> {
         Ok(out)
     };
     match go() {
-        Ok(out) => Some(out),
+        Ok(out) => {
+            RAN.with(|r| r.set(r.get() + 1));
+            Some(out)
+        }
         Err(why) => {
             failed(&why);
             None
@@ -243,7 +285,16 @@ pub(crate) fn gaussian(img: &Image, sx: f64, sy: f64, edge: Edge, bell: &dyn Fn(
     let (w, h) = (img.width, img.height);
     let across = if sx > 0.01 { bell_ops(w, h, sx, edge, bell) } else { Vec::new() };
     let down = if sy > 0.01 { bell_ops(h, w, sy, edge, bell) } else { Vec::new() };
-    run(img, &both_ways(across, down, w, h))
+    apply(img, &both_ways(across, down, w, h))
+}
+
+/// The steps that blur a picture `w` × `h` as [`crate::filter::gaussian`] does, for a run of
+/// steps of an effect's own (the blur between them).
+pub fn gaussian_ops(w: usize, h: usize, sx: f64, sy: f64, edge: Edge) -> Vec<Op> {
+    let bell = |sigma: f64| (sigma <= crate::filter::EXACT_MOST).then(|| crate::filter::bell(sigma));
+    let across = if sx > 0.01 { bell_ops(w, h, sx, edge, &bell) } else { Vec::new() };
+    let down = if sy > 0.01 { bell_ops(h, w, sy, edge, &bell) } else { Vec::new() };
+    both_ways(across, down, w, h)
 }
 
 /// [`crate::filter::boxes`] on the GPU (None: leave it to the processor).
@@ -254,7 +305,7 @@ pub(crate) fn boxes(img: &Image, wx: f64, wy: f64, times: usize, edge: Edge) -> 
     let (w, h) = (img.width, img.height);
     // (a box no wider than a pixel leaves the line as it is)
     let ways = |width: f64, w: usize, h: usize| -> Vec<Op> { if width > 1.0 + 1e-9 { (0..times).map(|_| box_op(Pass::new(w, h, edge).boxed(width))).collect() } else { Vec::new() } };
-    run(img, &both_ways(ways(wx, w, h), ways(wy, h, w), w, h))
+    apply(img, &both_ways(ways(wx, w, h), ways(wy, h, w), w, h))
 }
 /// The size of a picture a kernel goes over, and how many samples each pixel takes.
 #[repr(C)]
@@ -282,8 +333,7 @@ pub(crate) fn along(img: &Image, dir: (f64, f64), length: f64, n: usize) -> Opti
         let (fx, fy) = (ox.floor(), oy.floor());
         steps.extend([fx as f32, fy as f32, (ox - fx) as f32, (oy - fy) as f32]);
     }
-    let op = Op { numbers: Some(steps), ..Op::new(&ALONG, &Along { w: img.width as u32, h: img.height as u32, n: n as u32 }, [img.width, img.height]) };
-    run(img, &[op])
+    apply(img, &[Op::new(filter("along_blur"), &Along { w: img.width as u32, h: img.height as u32, n: n as u32 }, [img.width, img.height]).with(&steps)])
 }
 
 /// What a blur round a point takes: the picture's size, the point (its whole pixels and the
@@ -310,7 +360,7 @@ pub(crate) fn round(img: &Image, centre: (f64, f64), amount: f64, zoom: bool) ->
     }
     let (cx, cy) = (centre.0.floor(), centre.1.floor());
     let r = Round { w: img.width as u32, h: img.height as u32, cx: cx as i32, cy: cy as i32, fx: (centre.0 - cx) as f32, fy: (centre.1 - cy) as f32, amount: amount as f32, zoom: zoom as u32 };
-    run(img, &[Op::new(&ROUND, &r, [img.width, img.height])])
+    apply(img, &[Op::new(filter("round_blur"), &r, [img.width, img.height])])
 }
 
 #[cfg(test)]
@@ -333,6 +383,40 @@ mod tests {
 
     fn most_apart(a: &Image, b: &Image) -> f32 {
         a.px.iter().zip(&b.px).flat_map(|(p, q)| (0..4).map(move |c| (p[c] - q[c]).abs())).fold(0.0, f32::max)
+    }
+
+    /// Every blend mode mixes as the processor's, pixels of every kind (clear, part see-through,
+    /// brighter than white) onto every kind.
+    #[test]
+    fn the_gpu_blends_as_the_processor_does() {
+        if !veymelo_os::gpu::available() {
+            return;
+        }
+        const TEST: &str = "kernel void blend_test(device float4 *out [[buffer(0)]], const device float4 *under [[buffer(1)]], const device float4 *over [[buffer(2)]], constant uint &mode [[buffer(3)]], uint2 g [[thread_position_in_grid]], uint2 size [[threads_per_grid]]) {\n\
+            uint i = g.y * size.x + g.x;\n\
+            out[i] = blend(mode, under[i], over[i], 0.5);\n\
+        }";
+        let (w, h) = (64, 64);
+        let mut under = Image::new(w, h);
+        let mut over = Vec::with_capacity(w * h);
+        for (i, p) in under.px.iter_mut().enumerate() {
+            let f = |k: usize| ((i * 7919 + k * 104_729) % 1013) as f32 / 1012.0;
+            let a = [0.0, 0.3, 1.0, f(1)][i % 4];
+            *p = [f(2) * a * 1.4, f(3) * a, f(4) * a, a];
+            let b = [1.0, 0.0, 0.55, f(5)][(i / 4) % 4];
+            over.push([f(6) * b, f(7) * b * 1.6, f(8) * b, b]);
+        }
+        for m in veymelo_color::BlendMode::ALL {
+            let kernel = Kernel { source: program(&[COMMON, TEST]), name: "blend_test" };
+            let gpu = with_mode(false, || apply(&under, &[Op::new(kernel, &(m as u32), [w, h]).with(&over)])).expect("drawn by the GPU");
+            for (k, (p, q)) in under.px.iter().zip(&over).enumerate() {
+                let cpu = veymelo_color::blend(m, *p, *q, 0.5);
+                for c in 0..4 {
+                    let d = (gpu.px[k][c] - cpu[c]).abs();
+                    assert!(d <= 2e-6 * cpu[c].abs().max(1.0), "{m:?} under {p:?} over {q:?}: GPU {:?}, processor {cpu:?}", gpu.px[k]);
+                }
+            }
+        }
     }
 
     #[test]

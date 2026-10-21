@@ -150,3 +150,73 @@ fn every_one_is_registered() {
         assert!(crate::find(spec.def.id).is_some_and(|s| s.category == "noise"), "{}", spec.def.id);
     }
 }
+
+/// The GPU makes Fractal and Turbulent Noise as the processor does: every fractal type, noise
+/// type and overflow, the sub settings, a cycled evolution, and the noise put on the layer by
+/// several modes (a picture big enough to be handed to the GPU).
+#[test]
+fn the_gpu_makes_the_noise_the_processor_makes() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let mut img = Image::new(320, 240);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let a = if i % 97 < 5 { 0.0 } else if i % 7 == 0 { 0.5 } else { 1.0 };
+        *p = [(i % 320) as f32 / 320.0 * a, 0.4 * a, (i / 320) as f32 / 240.0 * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let mut cases: Vec<(&Spec, Vec<(&str, Value)>)> = vec![];
+    for kind in 0..9 {
+        cases.push((&FRACTAL, vec![("fractalType", c(kind)), ("evolution", n(140.0))]));
+    }
+    for noise in 0..4 {
+        for over in 0..4 {
+            cases.push((&FRACTAL, vec![("noiseType", c(noise)), ("overflow", c(over)), ("contrast", n(260.0)), ("brightness", n(-12.0))]));
+        }
+    }
+    cases.push((&FRACTAL, vec![("subRotation", n(33.0)), ("subOffset", Value::Vec2([40.0, -25.0])), ("perspectiveOffset", Value::Bool(true)), ("complexity", n(7.5)), ("invert", Value::Bool(true))]));
+    cases.push((&FRACTAL, vec![("cycleEvolution", Value::Bool(true)), ("cycle", n(3.0)), ("evolution", n(800.0)), ("centerSubscale", Value::Bool(true)), ("uniformScaling", Value::Bool(false)), ("scaleWidth", n(240.0)), ("scaleHeight", n(60.0))]));
+    for mode in [0, 3, 5, 12, 14, 18, 21] {
+        cases.push((&FRACTAL, vec![("blendingMode", c(mode)), ("opacity", n(70.0))]));
+    }
+    cases.push((&TURBULENT, vec![("turbulenceFactor", n(2.5)), ("evolution", n(90.0)), ("rotation", n(20.0))]));
+    cases.push((&TURBULENT, vec![("fractalType", c(5)), ("complexity", n(3.0))]));
+    for (spec, values) in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || go(spec, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| go(spec, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{} {values:?}: {most}", spec.def.id);
+    }
+}
+
+/// The GPU carries the picture along Curl Noise's flow as the processor does (both views, edges
+/// clamped and wrapped, few and many steps). Its noise is the processor's to within a millionth,
+/// and the flow is that noise's slope: the picture lands within a few thousandths of a pixel of
+/// the processor's, so where it changes sharply within a pixel the colour moves by about that.
+#[test]
+fn the_gpu_carries_curl_noise_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let mut img = Image::new(300, 240);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = (i % 300, i / 300);
+        *p = [x as f32 / 300.0, y as f32 / 240.0, if (x / 12 + y / 12) % 2 == 0 { 0.9 } else { 0.1 }, 1.0];
+    }
+    let c = |k: u32| Value::Choice(k);
+    for values in [
+        vec![("displacementAmount", n(30.0))],
+        vec![("view", c(1)), ("scale", n(60.0)), ("complexity", n(4.5))],
+        vec![("edgeBehavior", c(1)), ("displacementAmount", n(-80.0)), ("flowSteps", n(12.0)), ("evolution", n(130.0)), ("rotation", n(25.0))],
+    ] {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || go(&CURL, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| go(&CURL, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        let mean = gpu.img.px.iter().zip(&cpu.img.px).map(|(p, q)| (0..4).map(|k| (p[k] - q[k]).abs()).sum::<f32>()).sum::<f32>() / (gpu.img.px.len() * 4) as f32;
+        assert!(most <= 2e-3 && mean <= 1e-5, "{values:?}: most {most}, mean {mean}");
+    }
+}

@@ -862,6 +862,10 @@ fn fractal(ctx: &Ctx, mut b: Buf) -> Buf {
     let seed = crate::noise::mix(&[ctx.num("randomSeed", 0.0).max(0.0) as u64, 0x5e3f]);
     // at 100%, four noise cells to the sphere's radius
     let base = 4.0 / scale;
+    if let Some(img) = fractal_on_gpu(&b.img, ctx.choice("frameLayout"), &m, kind, contrast, brightness, invert, influence, sub, layers, evolution, opacity, mode, seed, base) {
+        b.img = img;
+        return b;
+    }
     b.img = per_eye(&b.img, ctx.choice("frameLayout"), |e, _| {
         let (w, h) = (e.width as f64, e.height as f64);
         let mut o = e.clone();
@@ -898,6 +902,130 @@ fn fractal(ctx: &Ctx, mut b: Buf) -> Buf {
         o
     });
     b
+}
+
+/// A layer of VR Fractal Noise as the GPU takes it (sphere.metal's VrLayer): its seed and size,
+/// where the two fields it evolves between are, how far between, and its strength.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GpuVrLayer {
+    seed: u64,
+    fine: [f32; 2],
+    at_k: [[f32; 2]; 3],
+    at_next: [[f32; 2]; 3],
+    t: f32,
+    before: f32,
+    inv_den: f32,
+    strength: f32,
+    part: f32,
+    pad: f32,
+}
+
+/// The most layers the GPU takes.
+const GPU_LAYERS: usize = 20;
+
+/// VR Fractal Noise's settings as the GPU takes them (sphere.metal's Vr).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuVr {
+    w: u32,
+    h: u32,
+    eyes: u32,
+    kind: u32,
+    mode: u32,
+    invert: u32,
+    count: u32,
+    pad: u32,
+    eye: [[u32; 4]; 2],
+    at: [u32; 4],
+    contrast: f32,
+    brightness: f32,
+    opacity: f32,
+    weights: f32,
+    m: [[f32; 2]; 9],
+    layer: [GpuVrLayer; GPU_LAYERS],
+    // (as long as the GPU's, which rounds it to sixteen bytes)
+    tail: [u32; 2],
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuVr {}
+
+/// VR Fractal Noise on the GPU (None: leave it to the processor). Each eye's columns' longitudes
+/// and rows' latitudes (their sines and cosines) and each layer's settings are worked out here,
+/// as [`fractal`] works them out.
+#[allow(clippy::too_many_arguments)]
+fn fractal_on_gpu(img: &Image, layout: u32, m: &M3, kind: u32, contrast: f64, brightness: f64, invert: bool, influence: f64, sub: f64, layers: f64, evolution: f64, opacity: f32, mode: u32, seed: u64, base: f64) -> Option<Image> {
+    use crate::noise::split;
+    use veymelo_raster::gpu;
+    let count = layers.ceil() as usize;
+    if !gpu::wanted(img.px.len()) || count > GPU_LAYERS {
+        return None;
+    }
+    let rects = eyes(img.width, img.height, layout);
+    let mut trig: Vec<[f32; 4]> = Vec::new();
+    let mut eye = [[0u32; 4]; 2];
+    let mut at = [0u32; 4];
+    for (i, &[x0, y0, ew, eh]) in rects.iter().enumerate() {
+        eye[i] = [x0 as u32, y0 as u32, ew as u32, eh as u32];
+        at[i * 2] = trig.len() as u32;
+        for x in 0..ew {
+            let (s, c) = (((x as f64 + 0.5) / ew as f64 - 0.5) * TAU).sin_cos();
+            let (s, c) = (split(s), split(c));
+            trig.push([s[0], s[1], c[0], c[1]]);
+        }
+        at[i * 2 + 1] = trig.len() as u32;
+        for y in 0..eh {
+            let (s, c) = ((0.5 - (y as f64 + 0.5) / eh as f64) * PI).sin_cos();
+            let (s, c) = (split(s), split(c));
+            trig.push([s[0], s[1], c[0], c[1]]);
+        }
+    }
+    // each layer as fractal() works it out
+    let mut layer = [GpuVrLayer::default(); GPU_LAYERS];
+    let (mut weights, mut strength, mut fine) = (0f64, 1f64, base);
+    for (i, l) in layer.iter_mut().enumerate().take(count) {
+        let part = if i + 1 == count && layers.fract() > 0.0 { layers.fract() } else { 1.0 };
+        let e = evolution * (1.0 + i as f64 * 0.5);
+        let (k, t) = (e.floor(), e - e.floor());
+        let t = t * t * (3.0 - 2.0 * t);
+        let at = |n: f64| [split(n * 31.7), split(n * 17.3), split(n * 23.9)];
+        *l = GpuVrLayer {
+            seed: seed ^ i as u64,
+            fine: split(fine),
+            at_k: at(k),
+            at_next: at(k + 1.0),
+            t: t as f32,
+            before: (1.0 - t) as f32,
+            inv_den: (1.0 / ((1.0 - t) * (1.0 - t) + t * t).sqrt()) as f32,
+            strength: strength as f32,
+            part: part as f32,
+            pad: 0.0,
+        };
+        weights += strength * part;
+        strength *= influence;
+        fine /= sub;
+    }
+    let p = GpuVr {
+        w: img.width as u32,
+        h: img.height as u32,
+        eyes: rects.len() as u32,
+        kind,
+        mode: if mode == 0 { 0 } else { crate::generate::MODE_OF[(mode as usize).min(19)] as u32 + 1 },
+        invert: invert as u32,
+        count: count as u32,
+        pad: 0,
+        eye,
+        at,
+        contrast: contrast as f32,
+        brightness: brightness as f32,
+        opacity,
+        weights: weights as f32,
+        m: std::array::from_fn(|k| split(m[k / 3][k % 3])),
+        layer,
+        tail: [0; 2],
+    };
+    let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("sphere.metal")]), name: "vr_fractal" };
+    gpu::apply(img, &[gpu::Op::new(kernel, &p, [img.width, img.height]).with(&trig)])
 }
 
 effect!(GLITCH_DEF, "vrDigitalGlitch", "VR Digital Glitch", "bands of the sphere jumping sideways round it, their colours split, scan lines over them; changing so many times a second, everywhere or round one point", [

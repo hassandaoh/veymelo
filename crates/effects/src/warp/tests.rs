@@ -289,3 +289,39 @@ fn every_one_is_registered() {
     }
     assert_eq!(mesh_moves("1,2 3.5,-4;5,6 bad 7"), vec![[1.0, 2.0], [3.5, -4.0], [5.0, 6.0]]);
 }
+
+/// The GPU pushes the picture about as the processor does: every kind of displacement, held
+/// and locked edges, part octaves, a cycled evolution (a picture big enough to be handed over).
+/// Its noise is the processor's to within a millionth, so a push of half the amount lands within
+/// some hundred-thousandths of a pixel of the processor's; where the picture changes sharply
+/// within a pixel the colour moves by about as much.
+#[test]
+fn the_gpu_displaces_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let img = picture(330, 250);
+    let bounds = veymelo_geom::Rect::from_size(330.0, 250.0);
+    let run = |values: &[(&str, Value)]| -> Image {
+        let mut g = instance(&TURBULENT, &[]);
+        TURBULENT.start(&mut g, bounds);
+        for (path, v) in values {
+            g.prop_mut(path).unwrap().set_value(v.clone()).unwrap();
+        }
+        run_when(&TURBULENT, &g, img.clone(), Tick::ZERO, &[], None).img
+    };
+    let c = |k: u32| Value::Choice(k);
+    let mut cases: Vec<Vec<(&str, Value)>> = (0..9).map(|k| vec![("displacement", c(k)), ("amount", n(40.0)), ("size", n(70.0))]).collect();
+    for pin in [0, 2, 4, 7, 8, 11, 14] {
+        cases.push(vec![("pinning", c(pin)), ("amount", n(-90.0)), ("complexity", n(4.6)), ("evolution", n(200.0))]);
+    }
+    cases.push(vec![("cycleEvolution", Value::Bool(true)), ("cycle", n(2.0)), ("evolution", n(900.0)), ("complexity", n(10.0)), ("size", n(12.0)), ("offset", pt(40.5, -20.25))]);
+    for values in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || run(&values));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| run(&values));
+        let most = gpu.px.iter().zip(&cpu.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-4, "{values:?}: {most}");
+    }
+}

@@ -271,3 +271,31 @@ fn every_one_is_registered() {
     }
 }
 
+
+/// The GPU makes VR Fractal Noise as the processor does: every fractal type, mono and both stereo
+/// layouts, many layers, an evolution, a turned view, and blended on (its places on the sphere
+/// held as the processor's doubles, its sums in floats).
+#[test]
+fn the_gpu_makes_vr_fractal_noise_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let mut img = Image::new(512, 256);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let a = if i % 13 == 0 { 0.5 } else { 1.0 };
+        *p = [(i % 512) as f32 / 512.0 * a, 0.3 * a, (i / 512) as f32 / 256.0 * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let mut cases: Vec<Vec<(&str, Value)>> = (0..4).map(|k| vec![("fractalType", c(k))]).collect();
+    cases.push(vec![("frameLayout", c(1)), ("complexity", n(9.5)), ("evolution", n(250.0)), ("tilt", n(30.0)), ("pan", n(-40.0)), ("roll", n(15.0))]);
+    cases.push(vec![("frameLayout", c(2)), ("contrast", n(300.0)), ("brightness", n(-20.0)), ("invert", Value::Bool(true)), ("scale", n(40.0))]);
+    cases.push(vec![("blendingMode", c(3)), ("opacity", n(60.0)), ("subScaling", n(70.0)), ("subInfluence", n(80.0))]);
+    for values in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || go(&FRACTAL, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| go(&FRACTAL, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{values:?}: {most}");
+    }
+}

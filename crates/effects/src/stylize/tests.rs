@@ -183,3 +183,30 @@ fn every_one_is_registered() {
         assert!(crate::find(spec.def.id).is_some_and(|s| s.category == "stylize"), "{}", spec.def.id);
     }
 }
+
+/// The GPU wears the edges as the processor does: every edge type, no border and a wide one,
+/// stretched, evolved and cycled.
+#[test]
+fn the_gpu_roughens_edges_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let mut img = Image::new(320, 240);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = ((i % 320) as f32 - 160.0, (i / 320) as f32 - 120.0);
+        let a = if x * x / 1.3 + y * y < 90.0 * 90.0 { 1.0 } else { 0.0 };
+        *p = [0.8 * a, 0.5 * a, 0.2 * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let mut cases: Vec<Vec<(&str, Value)>> = (0..8).map(|k| vec![("edgeType", c(k)), ("border", n(14.0))]).collect();
+    cases.push(vec![("border", n(0.0)), ("complexity", n(5.5)), ("stretchWidthOrHeight", n(2.5)), ("evolution", n(300.0))]);
+    cases.push(vec![("border", n(60.0)), ("cycleEvolution", Value::Bool(true)), ("cycle", n(2.0)), ("evolution", n(500.0)), ("stretchWidthOrHeight", n(-3.0)), ("edgeSharpness", n(4.0))]);
+    for values in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || go(&ROUGHEN, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| go(&ROUGHEN, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{values:?}: {most}");
+    }
+}

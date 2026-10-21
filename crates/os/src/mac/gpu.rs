@@ -327,6 +327,10 @@ unsafe fn wait(commands: Id, buffers: &[&Buffer], shapes: &[&Shapes]) -> Result<
         if super::integer(commands, "status") != COMPLETED {
             return Err(format!("the GPU stopped part way: {}", error_text(send(commands, "error"))));
         }
+        if times() {
+            let t = |s: &str| msg!(unsafe extern "C" fn(Id, Sel) -> f64)(commands, sel(s));
+            eprintln!("GPU: {:.2} ms", (t("GPUEndTime") - t("GPUStartTime")) * 1000.0);
+        }
         Ok(())
     }
 }
@@ -444,6 +448,13 @@ impl Drop for Turn {
         TURN_FREE.notify_one();
     }
 }
+/// Whether how long each piece of work took on the GPU is said (on standard error):
+/// `VEYMELO_GPU_TIMES=1`.
+fn times() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VEYMELO_GPU_TIMES").is_some())
+}
+
 /// How long a piece of work is waited for before the GPU is given up on.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(15);
 

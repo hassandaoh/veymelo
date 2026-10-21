@@ -1,6 +1,7 @@
 //! The GPU, where there is one to draw with (Metal on a Mac with Apple silicon): kernels in the
 //! Metal Shading Language run over a grid of threads on buffers it shares with the processor.
-//! `VEYMELO_GPU=0` leaves it unused, so everything is drawn by the processor.
+//! `VEYMELO_GPU=0` leaves it unused, so everything is drawn by the processor;
+//! `VEYMELO_GPU_TIMES=1` says how long each piece of work took on it.
 
 #[cfg(target_os = "macos")]
 pub use crate::mac::gpu::{Buffer, Shapes, name, prepare, run, run_steps, traces};

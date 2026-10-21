@@ -348,7 +348,7 @@ fn goldens() {
 
 /// How long each effect takes with its defaults on a 1080 × 1920 picture, the slowest first
 /// (run by hand: cargo test -p veymelo-effects --release effects_take -- --ignored --nocapture;
-/// VEYMELO_GPU=0 for the processor alone).
+/// VEYMELO_GPU=0 for the processor alone, VEYMELO_GOLDENS_ONLY=word,word for some).
 #[test]
 #[ignore]
 fn effects_take() {
@@ -362,12 +362,18 @@ fn effects_take() {
     }
     let bounds = veymelo_geom::Rect::from_size(w as f64, h as f64);
     let mut took = vec![];
+    let only: Option<Vec<String>> = std::env::var("VEYMELO_GOLDENS_ONLY").ok().map(|w| w.split(',').map(str::to_string).collect());
     for spec in crate::all() {
+        if only.as_ref().is_some_and(|o| !o.iter().any(|w| spec.def.id == w)) {
+            continue;
+        }
         let mut g: Group = instance(spec, &[]);
         spec.start(&mut g, bounds);
         let t = Tick::from_seconds(0.5);
         let read = |p: &veymelo_project::Property| p.value_at(t);
         let ctx = Ctx::new(&g, &read, t, bounds, 7);
+        // once to warm up (a GPU program is built the first time), then timed
+        std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
         let started = std::time::Instant::now();
         std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
         took.push((started.elapsed().as_secs_f64() * 1000.0, spec.def.id));

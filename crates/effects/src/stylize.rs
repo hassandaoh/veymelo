@@ -543,13 +543,47 @@ fn roughen(ctx: &Ctx, mut b: Buf) -> Buf {
     };
     let extra = if kind == 4 || kind == 5 { 1.0 } else { 0.0 };
     let (w, h) = (b.img.width, b.img.height);
+    let seed = crate::noise::mix(&[0x40f1, ctx.num("randomSeed", 0.0).max(0.0) as u64]);
+    if veymelo_raster::gpu::wanted(w * h)
+        && let Some(oct) = crate::noise::gpu_octaves(octaves + extra, 0.5)
+    {
+        use crate::noise::split;
+        use veymelo_raster::gpu;
+        let p = GpuRoughen {
+            w: w as u32,
+            h: h as u32,
+            coloured: coloured as u32,
+            pad: 0,
+            off_x: split(off.x),
+            off_y: split(off.y),
+            kx: split(fine / (size * sx)),
+            ky: split(fine / (size * sy)),
+            influence,
+            strong,
+            sharp: sharp * sharper,
+            edge_r: edge_c[0],
+            edge_g: edge_c[1],
+            edge_b: edge_c[2],
+            seed,
+            z: crate::noise::gpu_depth(z, period),
+        };
+        let source = gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("stylize.metal")]);
+        let mut ops = vec![gpu::Op::new(gpu::Kernel { source, name: "alpha_of" }, &(w as u32), [w, h])];
+        if border > 0.05 {
+            ops.extend(gpu::gaussian_ops(w, h, border * 0.5, border * 0.5, Edge::Clear));
+        }
+        ops.push(gpu::Op { original: true, ..gpu::Op::new(gpu::Kernel { source, name: "roughen" }, &p, [w, h]).with(&[oct]) });
+        if let Some(img) = gpu::apply(&b.img, &ops) {
+            b.img = img;
+            return b;
+        }
+    }
     // how far in from the edge: the alpha softened over the border
     let mut alpha = Image::new(w, h);
     for (o, p) in alpha.px.iter_mut().zip(&b.img.px) {
         *o = [p[3]; 4];
     }
     let depth = if border > 0.05 { filter::gaussian(&alpha, border * 0.5, border * 0.5, Edge::Clear) } else { alpha };
-    let seed = crate::noise::mix(&[0x40f1, ctx.num("randomSeed", 0.0).max(0.0) as u64]);
     map_px(&mut b.img, |x, y, p| {
         if p[3] <= 0.0 {
             return p;
@@ -567,6 +601,30 @@ fn roughen(ctx: &Ctx, mut b: Buf) -> Buf {
     });
     b
 }
+
+/// Roughen Edges' settings as the GPU takes them (stylize.metal's Roughen).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuRoughen {
+    w: u32,
+    h: u32,
+    coloured: u32,
+    pad: u32,
+    off_x: [f32; 2],
+    off_y: [f32; 2],
+    kx: [f32; 2],
+    ky: [f32; 2],
+    influence: f32,
+    strong: f32,
+    sharp: f32,
+    edge_r: f32,
+    edge_g: f32,
+    edge_b: f32,
+    seed: u64,
+    z: crate::noise::GpuDepth,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuRoughen {}
 
 effect!(
     SCATTER_DEF,

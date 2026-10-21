@@ -106,7 +106,7 @@ fn bell_line(line: &mut [Px], weights: &[f32], edge: Edge) {
 }
 
 /// The weights of a Gaussian of deviation `sigma`, summing to one.
-fn bell(sigma: f64) -> Vec<f32> {
+pub(crate) fn bell(sigma: f64) -> Vec<f32> {
     let r = (sigma * 4.0).ceil().max(1.0) as i64;
     // each weight is the bell's area over its pixel, so a small deviation is not lost between samples
     let cdf = |x: f64| 0.5 * (1.0 + erf(x / (sigma * std::f64::consts::SQRT_2)));
@@ -128,7 +128,7 @@ fn erf(x: f64) -> f64 {
 }
 
 /// Above this deviation a Gaussian is three boxes (the same to the eye, and much quicker).
-const EXACT_MOST: f64 = 12.0;
+pub(crate) const EXACT_MOST: f64 = 12.0;
 
 fn gauss_line(sigma: f64, edge: Edge) -> Box<LineFn> {
     if sigma <= EXACT_MOST {
