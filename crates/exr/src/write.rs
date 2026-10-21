@@ -20,12 +20,10 @@ fn attribute(out: &mut Vec<u8>, name: &str, kind: &str, value: &[u8]) {
     out.extend(value);
 }
 
-/// Sixteen lines' bytes made smaller as EXR's ZIP does: the bytes split into evens and odds,
-/// each told as its step from the one before, then deflated (kept as they are when that is no
-/// smaller).
-fn zip_block(raw: &[u8]) -> Vec<u8> {
-    let n = raw.len();
-    let mut split = Vec::with_capacity(n);
+/// Bytes made smaller as EXR's ZIP does: split into evens and odds, each told as its step from
+/// the one before, then deflated.
+pub(crate) fn zip_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut split = Vec::with_capacity(raw.len());
     split.extend(raw.iter().step_by(2));
     split.extend(raw.iter().skip(1).step_by(2));
     let mut last = split.first().copied().unwrap_or(0) as i32;
@@ -34,8 +32,14 @@ fn zip_block(raw: &[u8]) -> Vec<u8> {
         *b = (now - last + 128 + 256) as u8;
         last = now;
     }
-    let z = veymelo_zip::zlib(&split);
-    if z.len() < n { z } else { raw.to_vec() }
+    veymelo_zip::zlib(&split)
+}
+
+/// Sixteen lines' bytes made smaller as EXR's ZIP does (kept as they are when that is no
+/// smaller).
+fn zip_block(raw: &[u8]) -> Vec<u8> {
+    let z = zip_bytes(raw);
+    if z.len() < raw.len() { z } else { raw.to_vec() }
 }
 
 /// The bytes of an EXR file `width` × `height` holding `channels` (in any order; they are

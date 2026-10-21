@@ -724,6 +724,11 @@ prop.list/get/set/keys, render.frame
       ×2 เทียบกับที่ระบบวาด: ต่างเฉลี่ย 0.002–0.009, ขอบตัวหนังสือต่าง ≤1.5% ของพิกเซล; PDF ที่ประกอบเองในเทสต์: xref
       stream + object stream + update, xref ผิด, LZW/inline/Indexed/Separation+Type 4, mesh type 4, pattern ไม่มีสี, layer
       ที่ซ่อน, Type 3, soft mask, /Rotate 90, ข้อความ mode 7 เป็น clip, Helvetica จากระบบ
+- [x] 19.2 EXR deep (exr/deep.rs): part แบบ deepscanline/deeptile (ทั้งไฟล์ part เดียวและหลาย part), chunk ละตารางนับ sample
+      (สะสมตลอด chunk หรือต่อบรรทัด ดูจากขนาด sample) + sample (scanline: บรรทัดละช่อง, tile: ช่องละทั้ง tile), บีบ none/RLE/
+      ZIPS/ZIP, ตาราง chunk เสียก็ไล่หาได้; Exr::deep ให้ sample ทุกตัว; ภาพ/plane = รวมจากหน้าไปหลังตาม Z (ตามที่ OpenEXR
+      อธิบาย deep pixel; OpenImageIO รวมตามลำดับในไฟล์ไม่เรียง) แยกชั้นตาม alpha ของชั้นนั้น, Z/ZBack/id = ของชิ้นหน้าสุด;
+      ตรวจกับไฟล์ที่ OpenImageIO (OpenEXR 3.4) เขียน: ทุก sample ตรงสูตรที่เขียน, และ tile/ZIP 16 บรรทัดที่ประกอบเองตามสเปก
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -735,7 +740,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
 6. ~~**สีและตัวหนังสือ (ขั้น 18)**~~ — เสร็จ 2026-10-21 (ACES output, OCIO grading, ฟอนต์ COLR v1 และ CBDT: ดูขั้น 18)
-7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
+7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; ~~EXR deep~~, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)
 

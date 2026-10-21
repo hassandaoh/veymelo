@@ -18,10 +18,14 @@
 //!   its beauty pass by name, never a data pass; luminance and chroma (`Y`, `RY`, `BY`) made
 //!   red, green and blue.
 //!
-//! Deep files (many samples a pixel) and the HTJ2K compressions are not read, and say so.
+//! - deep parts (many samples a pixel, scanlines or tiles; [`Exr::deep`]), and as planes
+//!   flattened: each pixel's samples composited from the nearest.
+//!
+//! The HTJ2K compressions are not read, and say so.
 
 mod b44;
 mod codec;
+mod deep;
 mod dwa;
 pub mod half;
 mod huf;
@@ -29,6 +33,7 @@ mod piz;
 mod picture;
 pub mod write;
 
+pub use deep::{Deep, flatten};
 pub use picture::{Picture, layer_rgba, layers, picture, picture_layer, read_picture};
 
 /// The first four bytes of every OpenEXR file.
@@ -596,14 +601,21 @@ fn find_chunks(bytes: &[u8], at: usize, parts: &mut [Part], multipart: bool) -> 
         let start = r.at;
         let k = if multipart { r.i32()? } else { 0 };
         let p = parts.get_mut(usize::try_from(k).map_err(|_| "a chunk of no part")?).ok_or("a chunk of a part there is not")?;
-        let head = match p.kind {
-            Kind::Scanlines => 4,
-            Kind::Tiles => 16,
-            _ => return Err("deep pictures (many samples a pixel) are not read yet".into()),
+        let (head, deep) = match p.kind {
+            Kind::Scanlines => (4, false),
+            Kind::Tiles => (16, false),
+            Kind::DeepScanlines => (4, true),
+            Kind::DeepTiles => (16, true),
         };
         r.take(head)?;
-        let n = r.i32()?;
-        if n < 0 || r.take(n as usize).is_err() {
+        // a deep chunk: its table's and samples' packed sizes, its samples' unpacked size
+        let whole = if deep {
+            let (t, s, _) = (r.u64()?, r.u64()?, r.u64()?);
+            usize::try_from(t.saturating_add(s)).ok()
+        } else {
+            usize::try_from(r.i32()?).ok()
+        };
+        if whole.is_none_or(|n| r.take(n).is_err()) {
             // cut short here: the chunks before it are read
             break;
         }
@@ -680,7 +692,7 @@ impl Exr {
     pub fn part_planes(&self, bytes: &[u8], k: usize) -> Result<Vec<Plane>, String> {
         let p = self.parts.get(k).ok_or("no such part")?;
         if matches!(p.kind, Kind::DeepScanlines | Kind::DeepTiles) {
-            return Err("deep pictures (many samples a pixel) are not read yet".into());
+            return Ok(deep::flatten(&self.deep(bytes, k)?, k));
         }
         if let Compression::Other(_) = p.compression {
             return Err(format!("OpenEXR's {} compression is not read yet: save the file with ZIP, PIZ or DWAA", p.compression.name()));
