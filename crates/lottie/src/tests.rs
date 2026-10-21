@@ -309,7 +309,7 @@ fn what_lottie_cannot_hold_is_said() {
     push(&mut c.layers[6].props, "effects", glow);
     c.layers[6].switches.adjustment = true;
     let e = out(&p, id, &Options::default());
-    for said in ["Shapes › Wiggle: Lottie has no wiggle", "Shapes: its layer styles are left out", "Shapes: Lottie has no motion blur", "Masked › Glow: Lottie players do not draw Glow", "Masked: Lottie has no adjustment layers"] {
+    for said in ["Shapes › Wiggle: Lottie has no wiggle", "Shapes: its layer styles go along", "Shapes: Lottie has no motion blur", "Masked › Glow: Lottie players do not draw Glow", "Masked: Lottie has no adjustment layers"] {
         assert!(e.warnings.iter().any(|w| w.starts_with(said)), "{said} in {:#?}", e.warnings);
     }
 }
@@ -491,4 +491,61 @@ fn sound_layers_go_out_and_come_back() {
     assert_eq!(f.kind, FootageKind::Audio);
     let levels = comp.layers[0].props.prop("audio/levels").unwrap().value.as_vec2();
     assert!((levels[0] + 6.0).abs() < 0.01, "{levels:?}");
+}
+
+#[test]
+fn layer_styles_go_out_and_come_back() {
+    use veymelo_project::styles::{self, BLENDING_OPTIONS, LIST};
+    let (mut p, id) = project();
+    let c = p.comp_mut(id).unwrap();
+    let l = &mut c.layers[2];
+    let mut bo = Group::instance(&BLENDING_OPTIONS, 950, "Blending Options");
+    set(&mut bo, "globalLightAngle", Value::Number(45.0));
+    set(&mut bo, "globalLightAltitude", Value::Number(40.0));
+    push(&mut l.props, LIST, bo);
+    let mut shadow = Group::instance(styles::find("dropShadow").unwrap(), 951, "Drop Shadow");
+    set(&mut shadow, "useGlobalLight", Value::Bool(false));
+    set(&mut shadow, "angle", Value::Number(200.0));
+    set(&mut shadow, "distance", Value::Number(12.0));
+    set(&mut shadow, "color", Value::Color(Rgba::from_hex("#102030").unwrap()));
+    set(&mut shadow, "blendMode", Value::Choice(8));
+    keys(&mut shadow, "opacity", vec![eased(0.0, Value::Number(20.0), Ease::EASY, Ease::EASY), eased(2.0, Value::Number(90.0), Ease::EASY, Ease::EASY)]);
+    push(&mut l.props, LIST, shadow);
+    let mut bevel = Group::instance(styles::find("bevelEmboss").unwrap(), 952, "Bevel and Emboss");
+    set(&mut bevel, "style", Value::Choice(3));
+    set(&mut bevel, "size", Value::Number(9.0));
+    push(&mut l.props, LIST, bevel);
+    let mut grad = Group::instance(styles::find("gradientOverlay").unwrap(), 953, "Gradient Overlay");
+    set(&mut grad, "colors", Value::Gradient(veymelo_keyframe::Gradient { colors: vec![(0.0, [1.0, 0.0, 0.0]), (1.0, [0.0, 0.0, 1.0])], opacities: vec![(0.0, 1.0), (1.0, 0.5)] }));
+    set(&mut grad, "style", Value::Choice(1));
+    set(&mut grad, "offset", Value::Vec2([3.0, -4.0]));
+    push(&mut l.props, LIST, grad);
+    let mut off = Group::instance(styles::find("stroke").unwrap(), 954, "Stroke");
+    off.enabled = false;
+    push(&mut l.props, LIST, off);
+    let e = out(&p, id, &Options::default());
+    let text = e.json.to_json();
+    assert!(text.contains(r#""sy":"#), "{text}");
+    assert!(e.warnings.iter().any(|w| w.contains("Stroke: switched off")), "{:#?}", e.warnings);
+    let (back_p, imported) = back(&e);
+    let comp = back_p.comp(imported.comp).unwrap();
+    let l = comp.layers.iter().find(|l| l.name == "Shapes").unwrap();
+    let list = l.props.group(LIST).unwrap();
+    let ids: Vec<&str> = list.children.iter().filter_map(Node::as_group).map(|g| g.def.id).collect();
+    assert_eq!(ids, ["blendingOptions", "dropShadow", "bevelEmboss", "gradientOverlay"]);
+    let style = |id: &str| list.children.iter().filter_map(Node::as_group).find(|g| g.def.id == id).unwrap();
+    let ds = style("dropShadow");
+    assert_eq!(ds.prop("angle").unwrap().value, Value::Number(200.0));
+    assert_eq!(ds.prop("distance").unwrap().value, Value::Number(12.0));
+    assert_eq!(ds.prop("blendMode").unwrap().value, Value::Choice(8));
+    assert!(close(&ds.prop("color").unwrap().value, &Value::Color(Rgba::from_hex("#102030").unwrap())));
+    assert_eq!(ds.prop("opacity").unwrap().keys.len(), 2);
+    // the bevel followed the light: it comes back following it, the light as it was
+    let bv = style("bevelEmboss");
+    assert_eq!((bv.prop("style").unwrap().value.clone(), bv.prop("useGlobalLight").unwrap().value.clone()), (Value::Choice(3), Value::Bool(true)));
+    let bo = style("blendingOptions");
+    assert_eq!((bo.prop("globalLightAngle").unwrap().value.clone(), bo.prop("globalLightAltitude").unwrap().value.clone()), (Value::Number(45.0), Value::Number(40.0)));
+    let go = style("gradientOverlay");
+    assert_eq!(go.prop("offset").unwrap().value, Value::Vec2([3.0, -4.0]));
+    assert!(close(&go.prop("colors").unwrap().value, &Value::Gradient(veymelo_keyframe::Gradient { colors: vec![(0.0, [1.0, 0.0, 0.0]), (1.0, [0.0, 0.0, 1.0])], opacities: vec![(0.0, 1.0), (1.0, 0.5)] })));
 }

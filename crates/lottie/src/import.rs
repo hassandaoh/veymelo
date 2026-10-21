@@ -93,6 +93,8 @@ struct In<'a> {
     /// Asset ids, and the items they became (with their size).
     assets: HashMap<String, (u64, [u32; 2])>,
     fonts: Vec<(String, String, String)>,
+    /// The glyphs the document carries (`chars`).
+    chars: Vec<Json>,
     items: Vec<u64>,
     folder: Option<u64>,
     name: String,
@@ -140,7 +142,7 @@ fn import_one(project: &mut Project, doc: &Json, name: &str, beside: Option<&Pat
     let name = s(&doc, "nm").filter(|n| !n.trim().is_empty()).unwrap_or(name).to_string();
     let ip = f(&doc, "ip").unwrap_or(0.0);
     let op = f(&doc, "op").unwrap_or(ip + fps).max(ip + 1.0);
-    let mut im = In { cx: Ctx { rate, expressions: true, warnings: Vec::new() }, assets: HashMap::new(), fonts: Vec::new(), items: Vec::new(), folder: None, name: name.clone(), store };
+    let mut im = In { cx: Ctx { rate, expressions: true, warnings: Vec::new() }, assets: HashMap::new(), fonts: Vec::new(), chars: doc.get("chars").and_then(Json::as_array).cloned().unwrap_or_default(), items: Vec::new(), folder: None, name: name.clone(), store };
     let duration = im.cx.tick(op).min(Tick::from_seconds(veymelo_project::MAX_SECONDS));
     if let Some(list) = doc.get("fonts").and_then(|f| f.get("list")).and_then(Json::as_array) {
         for fo in list {
@@ -250,9 +252,6 @@ fn import_one(project: &mut Project, doc: &Json, name: &str, beside: Option<&Pat
     comp.layers = build_layers(&mut im, project, &comp, &layers);
     let id = project.add_comp(&name, comp);
     im.items.push(id);
-    if doc.get("chars").and_then(Json::as_array).is_some_and(|c| !c.is_empty()) {
-        im.cx.warn("the letters the document carries are not used (its text is drawn with fonts on this computer)");
-    }
     Ok(Imported { comp: id, comps: vec![id], items: im.items, warnings: im.cx.warnings })
 }
 
@@ -485,7 +484,22 @@ fn build_layers(im: &mut In, project: &mut Project, comp: &Comp, layers: &[Json]
                 }
             }
             Source::Text => {
-                if let (Some(t), Ok(tg)) = (j.get("t"), l.props.group_mut("text")) {
+                // a font this computer has not, its glyphs carried: the letters as shapes
+                let carried = j.get("t").and_then(|t| text::first_doc(t, &im.fonts)).filter(|d| !im.chars.is_empty() && veymelo_text::lay_out(d).no_font).and_then(|d| Some((text::letters_from_chars(&d, &im.chars)?, d)));
+                if let Some((items, d)) = carried {
+                    im.cx.warn(format!("{label}: the font \"{}\" is not on this computer, so its letters are drawn from the glyphs the document carries, as shapes (as the words are at its start)", d.font));
+                    let mut s = Layer::new(l.id, &l.name, Source::Shape, l.out_point);
+                    for g in ["transform", "masks", "effects", veymelo_project::styles::LIST] {
+                        if let (Ok(from), Ok(to)) = (l.props.group(g), s.props.group_mut(g)) {
+                            *to = from.clone();
+                        }
+                    }
+                    let nodes = shapes::items_in(&mut im.cx, &items, &mut ids, &label);
+                    if let Ok(c) = s.props.group_mut("contents") {
+                        c.children = nodes;
+                    }
+                    (l.source, l.props) = (s.source, s.props);
+                } else if let (Some(t), Ok(tg)) = (j.get("t"), l.props.group_mut("text")) {
                     text::text_in(&mut im.cx, t, tg, &im.fonts, &mut ids, &label);
                 }
             }
@@ -508,8 +522,8 @@ fn build_layers(im: &mut In, project: &mut Project, comp: &Comp, layers: &[Json]
         if let Some(list) = j.get("ef").and_then(Json::as_array) {
             effects_in(&mut im.cx, list, &mut l, &by_ind, &mut ids);
         }
-        if j.get("sy").and_then(Json::as_array).is_some_and(|a| !a.is_empty()) {
-            im.cx.warn(format!("{name}: its layer styles are not read"));
+        if let Some(list) = j.get("sy").and_then(Json::as_array) {
+            crate::styles::import(&mut im.cx, list, &mut l, &mut ids);
         }
         let parent = f(j, "parent").and_then(|p| by_ind.get(&(p as i64)).copied()).filter(|p| p != id);
         let kind = match f(j, "tt").unwrap_or(0.0) as i64 {

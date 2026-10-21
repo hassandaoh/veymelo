@@ -441,3 +441,97 @@ pub fn outlines(cx: &mut Ctx, l: &Layer) -> Vec<Json> {
     items.extend(paints);
     items
 }
+
+// ---------------------------------------------------------------- glyphs carried in the document
+
+/// Lottie's `chars`: each character the documents show, in each font, its outline at 100 units
+/// an em (y down, the baseline at 0) and how far it moves the pen, so players need no font.
+pub fn chars_out(cx: &mut Ctx, docs: &[TextDoc]) -> Vec<Json> {
+    let still = |k: Json| Json::object([("a", Json::from(0.0)), ("k", k)]);
+    let mut seen: Vec<(String, char)> = Vec::new();
+    let mut out = Vec::new();
+    for d in docs {
+        let Some(font) = veymelo_text::resolve(&d.font, d.weight, d.italic) else {
+            cx.warn(format!("the font \"{}\" is not on this computer: its letters are not carried", d.font));
+            continue;
+        };
+        let key = font_key(d);
+        let k = 100.0 / font.units;
+        for c in d.text.chars().filter(|c| !matches!(c, '\r' | '\n' | '\u{3}')) {
+            if seen.iter().any(|(f, s)| *f == key && *s == c) {
+                continue;
+            }
+            seen.push((key.clone(), c));
+            let g = font.glyph(c);
+            let mut pen = Curves::default();
+            font.outline(g, &mut pen, &|x, y| (x * k, -y * k));
+            pen.finish();
+            let mut it: Vec<Json> = pen.done.iter().map(|p| Json::object([("ty", Json::from("sh")), ("ks", still(path_json(p)))])).collect();
+            it.push(Json::object([("ty", Json::from("tr")), ("p", still(nums(&[0.0, 0.0]))), ("a", still(nums(&[0.0, 0.0]))), ("s", still(nums(&[100.0, 100.0]))), ("r", still(num(0.0))), ("o", still(num(100.0)))]));
+            let shape = Json::object([("ty", Json::from("gr")), ("nm", Json::from(c.to_string())), ("np", Json::from(it.len() as f64)), ("it", Json::Array(it))]);
+            out.push(Json::object([
+                ("ch", Json::from(c.to_string())),
+                ("size", num(100.0)),
+                ("style", Json::from(style_of(d.weight, d.italic))),
+                ("fFamily", Json::from(family_of(d))),
+                ("w", num(font.advance(g) * k)),
+                ("data", Json::object([("shapes", Json::Array(vec![shape]))])),
+            ]));
+        }
+    }
+    out
+}
+
+/// A text document's words (as they are at its start) laid out from the glyphs a document
+/// carries, as shape items: a group for each letter, moved to its place, then the text's fill
+/// and stroke. None when a character it shows has no glyph there.
+pub fn letters_from_chars(d: &TextDoc, chars: &[Json]) -> Option<Vec<Json>> {
+    let family = family_of(d);
+    let style = style_of(d.weight, d.italic);
+    let find = |c: char| -> Option<&Json> {
+        let mine = |j: &&Json| j.get("ch").and_then(Json::as_str).and_then(|s| s.chars().next()) == Some(c);
+        chars.iter().filter(mine).find(|j| j.get("fFamily").and_then(Json::as_str) == Some(family.as_str()) && j.get("style").and_then(Json::as_str) == Some(style.as_str())).or_else(|| chars.iter().find(mine))
+    };
+    let still = |k: Json| Json::object([("a", Json::from(0.0)), ("k", k)]);
+    let leading = d.leading.unwrap_or(d.size * 1.2);
+    let lines: Vec<&str> = d.text.split('\n').collect();
+    let mut items = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        // the line's letters and their places, then the line moved for its justification
+        let mut x = 0.0;
+        let mut placed = Vec::new();
+        for c in line.chars() {
+            let j = find(c)?;
+            let k = d.size / j.get("size").and_then(Json::as_f64).unwrap_or(100.0).max(1e-9);
+            placed.push((c, j, x, k));
+            x += j.get("w").and_then(Json::as_f64).unwrap_or(0.0) * k + d.tracking / 1000.0 * d.size;
+        }
+        let width = x - if placed.is_empty() { 0.0 } else { d.tracking / 1000.0 * d.size };
+        let shift = match d.justify {
+            Justify::Right | Justify::JustifyRight => -width,
+            Justify::Center | Justify::JustifyCenter => -width / 2.0,
+            _ => 0.0,
+        };
+        for (c, j, x, k) in placed {
+            let shapes = j.get("data").and_then(|v| v.get("shapes")).and_then(Json::as_array).cloned().unwrap_or_default();
+            if shapes.is_empty() {
+                continue;
+            }
+            let mut it = shapes;
+            it.push(Json::object([("ty", Json::from("tr")), ("p", still(nums(&[x + shift, li as f64 * leading - d.baseline_shift]))), ("a", still(nums(&[0.0, 0.0]))), ("s", still(nums(&[100.0 * k, 100.0 * k]))), ("r", still(num(0.0))), ("o", still(num(100.0)))]));
+            items.push(Json::object([("ty", Json::from("gr")), ("nm", Json::from(c.to_string())), ("np", Json::from(it.len() as f64)), ("it", Json::Array(it))]));
+        }
+    }
+    let fill = d.fill.map(|c| Json::object([("ty", Json::from("fl")), ("nm", Json::from("Fill")), ("c", still(rgb(c))), ("o", still(num(100.0 * c.a))), ("r", Json::from(1.0))]));
+    let stroke = d.stroke.filter(|_| d.stroke_width > 0.0).map(|c| {
+        Json::object([("ty", Json::from("st")), ("nm", Json::from("Stroke")), ("c", still(rgb(c))), ("o", still(num(100.0 * c.a))), ("w", still(num(d.stroke_width))), ("lc", Json::from(1.0)), ("lj", Json::from(1.0)), ("ml", Json::from(4.0))])
+    });
+    items.extend(if d.stroke_over { [stroke, fill] } else { [fill, stroke] }.into_iter().flatten());
+    Some(items)
+}
+
+/// The document a layer's Lottie `t` shows first.
+pub fn first_doc(t: &Json, fonts: &[(String, String, String)]) -> Option<TextDoc> {
+    let first = t.get("d")?.get("k")?.as_array()?.first()?;
+    Some(doc_from(first.get("s")?, fonts))
+}

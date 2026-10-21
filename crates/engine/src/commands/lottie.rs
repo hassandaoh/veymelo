@@ -22,6 +22,7 @@ pub fn commands() -> Vec<Command> {
                     Param::need("path", Ty::Text, "where it goes: something.json or something.lottie"),
                     Param::opt("expressions", Ty::Bool, "send expressions along (players that run expressions run them; default off)"),
                     Param::opt("textAsShapes", Ty::Bool, "text as the outlines of its letters: exact, no font needed, but its words as they are at the start (default off)"),
+                    Param::opt("glyphs", Ty::Bool, "text kept as text with its letters' outlines carried in the document (Lottie's chars), so players need no font; each character drawn alone, without shaping (default off)"),
                     Param::opt("embedImages", Ty::Bool, "pictures inside the document (default on); off: copied beside it into images/"),
                     Param::opt("workArea", Ty::Bool, "only the work area plays (default off: all of it)"),
                     Param::opt("background", Ty::Bool, "the composition's background colour as a solid under everything (Lottie has none; default off)"),
@@ -57,7 +58,7 @@ fn lottie_export(l: &Look, a: &Args) -> Result<Json> {
         _ => return Err(Error::params(format!("a Lottie file ends in .json or .lottie, not \"{}\"", path.display()))),
     };
     let flag = |n: &str, d: bool| a.bool(n).unwrap_or(d);
-    let options = Options { expressions: flag("expressions", false), text_as_shapes: flag("textAsShapes", false), embed_images: flag("embedImages", true), work_area: flag("workArea", false), background: flag("background", false) };
+    let options = Options { expressions: flag("expressions", false), text_as_shapes: flag("textAsShapes", false), embed_glyphs: flag("glyphs", false), embed_images: flag("embedImages", true), work_area: flag("workArea", false), background: flag("background", false) };
     let e = veymelo_lottie::export(l.project, comp, &options, &|p| std::fs::read(p).ok()).map_err(Error::refused)?;
     let mut warnings = e.warnings.clone();
     // the pictures it names beside it

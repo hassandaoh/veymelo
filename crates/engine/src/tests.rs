@@ -1194,6 +1194,39 @@ fn the_render_queue_makes_files() {
     assert_eq!(now.get("frames").and_then(Json::as_f64), Some(3.0));
 }
 
+/// Text carried with its glyphs (Lottie's chars): read where its font is missing, its letters
+/// come back as shapes in the same places.
+#[test]
+fn lottie_glyphs_stand_in_for_a_missing_font() {
+    let mut s = Session::new();
+    let c = id(&run(&mut s, "comp.new", r#"{"name": "Words", "width": 400, "height": 160, "fps": 25, "duration": 1}"#), "comp");
+    let words = id(&run(&mut s, "layer.add", r##"{"type": "text", "text": {"text": "Hi, Lottie\rtwo", "font": "Helvetica", "size": 60, "fill": "#ffffff", "justify": "center"}}"##), "layer");
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {words}, "path": "transform/position", "value": [200, 70, 0]}}"#));
+    let dir = std::env::temp_dir().join(format!("veymelo-lottie-glyphs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("words.json").to_string_lossy().into_owned();
+    run(&mut s, "lottie.export", &format!(r#"{{"path": "{path}", "glyphs": true}}"#));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(r#""chars":"#) && text.contains(r#""ch":"L""#), "the letters carried");
+    // a computer without the font: its name changed to one there is not
+    std::fs::write(&path, text.replace("Helvetica", "Nosuchfont Sans")).unwrap();
+    let back = run(&mut s, "lottie.import", &format!(r#"{{"path": "{path}"}}"#));
+    assert!(back.to_json().contains("drawn from the glyphs the document carries"), "{}", back.to_json());
+    let b = id(&back, "comp");
+    let layer = &s.project().comp(b).unwrap().layers[0];
+    assert!(matches!(layer.source, veymelo_project::Source::Shape));
+    let opts = render::Options { background: false, ..render::Options::default() };
+    let (x, y) = (s.render(Some(&Json::Number(c as f64)), None, &opts).unwrap(), s.render(Some(&Json::Number(b as f64)), None, &opts).unwrap());
+    // the same ink in the same places (the edges smoothed a little differently)
+    let (mut both, mut either) = (0usize, 0usize);
+    for (p, q) in x.image.px.iter().zip(&y.image.px) {
+        let (a, b) = (p[3] > 0.5, q[3] > 0.5);
+        both += usize::from(a && b);
+        either += usize::from(a || b);
+    }
+    assert!(either > 500 && both as f64 / either as f64 > 0.9, "{both} of {either}");
+}
+
 #[test]
 fn lottie_out_and_back_draws_the_same() {
     let (mut s, c, _) = started();

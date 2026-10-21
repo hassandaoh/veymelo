@@ -18,6 +18,10 @@ pub struct Options {
     /// Text as the outlines of its letters: the look exact and no font needed where it plays,
     /// but the words are as they are at the layer's start.
     pub text_as_shapes: bool,
+    /// Text kept as text, its letters' outlines carried in the document (`chars`), so players
+    /// need no font (each character as its font draws it alone, without the shaping that joins
+    /// letters).
+    pub embed_glyphs: bool,
     /// Pictures inside the document; else beside it, in `images/`.
     pub embed_images: bool,
     /// Only the work area plays.
@@ -28,7 +32,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { expressions: false, text_as_shapes: false, embed_images: true, work_area: false, background: false }
+        Options { expressions: false, text_as_shapes: false, embed_glyphs: false, embed_images: true, work_area: false, background: false }
     }
 }
 
@@ -51,6 +55,8 @@ struct Doc<'a> {
     /// Asset ids made (or being made).
     made: HashSet<String>,
     fonts: Vec<Json>,
+    /// The documents of the text kept as text, for the glyphs the document carries.
+    glyph_docs: Vec<veymelo_keyframe::TextDoc>,
     three_d: bool,
     images: Vec<(String, String)>,
 }
@@ -333,6 +339,11 @@ impl Doc<'_> {
                 ty = 5.0;
                 let t = text::text_out(&mut self.cx, l, &mut self.fonts);
                 o.insert("t", t);
+                if self.options.embed_glyphs
+                    && let Ok(st) = l.props.prop("text/sourceText")
+                {
+                    self.glyph_docs.extend(std::iter::once(&st.value).chain(st.keys.iter().map(|k| &k.value)).filter_map(Value::doc));
+                }
             }
             Source::Solid { .. } if l.switches.adjustment => {
                 self.cx.warn(format!("{name}: Lottie has no adjustment layers (a hidden null instead)"));
@@ -449,6 +460,10 @@ impl Doc<'_> {
         if !ef.is_empty() {
             o.insert("ef", Json::Array(ef));
         }
+        let sy = crate::styles::export(&mut self.cx, l);
+        if !sy.is_empty() {
+            o.insert("sy", Json::Array(sy));
+        }
         if let Some(m) = l.matte
             && let Some(&mi) = inds.get(&m.layer)
         {
@@ -470,7 +485,7 @@ impl Doc<'_> {
             self.cx.warn(format!("{name}: Lottie has no layer markers (composition markers go along)"));
         }
         if l.props.group(veymelo_project::styles::LIST).is_ok_and(|g| g.children.iter().filter_map(Node::as_group).any(|s| s.enabled && s.def.id != veymelo_project::styles::BLENDING)) {
-            self.cx.warn(format!("{name}: its layer styles are left out (Lottie players do not draw them)"));
+            self.cx.warn(format!("{name}: its layer styles go along, but most Lottie players do not draw them"));
         }
         if l.preserve_transparency {
             self.cx.warn(format!("{name}: Lottie cannot draw only where the layers under it are"));
@@ -495,6 +510,7 @@ pub fn export(project: &Project, comp: u64, options: &Options, read: &dyn Fn(&st
         assets: Vec::new(),
         made: HashSet::from([format!("comp_{comp}")]),
         fonts: Vec::new(),
+        glyph_docs: Vec::new(),
         three_d: false,
         images: Vec::new(),
     };
@@ -552,6 +568,10 @@ pub fn export(project: &Project, comp: u64, options: &Options, read: &dyn Fn(&st
     out.insert("markers", Json::Array(markers));
     if !doc.fonts.is_empty() {
         out.insert("fonts", Json::object([("list", Json::Array(doc.fonts))]));
+    }
+    if !doc.glyph_docs.is_empty() {
+        let chars = text::chars_out(&mut doc.cx, &doc.glyph_docs);
+        out.insert("chars", Json::Array(chars));
     }
     Ok(Exported { json: Json::Object(out), warnings: doc.cx.warnings, images: doc.images })
 }

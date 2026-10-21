@@ -7,8 +7,8 @@
 //! plays, or as the outlines of its letters). Transforms with parents, separate dimensions and
 //! anchors, keyframes (speed and influence as Lottie's ease curves, holds, the curves positions
 //! move on), shape contents, masks, track mattes, blend modes, time remapping, layer timing,
-//! the effects Lottie players draw and markers all go along. What Lottie cannot hold (lights,
-//! layer styles, most effects, video…) is said in the warnings.
+//! the effects Lottie players draw, layer styles (`sy`, which few players draw) and markers all
+//! go along. What Lottie cannot hold (lights, most effects, video…) is said in the warnings.
 //!
 //! **In** ([`import`]): a Lottie document (`.json`, or a `.lottie` archive) as a new
 //! composition, its precomps, images and sounds as items in a folder of their own.
@@ -23,6 +23,7 @@ mod base64;
 mod export;
 mod import;
 mod shapes;
+mod styles;
 mod text;
 mod values;
 
