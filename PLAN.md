@@ -405,7 +405,7 @@ prop.list/get/set/keys, render.frame
       ตำแหน่งขีดเส้นใต้ (post), ระยะแนวตั้ง (vhea/vmtx) [เสร็จ: ตรงกับ CoreText ทั้ง Hiragino, Apple SD Gothic Neo,
       LastResort]; ฟอนต์สี [เสร็จ: ภาพ sbix ของ Apple Color Emoji (เลือกขนาดใกล้สุด, dupe) วาดผ่านการเปลี่ยนรูปของตัวอักษร
       และ animator, ชั้นสี COLR v0 + จานสี CPAL (ชั้นไม่มีสีใช้สีของข้อความ), emoji หาฟอนต์สีเอง, ตัวต่อ ZWJ/FE0F/สีผิว/ธง/keycap
-      อยู่ในฟอนต์เดียวกันเพื่อให้ morx รวมเป็นภาพเดียว]; ภายหลัง: COLR v1 (ไล่สี) และ CBDT;
+      อยู่ในฟอนต์เดียวกันเพื่อให้ morx รวมเป็นภาพเดียว]; COLR v1 และ CBDT [เสร็จ: ดู 18.3];
       (4) จัดวางใหม่ทั้งหมด [เสร็จ]; (5) เรนเดอร์ + animator ครบ + text on path + fill/stroke order [เสร็จ];
       (6) คำสั่ง [เสร็จ: text.set ทุกค่าทีละช่วง, text.insert/delete, text.fonts, text.fontFeatures,
       text.removeAllAnimators]; (7) ตัวหนังสือ 3D รายตัว [เสร็จ: ผ่านกล้องและแสงเหมือนชั้น 3D]; (8) ตาราง AAT (morx/kerx) สำหรับฟอนต์ของ Apple ที่ไม่มี OpenType (Geeza Pro ฯลฯ) [เสร็จ: morx ครบ 5 แบบ,
@@ -690,6 +690,13 @@ prop.list/get/set/keys, render.frame
 - [x] 18.2 OCIO GradingPrimaryTransform / GradingToneTransform / GradingRGBCurveTransform (ocio/grading.rs) ตามคณิตของ
       OpenColorIO (ค่าที่คำนวณ, ลำดับ, ค่าเริ่มต้นตาม style log/linear/video, lin-to-log ของ OCIO สำหรับ linear); tone และ curve
       ย้อนกลับทีละช่องด้วยการหาค่า (เพิ่มขึ้นเสมอ)
+- [x] 18.3 ฟอนต์สี COLR v1 (font/colr.rs + render/colour_glyph.rs): paint ครบ 32 แบบ (ชั้น, สีเดียว, ไล่สี linear/radial/
+      sweep พร้อม pad/repeat/reflect, glyph ที่ clip, ColrGlyph ใช้ซ้ำ (วนกลับหาตัวเอง = ไม่วาด), transform/translate/scale/
+      rotate/skew รอบจุดหรือจุดกำเนิด, composite 28 โหมด Porter-Duff + blend ของ W3C) ทุกแบบที่แปรได้ตาม instance ของ
+      variable font (DeltaSetIndexMap หรือแบบ implicit, 2.14/16.16 บวก delta แบบจำนวนเต็ม); ClipBox (ปัดออก) หรือขอบเขตจาก
+      outline, กราฟไม่มีขอบเขต = ไม่วาด; วาดเป็นภาพ linear light คูณ alpha ตามสเปก CPAL แล้วกลับเป็น sRGB, ที่ ppem
+      ที่ตาเห็น (≤2048 px), จำไว้ตามฟอนต์/instance/ขนาด/สีข้อความ, วางผ่านการเปลี่ยนรูปของตัวอักษรเหมือน sbix;
+      CBDT/CBLC: เลือก strike ใกล้สุด, index format 1–5, image format 17/18/19 (PNG), ฟอนต์ที่มีแต่ภาพ (ไม่มี glyf) เปิดได้
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -700,7 +707,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 3. ~~**3D รายการเก่า (ขั้น 16)**~~ — เสร็จ 2026-10-21 (ดูขั้น 16)
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
-6. **สีและตัวหนังสือ (ขั้น 18)**: ~~ACES output transforms (RRT+ODT)~~, ~~GradingPrimary/Tone/Curve~~; ฟอนต์ COLR v1 (ไล่สี) และ CBDT
+6. ~~**สีและตัวหนังสือ (ขั้น 18)**~~ — เสร็จ 2026-10-21 (ACES output, OCIO grading, ฟอนต์ COLR v1 และ CBDT: ดูขั้น 18)
 7. **ไฟล์**: PDF/AI แบบเวกเตอร์; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)

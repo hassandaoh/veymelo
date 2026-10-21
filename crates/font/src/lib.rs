@@ -7,10 +7,15 @@
 //! leaves out are moved in proportion to their neighbours), and the advance widths by what
 //! `HVAR` gives.
 //!
+//! Colour glyphs are read three ways: pictures (`sbix`, and `CBDT`'s PNGs), layers of outlines
+//! each in one colour (`COLR` version 0), and graphs of paints — gradients, transforms and ways of
+//! combining — over outlines (`COLR` version 1, [`colr`]).
+//!
 //! [`shape`] turns text into placed glyphs with the font's own OpenType rules (`GSUB`, `GPOS`),
 //! and [`system`] finds the fonts installed on the computer.
 
 mod cff;
+pub mod colr;
 pub mod shape;
 pub mod system;
 
@@ -92,9 +97,12 @@ pub struct Font {
     pub(crate) kerx: usize,
     pub(crate) ankr: usize,
     pub(crate) trak: usize,
-    /// Colour glyphs: pictures (`sbix`), and layers of outlines (`COLR`) coloured from a
+    /// Colour glyphs: pictures (`sbix`, `CBDT` found through `CBLC`), and layers of outlines
+    /// or graphs of paints (`COLR`) coloured from a
     /// palette (`CPAL`).
     sbix: usize,
+    cbdt: usize,
+    cblc: usize,
     colr: usize,
     cpal: usize,
     /// PostScript outlines (`CFF ` or `CFF2`), read, when it has no `glyf`.
@@ -131,18 +139,26 @@ pub(crate) fn u32_at(d: &[u8], at: usize) -> u32 {
     d.get(at..at + 4).map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-fn byte_at(d: &[u8], at: usize) -> u8 {
+pub(crate) fn byte_at(d: &[u8], at: usize) -> u8 {
     d.get(at).copied().unwrap_or(0)
 }
 
 /// A 2.14 fixed-point number.
-fn f2_at(d: &[u8], at: usize) -> f64 {
+pub(crate) fn f2_at(d: &[u8], at: usize) -> f64 {
     i16_at(d, at) as f64 / 16384.0
 }
 
 /// A 16.16 fixed-point number.
-fn fixed_at(d: &[u8], at: usize) -> f64 {
+pub(crate) fn fixed_at(d: &[u8], at: usize) -> f64 {
     u32_at(d, at) as i32 as f64 / 65536.0
+}
+
+/// Strikes of pictures (their pixels to an em, and where they are), the nearest as big as `ppem`
+/// or bigger first, then the bigger ones, then the smaller from the biggest down.
+fn nearest_first<T: Copy>(mut order: Vec<(u16, T)>, ppem: f64) -> Vec<(u16, T)> {
+    order.sort_by_key(|(p, _)| *p);
+    let start = order.iter().position(|(p, _)| *p as f64 >= ppem).unwrap_or(order.len().saturating_sub(1));
+    order[start..].iter().chain(order[..start].iter().rev()).copied().collect()
 }
 
 /// How many fonts a file holds (a collection, `.ttc`, holds several).
@@ -185,7 +201,8 @@ impl Font {
         } else {
             None
         };
-        if glyf == 0 && cff.is_none() {
+        // a font of pictures only (emoji) may have no outlines
+        if glyf == 0 && cff.is_none() && table(b"sbix").is_none() && table(b"CBDT").is_none() {
             return Err("it has no outlines (no glyf, CFF or CFF2 table)".into());
         }
         // the Unicode map: the full one (format 12) when there is one, else the basic one (4)
@@ -244,6 +261,8 @@ impl Font {
             ankr: table(b"ankr").unwrap_or(0),
             trak: table(b"trak").unwrap_or(0),
             sbix: table(b"sbix").unwrap_or(0),
+            cbdt: table(b"CBDT").unwrap_or(0),
+            cblc: if table(b"CBDT").is_some() { table(b"CBLC").unwrap_or(0) } else { 0 },
             colr: table(b"COLR").unwrap_or(0),
             cpal: table(b"CPAL").unwrap_or(0),
             cff,
@@ -280,29 +299,36 @@ impl Font {
 
     /// Whether some of its glyphs are in colour (pictures or coloured layers).
     pub fn has_color(&self) -> bool {
-        self.sbix != 0 || self.colr != 0
+        self.sbix != 0 || self.cblc != 0 || self.colr != 0
     }
 
-    /// Glyph `g`'s colour picture (`sbix`) from the strike nearest `ppem` pixels an em (the
-    /// smallest as big or bigger, else the biggest): its file's bytes (PNG, JPEG or TIFF), where
-    /// the picture's bottom left is from the glyph's origin (its own pixels, y up), and its
-    /// pixels to an em. None when it has no picture.
+    /// What tells this instance of the font from others (its file and where it is on its axes).
+    pub fn instance_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        (self.id(), self.face).hash(&mut h);
+        for c in &self.coords {
+            c.to_bits().hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// Glyph `g`'s colour picture (`sbix`, else `CBDT`) from the strike nearest `ppem` pixels an
+    /// em (the smallest as big or bigger, else the biggest): its file's bytes (PNG, JPEG or
+    /// TIFF), where the picture's bottom left is from the glyph's origin (its own pixels, y up),
+    /// and its pixels to an em. None when it has no picture.
     pub fn picture(&self, g: u16, ppem: f64) -> Option<GlyphPicture<'_>> {
         let d = self.data();
         let t = self.sbix;
         if t == 0 {
-            return None;
+            return self.bitmap(g, ppem);
         }
         let strikes = u32_at(d, t + 4) as usize;
-        let mut order: Vec<(u16, usize)> = (0..strikes).map(|i| {
+        let order: Vec<(u16, usize)> = (0..strikes).map(|i| {
             let at = t + u32_at(d, t + 8 + 4 * i) as usize;
             (u16_at(d, at), at)
         }).collect();
-        order.sort_by_key(|(p, _)| *p);
-        let start = order.iter().position(|(p, _)| *p as f64 >= ppem).unwrap_or(order.len().saturating_sub(1));
-        // from the nearest strike up, then down: the first that has this glyph
-        let tried: Vec<(u16, usize)> = order[start..].iter().chain(order[..start].iter().rev()).copied().collect();
-        for (size, at) in tried {
+        for (size, at) in nearest_first(order, ppem) {
             let mut glyph = g;
             for _ in 0..4 {
                 let off = |k: u16| u32_at(d, at + 4 + 4 * k as usize) as usize;
@@ -323,6 +349,93 @@ impl Font {
         None
     }
 
+    /// Glyph `g`'s PNG picture in `CBDT`, found through `CBLC`'s strikes (each a size and
+    /// ranges of glyphs, their pictures one after another or listed), nearest `ppem` first.
+    fn bitmap(&self, g: u16, ppem: f64) -> Option<GlyphPicture<'_>> {
+        let (d, t, data) = (self.data(), self.cblc, self.cbdt);
+        if t == 0 {
+            return None;
+        }
+        let strikes = (u32_at(d, t + 4) as usize).min(256);
+        let order: Vec<(u16, usize)> = (0..strikes).map(|i| t + 8 + 48 * i).map(|rec| (byte_at(d, rec + 45) as u16, rec)).collect();
+        for (size, rec) in nearest_first(order, ppem) {
+            if g < u16_at(d, rec + 40) || g > u16_at(d, rec + 42) {
+                continue;
+            }
+            let array = t + u32_at(d, rec) as usize;
+            for j in 0..(u32_at(d, rec + 8) as usize).min(65536) {
+                let e = array + 8 * j;
+                let first = u16_at(d, e);
+                if g < first || g > u16_at(d, e + 2) {
+                    continue;
+                }
+                let sub = array + u32_at(d, e + 4) as usize;
+                let (index_format, image_format, image_at) = (u16_at(d, sub), u16_at(d, sub + 2), data + u32_at(d, sub + 4) as usize);
+                let k = (g - first) as usize;
+                // where its picture is, how long, and the metrics the index gives (8 bytes)
+                let (at, len, metrics) = match index_format {
+                    1 => {
+                        let (a, b) = (u32_at(d, sub + 8 + 4 * k) as usize, u32_at(d, sub + 12 + 4 * k) as usize);
+                        (image_at + a, b.saturating_sub(a), None)
+                    }
+                    2 => {
+                        let size = u32_at(d, sub + 8) as usize;
+                        (image_at + size * k, size, Some(sub + 12))
+                    }
+                    3 => {
+                        let (a, b) = (u16_at(d, sub + 8 + 2 * k) as usize, u16_at(d, sub + 10 + 2 * k) as usize);
+                        (image_at + a, b.saturating_sub(a), None)
+                    }
+                    4 => {
+                        let n = u32_at(d, sub + 8) as usize;
+                        let Some(i) = (0..n).find(|&i| u16_at(d, sub + 12 + 4 * i) == g) else { continue };
+                        let (a, b) = (u16_at(d, sub + 14 + 4 * i) as usize, u16_at(d, sub + 18 + 4 * i) as usize);
+                        (image_at + a, b.saturating_sub(a), None)
+                    }
+                    5 => {
+                        let (size, n) = (u32_at(d, sub + 8) as usize, u32_at(d, sub + 20) as usize);
+                        let Some(i) = (0..n).find(|&i| u16_at(d, sub + 24 + 2 * i) == g) else { continue };
+                        (image_at + size * i, size, Some(sub + 12))
+                    }
+                    _ => continue,
+                };
+                if len == 0 {
+                    continue;
+                }
+                // small metrics (height, width, x and y bearings) or big ones, before the PNG or
+                // in the index; the bearings are from the origin to the top left, y up
+                let (m, png) = match image_format {
+                    17 => (at, at + 9),
+                    18 => (at, at + 12),
+                    19 => match metrics {
+                        Some(m) => (m, at + 4),
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                let bytes = d.get(png..png + u32_at(d, png - 4) as usize)?;
+                let (height, bx, by) = (byte_at(d, m) as f64, byte_at(d, m + 2) as i8 as f64, byte_at(d, m + 3) as i8 as f64);
+                return Some(GlyphPicture { bytes, origin: (bx, by - height), ppem: size as f64, kind: *b"png " });
+            }
+        }
+        None
+    }
+
+    /// Colour `index` of the font's first palette (`CPAL`), straight sRGB RGBA; none when it has
+    /// no such colour.
+    pub(crate) fn palette(&self, index: u16) -> Option<[f32; 4]> {
+        let (d, c) = (self.data(), self.cpal);
+        if c == 0 || index == 0xFFFF {
+            return None;
+        }
+        let (entries, records_at, first_record) = (u16_at(d, c + 2), c + u32_at(d, c + 8) as usize, u16_at(d, c + 12) as usize);
+        if index >= entries {
+            return None;
+        }
+        let r = records_at + 4 * (first_record + index as usize);
+        Some([byte_at(d, r + 2), byte_at(d, r + 1), byte_at(d, r), byte_at(d, r + 3)].map(|v| v as f32 / 255.0))
+    }
+
     /// Glyph `g`'s coloured layers (`COLR` version 0), bottom first: each a glyph and its colour
     /// (straight sRGB RGBA from palette 0; none: the text's own colour). None when it has none.
     pub fn color_layers(&self, g: u16) -> Option<Vec<(u16, Option<[f32; 4]>)>> {
@@ -339,21 +452,9 @@ impl Font {
             let id = u16_at(d, base_at + 6 * mid);
             if id == g {
                 let (first, n) = (u16_at(d, base_at + 6 * mid + 2) as usize, u16_at(d, base_at + 6 * mid + 4) as usize);
-                let palette = |index: u16| -> Option<[f32; 4]> {
-                    if index == 0xFFFF || self.cpal == 0 {
-                        return None;
-                    }
-                    let c = self.cpal;
-                    let (entries, records_at, first_record) = (u16_at(d, c + 2), c + u32_at(d, c + 8) as usize, u16_at(d, c + 12) as usize);
-                    if index >= entries {
-                        return None;
-                    }
-                    let r = records_at + 4 * (first_record + index as usize);
-                    Some([byte_at(d, r + 2), byte_at(d, r + 1), byte_at(d, r), byte_at(d, r + 3)].map(|v| v as f32 / 255.0))
-                };
                 return Some((0..n).map(|k| {
                     let r = layer_at + 4 * (first + k);
-                    (u16_at(d, r), palette(u16_at(d, r + 2)))
+                    (u16_at(d, r), self.palette(u16_at(d, r + 2)))
                 }).collect());
             }
             if id < g {
@@ -426,6 +527,11 @@ impl Font {
 
     /// The glyph's ink, `[left, bottom, right, top]` in font units (none for a blank glyph).
     pub fn bounds(&self, g: u16) -> Option<[f64; 4]> {
+        self.bounds_placed(g, &|x, y| (x, y))
+    }
+
+    /// The ink of the glyph's outline put through `place`, `[least x, least y, most x, most y]`.
+    pub fn bounds_placed(&self, g: u16, place: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<[f64; 4]> {
         struct B {
             r: Option<[f64; 4]>,
             at: (f64, f64),
@@ -466,7 +572,7 @@ impl Font {
             fn close(&mut self) {}
         }
         let mut b = B { r: None, at: (0.0, 0.0) };
-        self.outline(g, &mut b, &|x, y| (x, y));
+        self.outline(g, &mut b, place);
         b.r
     }
 
@@ -858,22 +964,24 @@ impl Font {
         let (d, h) = (&self.data[..], self.hvar);
         let store = h + u32_at(d, h + 4) as usize;
         let map = u32_at(d, h + 8) as usize;
-        let (outer, inner) = if map == 0 {
-            (0, g as usize)
-        } else {
-            let at = h + map;
-            let (format, entry) = (byte_at(d, at), byte_at(d, at + 1));
-            let (count, first) = if format == 0 { (u16_at(d, at + 2) as usize, at + 4) } else { (u32_at(d, at + 2) as usize, at + 6) };
-            let size = ((entry & 0x30) >> 4) as usize + 1;
-            let inner_bits = (entry & 0x0F) as u32 + 1;
-            let i = (g as usize).min(count.saturating_sub(1));
-            let mut e = 0u32;
-            for b in 0..size {
-                e = (e << 8) | byte_at(d, first + i * size + b) as u32;
-            }
-            ((e >> inner_bits) as usize, (e & ((1 << inner_bits) - 1)) as usize)
-        };
+        let (outer, inner) = if map == 0 { (0, g as usize) } else { self.delta_set(h + map, g as usize) };
         self.item_delta(store, outer, inner)
+    }
+
+    /// Entry `i` of a delta-set index map at `at` (the last when there are fewer): which
+    /// variation data and which row of it.
+    pub(crate) fn delta_set(&self, at: usize, i: usize) -> (usize, usize) {
+        let d = &self.data[..];
+        let (format, entry) = (byte_at(d, at), byte_at(d, at + 1));
+        let (count, first) = if format == 0 { (u16_at(d, at + 2) as usize, at + 4) } else { (u32_at(d, at + 2) as usize, at + 6) };
+        let size = ((entry & 0x30) >> 4) as usize + 1;
+        let inner_bits = (entry & 0x0F) as u32 + 1;
+        let i = i.min(count.saturating_sub(1));
+        let mut e = 0u32;
+        for b in 0..size {
+            e = (e << 8) | byte_at(d, first + i * size + b) as u32;
+        }
+        ((e >> inner_bits) as usize, (e & ((1 << inner_bits) - 1)) as usize)
     }
 
     /// One delta of an item variation store, at this instance.

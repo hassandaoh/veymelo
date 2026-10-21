@@ -15,6 +15,7 @@
 //! may go past white. What cannot be drawn yet is left out and said in the notes.
 
 mod bounce;
+mod colour_glyph;
 mod extrude;
 mod gpu;
 mod masks;

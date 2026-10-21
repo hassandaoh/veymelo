@@ -694,18 +694,19 @@ fn marks(layer: &Layer, t: Tick, read: Read, read_with: ReadWith, three: bool, s
             let (x, y) = g.map(fx, fy);
             (x + nudge, y)
         });
-        // a colour glyph: its coloured layers, or else its picture
-        let layers = if g.font.has_color() { g.font.color_layers(glyph) } else { None };
+        // a colour glyph: its graph of paints, else its coloured layers, else its picture
+        let painted = if g.font.has_color() { g.font.color_glyph(glyph) } else { None };
+        let layers = if painted.is_none() && g.font.has_color() { g.font.color_layers(glyph) } else { None };
         let ppem = g.font.units * g.scale.abs() * s * c.scale[0].abs().max(c.scale[1].abs()) / 100.0;
-        let picture = if layers.is_none() && g.font.has_color() { g.font.picture(glyph, ppem) } else { None };
+        let picture = if painted.is_none() && layers.is_none() && g.font.has_color() { g.font.picture(glyph, ppem) } else { None };
         let pixels = picture.and_then(|p| {
             let img = glyph_picture(p.bytes);
             if img.is_none() && !notes.iter().any(|n: &String| n.contains("colour glyph")) {
                 notes.push(format!("\"{}\": a colour glyph's picture cannot be read here", layer.name));
             }
-            img.map(|img| (img, p))
+            img.map(|img| (img, p.origin, p.ppem))
         });
-        if outline.contours().is_empty() && layers.is_none() && pixels.is_none() {
+        if outline.contours().is_empty() && painted.is_none() && layers.is_none() && pixels.is_none() {
             continue;
         }
         let (ox, oy) = origin(g);
@@ -768,12 +769,17 @@ fn marks(layer: &Layer, t: Tick, read: Read, read_with: ReadWith, three: bool, s
             }
             continue;
         }
-        if let Some((img, p)) = pixels.filter(|_| fill.is_some()) {
+        // a graph of paints drawn into a picture in the text's colour, at the size it is seen
+        let pixels = match (&painted, fill) {
+            (Some(cg), Some(f)) => crate::colour_glyph::draw(&g.font, glyph, cg, ppem, [f.r, f.g, f.b, f.a].map(|v| v as f32)),
+            _ => pixels,
+        };
+        if let Some((img, origin, strike)) = pixels.filter(|_| fill.is_some()) {
             // the picture's pixels (y down from its top) to font units (y up), to the layer
-            let upp = g.font.units / p.ppem.max(1.0);
+            let upp = g.font.units / strike.max(1.0);
             let h = img.height as f64;
             let at = |bx: f64, by: f64| {
-                let (x, y) = g.map((p.origin.0 + bx) * upp, (p.origin.1 + h - by) * upp);
+                let (x, y) = g.map((origin.0 + bx) * upp, (origin.1 + h - by) * upp);
                 vec2(x + nudge, y)
             };
             let (o, ex, ey) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0));

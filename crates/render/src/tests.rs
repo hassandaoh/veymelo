@@ -681,6 +681,33 @@ fn emoji_are_drawn_in_colour() {
 fn colour_layer_font() -> Vec<u8> {
     let be16 = |v: &mut Vec<u8>, x: u16| v.extend(x.to_be_bytes());
     let be32 = |v: &mut Vec<u8>, x: u32| v.extend(x.to_be_bytes());
+    let mut colr = Vec::new();
+    be16(&mut colr, 0);
+    be16(&mut colr, 1);
+    be32(&mut colr, 14);
+    be32(&mut colr, 20);
+    be16(&mut colr, 2);
+    for v in [1u16, 0, 2, 2, 0, 3, 0xFFFF] {
+        be16(&mut colr, v);
+    }
+    font_file(vec![(*b"COLR", colr), (*b"CPAL", palette_table())])
+}
+
+/// A palette of red, green and blue (`CPAL`).
+fn palette_table() -> Vec<u8> {
+    let mut c = Vec::new();
+    for v in [0u16, 3, 1, 3, 0, 14, 0] {
+        c.extend(v.to_be_bytes());
+    }
+    c.extend([0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]);
+    c
+}
+
+/// A small font file, 1000 units an em, whose glyph 1 ("A") is a 600-unit square and glyphs 2
+/// and 3 its left and right halves, with `more` tables.
+fn font_file(more: Vec<([u8; 4], Vec<u8>)>) -> Vec<u8> {
+    let be16 = |v: &mut Vec<u8>, x: u16| v.extend(x.to_be_bytes());
+    let be32 = |v: &mut Vec<u8>, x: u32| v.extend(x.to_be_bytes());
     // a rectangle glyph: one contour of four corners on the curve, coordinates as moves
     let rect = |x0: i16, y0: i16, x1: i16, y1: i16| {
         let mut g = Vec::new();
@@ -730,23 +757,8 @@ fn colour_layer_font() -> Vec<u8> {
     for v in [4u16, 32, 0, 4, 4, 1, 0, 0x41, 0xFFFF, 0, 0x41, 0xFFFF, 1u16.wrapping_sub(0x41), 1, 0, 0] {
         be16(&mut cmap, v);
     }
-    let mut colr = Vec::new();
-    be16(&mut colr, 0);
-    be16(&mut colr, 1);
-    be32(&mut colr, 14);
-    be32(&mut colr, 20);
-    be16(&mut colr, 2);
-    for v in [1u16, 0, 2, 2, 0, 3, 0xFFFF] {
-        be16(&mut colr, v);
-    }
-    let mut cpal = Vec::new();
-    for v in [0u16, 1, 1, 1] {
-        be16(&mut cpal, v);
-    }
-    be32(&mut cpal, 14);
-    be16(&mut cpal, 0);
-    cpal.extend([0, 0, 255, 255]);
-    let tables: [(&[u8; 4], Vec<u8>); 9] = [(b"COLR", colr), (b"CPAL", cpal), (b"cmap", cmap), (b"glyf", glyf), (b"head", head), (b"hhea", hhea), (b"hmtx", hmtx), (b"loca", loca), (b"maxp", maxp)];
+    let mut tables: Vec<([u8; 4], Vec<u8>)> = vec![(*b"cmap", cmap), (*b"glyf", glyf), (*b"head", head), (*b"hhea", hhea), (*b"hmtx", hmtx), (*b"loca", loca), (*b"maxp", maxp)];
+    tables.extend(more);
     let mut out = Vec::new();
     be32(&mut out, 0x0001_0000);
     for v in [tables.len() as u16, 128, 3, 16] {
@@ -755,7 +767,7 @@ fn colour_layer_font() -> Vec<u8> {
     let mut at = 12 + 16 * tables.len();
     let mut body = Vec::new();
     for (tag, t) in &tables {
-        out.extend(*tag);
+        out.extend(tag);
         be32(&mut out, 0);
         be32(&mut out, at as u32);
         be32(&mut out, t.len() as u32);
@@ -785,6 +797,166 @@ fn colour_layers_take_their_palette_colours() {
     assert_eq!(at(35, 90), [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(at(65, 90), [0.0, 1.0, 0.0, 1.0]);
     assert_eq!(at(90, 90)[3], 0.0);
+}
+
+/// A paint table `head` with `kid` after it, the three-byte offset at `at` in it set to where.
+fn paint_with(mut head: Vec<u8>, at: usize, kid: Vec<u8>) -> Vec<u8> {
+    let off = head.len() as u32;
+    head[at..at + 3].copy_from_slice(&off.to_be_bytes()[1..]);
+    head.extend(kid);
+    head
+}
+
+/// A paint of `format` with a child (its offset first) and then `values`.
+fn paint_of(format: u8, values: &[u16], kid: Vec<u8>) -> Vec<u8> {
+    let mut p = vec![format, 0, 0, 0];
+    for v in values {
+        p.extend(v.to_be_bytes());
+    }
+    paint_with(p, 1, kid)
+}
+
+/// A colour line: how it carries on, and its stops (offset, palette colour, alpha, as 2.14).
+fn colour_line(extend: u8, stops: &[(u16, u16, u16)]) -> Vec<u8> {
+    let mut l = vec![extend];
+    l.extend((stops.len() as u16).to_be_bytes());
+    for (o, i, a) in stops {
+        for v in [o, i, a] {
+            l.extend(v.to_be_bytes());
+        }
+    }
+    l
+}
+
+fn paint_glyph(g: u16, kid: Vec<u8>) -> Vec<u8> {
+    paint_with(vec![10, 0, 0, 0, (g >> 8) as u8, g as u8], 1, kid)
+}
+
+/// A `COLR` version 1 table whose glyph 1 is `layers`, bottom first.
+fn layered_paints(layers: Vec<Vec<u8>>) -> Vec<u8> {
+    let be16 = |v: &mut Vec<u8>, x: u16| v.extend(x.to_be_bytes());
+    let be32 = |v: &mut Vec<u8>, x: u32| v.extend(x.to_be_bytes());
+    // the base glyph list (one record) and the layer list
+    let mut bases = Vec::new();
+    be32(&mut bases, 1);
+    be16(&mut bases, 1);
+    be32(&mut bases, 10);
+    bases.extend([1, layers.len() as u8, 0, 0, 0, 0]);
+    let mut list = Vec::new();
+    be32(&mut list, layers.len() as u32);
+    let mut at = 4 + 4 * layers.len();
+    for l in &layers {
+        be32(&mut list, at as u32);
+        at += l.len();
+    }
+    list.extend(layers.concat());
+    let mut colr = Vec::new();
+    for v in [1u16, 0, 0, 0, 0, 0, 0] {
+        be16(&mut colr, v);
+    }
+    be32(&mut colr, 34);
+    be32(&mut colr, 34 + bases.len() as u32);
+    for _ in 0..3 {
+        be32(&mut colr, 0);
+    }
+    colr.extend(bases);
+    colr.extend(list);
+    colr
+}
+
+/// A `COLR` version 1 table: glyph 1 two layers, a linear gradient red to blue across glyph 2
+/// (the left half) and the text's own colour half seen over glyph 3 (the right half).
+fn paint_table() -> Vec<u8> {
+    let linear = paint_of(4, &[0, 0, 300, 0, 0, 300], colour_line(0, &[(0, 0, 0x4000), (0x4000, 2, 0x4000)]));
+    let solid = vec![2, 0xFF, 0xFF, 0x20, 0x00];
+    layered_paints(vec![paint_glyph(2, linear), paint_glyph(3, solid)])
+}
+
+#[test]
+fn colour_glyphs_of_paints_are_drawn_with_their_gradients() {
+    let path = std::env::temp_dir().join(format!("veymelo-colr1-{}.ttf", std::process::id()));
+    std::fs::write(&path, font_file(vec![(*b"COLR", paint_table()), (*b"CPAL", palette_table())])).unwrap();
+    let (p, c, _) = text_scene(&format!(r##"{{"text": "A", "font": "{}", "size": 100, "fill": "#00ff00"}}"##, path.to_string_lossy()));
+    let r = render(&p, c, Tick::ZERO, &Options { background: false, ..Options::default() }).unwrap();
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let at = |x: usize, y: usize| r.image.px[y * 600 + x];
+    // halfway across the gradient: red and blue mixed in linear light, half of each
+    let mid = veymelo_color::linear_to_srgb(0.5) as f32;
+    let m = at(35, 90);
+    assert!((m[0] - mid).abs() < 0.02 && m[1] < 0.01 && (m[2] - mid).abs() < 0.02 && m[3] > 0.99, "{m:?}");
+    // near its start mostly red, near its end mostly blue
+    let (a, b) = (at(21, 90), at(48, 90));
+    assert!(a[0] > 0.95 && a[2] < 0.4 && b[2] > 0.95 && b[0] < 0.4, "{a:?} {b:?}");
+    // the right half the text's green, half seen
+    let g = at(65, 90);
+    assert!(g[0] < 0.01 && (g[1] - 0.5).abs() < 0.01 && (g[3] - 0.5).abs() < 0.01, "{g:?}");
+    assert_eq!(at(90, 90)[3], 0.0);
+    // to look at: rings reflected out from the middle, a colour wheel turned 30° in the left
+    // half, and the text's colour laid over a gradient down the right half
+    if let Some(dir) = std::env::var_os("VEYMELO_FRAMES") {
+        let rings = paint_glyph(1, paint_of(6, &[300, 300, 0, 300, 300, 120], colour_line(2, &[(0, 0, 0x4000), (0x4000, 2, 0x4000)])));
+        let wheel = paint_of(8, &[300, 300, 0xC000, 0x4000], colour_line(0, &[(0, 0, 0x4000), (0x1555, 1, 0x4000), (0x2AAA, 2, 0x4000), (0x4000, 0, 0x4000)]));
+        let turned = paint_of(26, &[0x0AAB, 300, 300], paint_glyph(2, wheel));
+        let down = paint_glyph(3, paint_of(4, &[0, 0, 0, 600, 600, 0], colour_line(0, &[(0, 2, 0x4000), (0x4000, 0, 0x4000)])));
+        let over = paint_glyph(3, vec![2, 0xFF, 0xFF, 0x40, 0x00]);
+        let mixed = paint_with(paint_with(vec![32, 0, 0, 0, 14, 0, 0, 0], 1, over), 5, down);
+        let path = std::env::temp_dir().join(format!("veymelo-colr1-show-{}.ttf", std::process::id()));
+        std::fs::write(&path, font_file(vec![(*b"COLR", layered_paints(vec![rings, turned, mixed])), (*b"CPAL", palette_table())])).unwrap();
+        let (mut p, c, id) = text_scene(&format!(r##"{{"text": "AAA", "font": "{}", "size": 160, "fill": "#ffd23f"}}"##, path.to_string_lossy()));
+        set(layer(&mut p, c, id), "transform/position", Value::Vec3([20.0, 150.0, 0.0]));
+        set(layer(&mut p, c, id), "transform/rotation", Value::Number(-8.0));
+        let r = render(&p, c, Tick::ZERO, &Options::default()).unwrap();
+        assert!(r.notes.is_empty(), "{:?}", r.notes);
+        std::fs::write(std::path::Path::new(&dir).join("colr1.png"), to_png(&r.image)).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bitmap_colour_glyphs_are_drawn_from_their_pngs() {
+    let be16 = |v: &mut Vec<u8>, x: u16| v.extend(x.to_be_bytes());
+    let be32 = |v: &mut Vec<u8>, x: u32| v.extend(x.to_be_bytes());
+    // a 12 × 16 picture of one blue, 100 pixels an em, its top left 10 right of the origin and
+    // 50 up
+    let mut img = Image::new(12, 16);
+    img.px.iter_mut().for_each(|q| *q = [0.2, 0.4, 0.8, 1.0]);
+    let png = to_png(&img);
+    let mut cbdt = vec![0, 3, 0, 0, 16, 12, 10, 50, 14];
+    be32(&mut cbdt, png.len() as u32);
+    cbdt.extend(&png);
+    let mut cblc = vec![0, 3, 0, 0];
+    be32(&mut cblc, 1);
+    for v in [56u32, 0, 1, 0] {
+        be32(&mut cblc, v);
+    }
+    cblc.extend([0u8; 24]);
+    for v in [1u16, 1] {
+        be16(&mut cblc, v);
+    }
+    cblc.extend([100, 100, 32, 1]);
+    for v in [1u16, 1] {
+        be16(&mut cblc, v);
+    }
+    be32(&mut cblc, 8);
+    for v in [1u16, 17] {
+        be16(&mut cblc, v);
+    }
+    for v in [4u32, 0, cbdt.len() as u32 - 4] {
+        be32(&mut cblc, v);
+    }
+    let path = std::env::temp_dir().join(format!("veymelo-cbdt-{}.ttf", std::process::id()));
+    std::fs::write(&path, font_file(vec![(*b"CBDT", cbdt), (*b"CBLC", cblc)])).unwrap();
+    let font = veymelo_text::resolve(&path.to_string_lossy(), 400.0, false).unwrap();
+    assert!(font.has_color() && font.picture(1, 100.0).is_some());
+    let (p, c, _) = text_scene(&format!(r##"{{"text": "A", "font": "{}", "size": 100, "fill": "#ffffff"}}"##, path.to_string_lossy()));
+    let r = render(&p, c, Tick::ZERO, &Options { background: false, ..Options::default() }).unwrap();
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let at = |x: usize, y: usize| r.image.px[y * 600 + x];
+    // the picture over x 30 to 42 and y 70 to 86 (the baseline at 120)
+    let q = at(35, 78);
+    assert!((q[0] - 0.2).abs() < 0.01 && (q[1] - 0.4).abs() < 0.01 && (q[2] - 0.8).abs() < 0.01 && q[3] > 0.99, "{q:?}");
+    assert_eq!(at(45, 78)[3], 0.0);
+    assert_eq!(at(35, 90)[3], 0.0);
 }
 
 /// The scripts of India, Khmer and Myanmar set by our own shaping, each in the font that has it.
