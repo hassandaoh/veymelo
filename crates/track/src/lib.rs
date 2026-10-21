@@ -14,6 +14,7 @@
 
 pub mod fit;
 pub mod klt;
+pub mod planar;
 pub mod plane;
 pub mod region;
 pub mod solve;

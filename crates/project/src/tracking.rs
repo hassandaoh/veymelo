@@ -70,6 +70,7 @@ pub static TRACKER: GroupDef = GroupDef {
         p(PropDef::new("threshold", "Confidence Threshold", Kind::Number, Value::Number(80.0)).range(0.0, 100.0).unit(Unit::Percent).setting().doc("below it, a match is unsure")),
         p(PropDef::new("lowConfidence", "If Confidence Is Below", Kind::Choice(LOW_CONFIDENCE), Value::Choice(3)).setting().doc("continue; stop; extrapolate the motion it had; or adapt: take the patch afresh")),
         p(PropDef::new("followShape", "Follow Shape", Kind::Bool, Value::Bool(true)).setting().doc("follow each patch turning and growing as it matches")),
+        p(PropDef::new("planar", "Planar", Kind::Bool, Value::Bool(false)).setting().doc("a perspective tracker follows the flat surface its four points lie on as a whole (the features between them), not each point's own patch: its points may lie off the picture or on plain parts")),
         DefNode::Group(&POINTS),
     ]),
     doc: "follows patches of the picture through the layer's frames",

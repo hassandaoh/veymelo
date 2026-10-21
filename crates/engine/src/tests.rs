@@ -3179,6 +3179,14 @@ fn tracks_turning_and_corner_pins() {
     let again = run(&mut s, "track.apply", &format!(r#"{{"layer": {l}, "tracker": "Tracker 2"}}"#));
     assert_eq!(again.get("target").and_then(Json::as_u64), Some(sign));
     assert!(again.get("paths").unwrap().to_json().contains("Corner Pin 2"));
+    // a planar track: the patch's surface as a whole, its corners where its features say
+    run(&mut s, "track.new", &format!(r#"{{"layer": {l}, "kind": "perspective", "planar": true, "points": [{}]}}"#, [[80.0, 110.0], [160.0, 110.0], [80.0, 190.0], [160.0, 190.0]].iter().map(|q| format!(r#"{{"center": [{}, {}]}}"#, q[0], q[1])).collect::<Vec<_>>().join(", ")));
+    let r = run(&mut s, "track.analyze", &format!(r#"{{"layer": {l}, "tracker": "Tracker 3", "from": 0, "to": 1}}"#));
+    assert!(r.get("lowest").and_then(Json::as_f64).unwrap() > 80.0 && r.get("stopped").is_none(), "{}", r.to_json());
+    let ul = value(&mut s, l, "motionTrackers/Tracker 3/points/Track Point 1/featureCenter", 1.0);
+    let d = [-40.0, -40.0];
+    let want = [280.0 + d[0] * cs - d[1] * sn, 190.0 + d[0] * sn + d[1] * cs];
+    assert!(near(&ul, &want, 1.0), "{ul:?} {want:?}");
 }
 
 /// The mean difference of two pictures inside the box from (x0, y0) to (x1, y1).

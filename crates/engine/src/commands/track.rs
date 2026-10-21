@@ -41,6 +41,7 @@ pub fn commands() -> Vec<Command> {
                     Param::opt("threshold", Ty::Number, "the confidence, in %, below which it is unsure (default 80)"),
                     Param::opt("lowConfidence", Ty::Choice(LOW_CONFIDENCE), "then: continue, stop, extrapolate or adapt (default)"),
                     Param::opt("followShape", Ty::Bool, "follow each patch turning and growing (default true)"),
+                    Param::opt("planar", Ty::Bool, "perspective: follow the flat surface the four points lie on as a whole (a planar track), so they may lie off the picture or on plain parts"),
                     Param::opt("name", Ty::Text, "what to call it (default: Tracker 1…)"),
                 ]
             },
@@ -291,6 +292,7 @@ struct Setup {
     target_property: String,
     options: Options,
     points: Vec<String>,
+    planar: bool,
 }
 
 fn setup(layer: &Layer, path: &str) -> Setup {
@@ -314,6 +316,7 @@ fn setup(layer: &Layer, path: &str) -> Setup {
             follow_shape: get("followShape").as_bool(),
         },
         points: g.group("points").map(|l| l.children.iter().filter_map(Node::as_group).map(|p| format!("{path}/points/{}", p.name())).collect()).unwrap_or_default(),
+        planar: get("planar").as_bool(),
     }
 }
 
@@ -363,7 +366,7 @@ fn new(cx: &mut Ctx, a: &Args) -> Result<Json> {
         }
     }
     let mut set: Vec<(&str, Value)> = vec![("kind", Value::Choice(kind)), ("rotation", Value::Bool(rotation)), ("scale", Value::Bool(scale))];
-    for key in ["position", "enhance", "subpixel", "adaptEveryFrame", "followShape"] {
+    for key in ["position", "enhance", "subpixel", "adaptEveryFrame", "followShape", "planar"] {
         if let Some(v) = a.bool(key) {
             set.push((key, Value::Bool(v)));
         }
@@ -469,6 +472,9 @@ fn analyze(cx: &mut Ctx, a: &Args) -> Result<Json> {
     let first = picture(from).ok_or_else(|| Error::refused(format!("\"{}\" shows nothing at {} s to track", layer.name, from.seconds())))?;
     let frame_of = |b: &veymelo_effects::Buf| [-b.origin.x * b.scale, -b.origin.y * b.scale];
     let mut tracker = Tracker::new(s.options.clone(), &points, &Frame { img: &first.img, offset: frame_of(&first) });
+    // a planar track: the four points as corners of the surface they lie on
+    let planar = s.planar && KINDS[s.kind as usize] == "perspective" && start.len() == 4;
+    let mut surface = planar.then(|| veymelo_track::planar::Planar::new(&first.img, frame_of(&first), [start[0], start[1], start[2], start[3]]));
     // (layer time, each point's centre, confidence and attach point)
     let mut done: Vec<(Tick, Vec<Placed>)> = vec![(lt0, start.iter().zip(&attach).map(|(c, a)| (*c, 100.0, *a)).collect())];
     let mut stopped = None;
@@ -477,6 +483,21 @@ fn analyze(cx: &mut Ctx, a: &Args) -> Result<Json> {
             stopped = Some(format!("the layer shows nothing at {} s", t.seconds()));
             break;
         };
+        if let Some(surface) = surface.as_mut() {
+            let Some((corners, sure)) = surface.step(&b.img, frame_of(&b)) else {
+                stopped = Some(format!("too few features between the corners to follow at {} s", t.seconds()));
+                break;
+            };
+            let sure = sure * 100.0;
+            if sure < s.options.threshold && s.options.unsure == Unsure::Stop {
+                stopped = Some(format!("unsure at {} s (below {} %)", t.seconds(), s.options.threshold));
+                break;
+            }
+            let now = corners.to_vec();
+            let at = attached(s.kind, turns, &start, &attach, &now);
+            done.push((layer.layer_time(t), now.iter().zip(at).map(|(c, a)| (*c, sure, a)).collect()));
+            continue;
+        }
         let found = tracker.step(&Frame { img: &b.img, offset: frame_of(&b) });
         if found.iter().any(|f| f.how == How::Stopped) {
             stopped = Some(format!("unsure at {} s (below {} %)", t.seconds(), s.options.threshold));
