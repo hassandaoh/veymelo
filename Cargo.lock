@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "veymelo-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-engine",
  "veymelo-json",
@@ -14,11 +14,11 @@ dependencies = [
 
 [[package]]
 name = "veymelo-color"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veymelo-effects"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-font",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-effects",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-export"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-effects",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-expr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-geom",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-exr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-json",
  "veymelo-zip",
@@ -98,29 +98,29 @@ dependencies = [
 
 [[package]]
 name = "veymelo-font"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-path",
 ]
 
 [[package]]
 name = "veymelo-geom"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veymelo-interchange"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-json",
 ]
 
 [[package]]
 name = "veymelo-json"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veymelo-keyframe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-json",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-lottie"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-effects",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-engine",
  "veymelo-json",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-exr",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-geom",
  "veymelo-json",
@@ -181,18 +181,18 @@ dependencies = [
 
 [[package]]
 name = "veymelo-os"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veymelo-path"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-keyframe",
 ]
 
 [[package]]
 name = "veymelo-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-font",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-project"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-json",
@@ -217,14 +217,14 @@ dependencies = [
 
 [[package]]
 name = "veymelo-psd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-zip",
 ]
 
 [[package]]
 name = "veymelo-raster"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-geom",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-effects",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-studio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-engine",
  "veymelo-export",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-svg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-color",
  "veymelo-geom",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "veymelo-text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-font",
  "veymelo-keyframe",
@@ -293,15 +293,15 @@ dependencies = [
 
 [[package]]
 name = "veymelo-time"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veymelo-track"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veymelo-raster",
 ]
 
 [[package]]
 name = "veymelo-zip"
-version = "0.1.0"
+version = "0.2.0"
