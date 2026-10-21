@@ -81,12 +81,7 @@ pub fn fractal(x: f64, y: f64, z: f64, seed: u64, octaves: f64, falloff: f64, pe
     sum / total.max(1e-9)
 }
 
-/// A double as two floats that add up to it (the second what the first leaves out), as the GPU
-/// holds places (noise.metal's df).
-pub(crate) fn split(v: f64) -> [f32; 2] {
-    let hi = v as f32;
-    [hi, (v - hi as f64) as f32]
-}
+pub(crate) use veymelo_raster::gpu::split;
 
 /// What z is to [`smooth`] on the GPU, worked out once (noise.metal's Depth): its whole part, the
 /// period (0: none), how far past the whole part, and that faded.

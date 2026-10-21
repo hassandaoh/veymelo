@@ -1,8 +1,92 @@
-// What the GPU's picture programs share: pixels read, the picture between its pixels, and the
-// blend modes, each as the processor works them (crates/raster, crates/color).
+// What the GPU's picture programs share: numbers held as two floats (a double's precision, for
+// places that must land where the processor's do), pixels read, the picture between its pixels,
+// and the blend modes, each as the processor works them (crates/raster, crates/color).
 
 #include <metal_stdlib>
 using namespace metal;
+
+// A number as the sum of two floats, the second the part the first leaves out.
+struct df {
+    float hi;
+    float lo;
+};
+
+inline df df_of(float a) {
+    return df{a, 0.0};
+}
+
+inline df two_sum(float a, float b) {
+    float s = a + b;
+    float bb = s - a;
+    return df{s, (a - (s - bb)) + (b - bb)};
+}
+
+inline df quick_two_sum(float a, float b) {
+    float s = a + b;
+    return df{s, b - (s - a)};
+}
+
+inline df df_add(df a, df b) {
+    df s = two_sum(a.hi, b.hi);
+    df t = two_sum(a.lo, b.lo);
+    s.lo += t.hi;
+    s = quick_two_sum(s.hi, s.lo);
+    s.lo += t.lo;
+    return quick_two_sum(s.hi, s.lo);
+}
+
+inline df df_neg(df a) {
+    return df{-a.hi, -a.lo};
+}
+
+inline df df_sub(df a, df b) {
+    return df_add(a, df_neg(b));
+}
+
+inline df df_mul(df a, df b) {
+    float p = a.hi * b.hi;
+    float e = precise::fma(a.hi, b.hi, -p);
+    e += a.hi * b.lo + a.lo * b.hi;
+    return quick_two_sum(p, e);
+}
+
+// Times a power of two (exact).
+inline df df_scale(df a, float k) {
+    return df{a.hi * k, a.lo * k};
+}
+
+// The whole number at or below `a`, and how far past it `a` is.
+inline void df_floor(df a, thread long &whole, thread float &part) {
+    float f = floor(a.hi);
+    if (f == a.hi && a.lo < 0.0) {
+        f -= 1.0;
+    }
+    whole = long(f);
+    df r = df_add(a, df_of(-f));
+    part = r.hi + r.lo;
+}
+
+inline float df_float(df a) {
+    return a.hi + a.lo;
+}
+
+// The square root (a float's root, made exact by one step of Newton's).
+inline df df_sqrt(df a) {
+    if (a.hi <= 0.0) {
+        return df_of(0.0);
+    }
+    float s = sqrt(a.hi);
+    df r = df_sub(a, df_mul(df_of(s), df_of(s)));
+    return df_add(df_of(s), df_of((r.hi + r.lo) / (2.0 * s)));
+}
+
+// The whole number at or above `a` (exactly).
+inline long df_ceil(df a) {
+    long whole;
+    float part;
+    df_floor(a, whole, part);
+    return part > 0.0 ? whole + 1 : whole;
+}
 
 // Pixel (x, y) of a picture `w` × `h` (nothing outside it).
 inline float4 pixel(const device float4 *src, uint w, uint h, int x, int y) {

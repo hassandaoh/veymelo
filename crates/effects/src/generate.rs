@@ -548,6 +548,81 @@ fn lens_flare(ctx: &Ctx, mut b: Buf) -> Buf {
     b
 }
 
+/// A kernel of this file's GPU program.
+fn kernel(name: &'static str) -> veymelo_raster::gpu::Kernel {
+    use veymelo_raster::gpu;
+    gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("noise.metal"), include_str!("generate.metal")]), name }
+}
+
+/// Light Burst's settings as the GPU takes them (generate.metal's Burst): each step's part of the
+/// way toward the centre.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuBurst {
+    w: u32,
+    h: u32,
+    mode: u32,
+    set: u32,
+    cx: [f32; 2],
+    cy: [f32; 2],
+    intensity: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    steps: [f32; RAY_STEPS],
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuBurst {}
+
+/// Light Rays' settings as the GPU takes them (generate.metal's Rays).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuRays {
+    w: u32,
+    h: u32,
+    square: u32,
+    from_source: u32,
+    mode: u32,
+    pad: u32,
+    cx: [f32; 2],
+    cy: [f32; 2],
+    rad: f32,
+    rad2: f32,
+    gain: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    steps: [f32; RAY_STEPS],
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuRays {}
+
+/// Cell Pattern's settings as the GPU takes them (generate.metal's Cells).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuCells {
+    w: u32,
+    h: u32,
+    shape: u32,
+    subs: u32,
+    reach: u32,
+    overflow: u32,
+    invert: u32,
+    tiled: u32,
+    nx: i64,
+    ny: i64,
+    ax: [f32; 2],
+    ay: [f32; 2],
+    step: [f32; 2],
+    contrast: f32,
+    disperse: f32,
+    evo: f32,
+    pad: f32,
+    seed: u64,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuCells {}
+
 const CELL_PATTERNS: &[&str] = &[
     "bubbles", "crystals", "plates", "staticPlates", "crystallize", "pillow", "crystalsHq", "platesHq", "staticPlatesHq", "crystallizeHq", "mixedCrystalsHq", "tubular",
 ];
@@ -629,6 +704,34 @@ fn cell_pattern(ctx: &Ctx, mut b: Buf) -> Buf {
     let subs: Vec<f64> = if hq { (0..4).map(|k| (k as f64 + 0.5) / 4.0).collect() } else { vec![0.5] };
     let reach = if hq { 2 } else { 1 };
     let g = b.clone_geometry();
+    if veymelo_raster::gpu::wanted(b.img.px.len()) {
+        use veymelo_raster::gpu::{self, split};
+        let (nx, ny) = tile.unwrap_or((1, 1));
+        let p = GpuCells {
+            w: b.img.width as u32,
+            h: b.img.height as u32,
+            shape,
+            subs: subs.len() as u32,
+            reach: reach as u32,
+            overflow,
+            invert: invert as u32,
+            tiled: tile.is_some() as u32,
+            nx,
+            ny,
+            ax: split((g.origin.0 - off.x) / size),
+            ay: split((g.origin.1 - off.y) / size),
+            step: split(1.0 / (g.scale * size)),
+            contrast,
+            disperse: disperse as f32,
+            evo: evo.rem_euclid(1.0) as f32,
+            pad: 0.0,
+            seed,
+        };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel("cell_pattern"), &p, [b.img.width, b.img.height])]) {
+            b.img = img;
+            return b;
+        }
+    }
     map_px(&mut b.img, |x, y, _| {
         let mut total = 0f32;
         for sy in &subs {
@@ -695,6 +798,30 @@ fn light_rays(ctx: &Ctx, mut b: Buf) -> Buf {
     let from_source = ctx.flag("colorFromSource");
     let col = rgb3(ctx.color("color"));
     let mode = ctx.choice("transferMode");
+    if veymelo_raster::gpu::wanted(b.img.px.len()) {
+        use veymelo_raster::gpu::{self, split};
+        let p = GpuRays {
+            w: b.img.width as u32,
+            h: b.img.height as u32,
+            square: square as u32,
+            from_source: from_source as u32,
+            mode,
+            pad: 0,
+            cx: split(c.x),
+            cy: split(c.y),
+            rad: rad as f32,
+            rad2: (rad * (1.0 + soft)) as f32 + 1e-3,
+            gain,
+            r: col[0],
+            g: col[1],
+            b: col[2],
+            steps: std::array::from_fn(|i| (k * i as f64 / RAY_STEPS as f64) as f32),
+        };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel("light_rays"), &p, [b.img.width, b.img.height])]) {
+            b.img = img;
+            return b;
+        }
+    }
     let src = b.img.clone();
     let near = |x: f64, y: f64| {
         let (dx, dy) = ((x - c.x).abs(), (y - c.y).abs());
@@ -758,6 +885,27 @@ fn light_burst(ctx: &Ctx, mut b: Buf) -> Buf {
     let set = ctx.flag("setColor").then(|| rgb3(ctx.color("color")));
     if k <= 0.0 && (intensity - 1.0).abs() < 1e-6 && set.is_none() {
         return b;
+    }
+    if veymelo_raster::gpu::wanted(b.img.px.len()) {
+        use veymelo_raster::gpu::{self, split};
+        let col = set.unwrap_or([0.0; 3]);
+        let p = GpuBurst {
+            w: b.img.width as u32,
+            h: b.img.height as u32,
+            mode,
+            set: set.is_some() as u32,
+            cx: split(c.x),
+            cy: split(c.y),
+            intensity,
+            r: col[0],
+            g: col[1],
+            b: col[2],
+            steps: std::array::from_fn(|i| (k * (i as f64 / RAY_STEPS as f64)) as f32),
+        };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel("light_burst"), &p, [b.img.width, b.img.height])]) {
+            b.img = img;
+            return b;
+        }
     }
     let src = b.img.clone();
     map_px(&mut b.img, |x, y, _| {

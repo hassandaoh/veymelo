@@ -265,6 +265,69 @@ fn compound(ctx: &Ctx, mut b: Buf) -> Buf {
 /// The mean of the neighbours within `r` pixels, each counted by how near it is and how like the
 /// middle it is: a bell in both (bilateral), or a hard limit on the difference in brightness (smart).
 fn keeping_edges(src: &Image, r: f64, range: f32, hard: bool) -> Image {
+    keeping_edges_then(src, r, range, hard, None).unwrap_or_else(|| keeping_edges_here(src, r, range, hard))
+}
+
+/// [`keeping_edges`] on the GPU, then (if asked) a step after it (None: leave it to the
+/// processor). The neighbours (each a step across and down, and how near it is) are listed here
+/// as the processor goes through them.
+fn keeping_edges_then(src: &Image, r: f64, range: f32, hard: bool, then: Option<veymelo_raster::gpu::Op>) -> Option<Image> {
+    use veymelo_raster::gpu;
+    if !gpu::wanted(src.px.len()) {
+        return None;
+    }
+    let reach = r.ceil() as i64;
+    let step = ((r / 12.0).ceil() as i64).max(1);
+    let (near2, like2) = (2.0 * (r / 2.0).max(0.5).powi(2), 2.0 * range.max(1e-3).powi(2));
+    let mut near: Vec<[f32; 4]> = Vec::new();
+    let mut dy = -reach;
+    while dy <= reach {
+        let mut dx = -reach;
+        while dx <= reach {
+            let d2 = (dx * dx + dy * dy) as f64;
+            if d2 <= r * r + 0.5 {
+                near.push([dx as f32, dy as f32, (-d2 / near2) as f32, 0.0]);
+            }
+            dx += step;
+        }
+        dy += step;
+    }
+    let p = GpuKeeping { w: src.width as u32, h: src.height as u32, n: near.len() as u32, hard: hard as u32, grey: 0, range, like2, pad: 0.0 };
+    let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("blur.metal")]), name: "keeping_edges" };
+    let mut ops = vec![gpu::Op::new(kernel, &p, [src.width, src.height]).with(&near)];
+    ops.extend(then);
+    gpu::apply(src, &ops)
+}
+
+/// Bilateral and Smart Blur's settings as the GPU takes them (blur.metal's Keeping).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuKeeping {
+    w: u32,
+    h: u32,
+    n: u32,
+    hard: u32,
+    grey: u32,
+    range: f32,
+    like2: f32,
+    pad: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuKeeping {}
+
+/// Smart Blur's edges as the GPU takes them (blur.metal's SmartEdges).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuSmartEdges {
+    w: u32,
+    h: u32,
+    mode: u32,
+    limit: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuSmartEdges {}
+
+fn keeping_edges_here(src: &Image, r: f64, range: f32, hard: bool) -> Image {
     let reach = r.ceil() as i64;
     // past a dozen pixels every few neighbours stand for the rest
     let step = ((r / 12.0).ceil() as i64).max(1);
@@ -366,8 +429,20 @@ pub const SMART: Spec = Spec::new(&SMART_DEF, CATEGORY, smart);
 fn smart(ctx: &Ctx, mut b: Buf) -> Buf {
     let r = ctx.num("radius", 3.0).max(0.0) * b.scale;
     let range = ctx.num("threshold", 25.0) as f32 / 100.0;
-    let blurred = if r >= 0.5 { keeping_edges(&b.img, r, range, true) } else { b.img.clone() };
     let mode = ctx.choice("mode");
+    if r >= 0.5 {
+        // the blur and (if asked) its edges, on the GPU in one go
+        let then = (mode != 0).then(|| {
+            use veymelo_raster::gpu;
+            let p = GpuSmartEdges { w: b.img.width as u32, h: b.img.height as u32, mode, limit: range.max(0.01) * 0.5 };
+            gpu::Op::new(gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("blur.metal")]), name: "smart_edges" }, &p, [b.img.width, b.img.height])
+        });
+        if let Some(img) = keeping_edges_then(&b.img, r, range, true, then) {
+            b.img = img;
+            return b;
+        }
+    }
+    let blurred = if r >= 0.5 { keeping_edges(&b.img, r, range, true) } else { b.img.clone() };
     if mode == 0 {
         b.img = blurred;
         return b;
@@ -437,6 +512,15 @@ fn radial_fast(ctx: &Ctx, mut b: Buf) -> Buf {
     }
     let c = b.pixel(ctx.point("center"));
     let mode = ctx.choice("zoom");
+    if veymelo_raster::gpu::wanted(b.img.px.len()) {
+        use veymelo_raster::gpu::{self, split};
+        let p = GpuFast { w: b.img.width as u32, h: b.img.height as u32, mode, pad: 0, cx: split(c.x), cy: split(c.y), s: split(s), sf: s as f32 };
+        let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("blur.metal")]), name: "radial_fast" };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel, &p, [b.img.width, b.img.height])]) {
+            b.img = img;
+            return b;
+        }
+    }
     let src = b.img.clone();
     map_px(&mut b.img, |x, y, _| {
         let (dx, dy) = (x as f64 + 0.5 - c.x, y as f64 + 0.5 - c.y);
@@ -463,6 +547,39 @@ fn radial_fast(ctx: &Ctx, mut b: Buf) -> Buf {
     });
     b
 }
+
+/// Zoom Blur's settings as the GPU takes them (blur.metal's Zoom).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuZoom {
+    w: u32,
+    h: u32,
+    kind: u32,
+    pad: u32,
+    cx: [f32; 2],
+    cy: [f32; 2],
+    k: [f32; 2],
+    zoom: f32,
+    arc: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuZoom {}
+
+/// Radial Fast Blur's settings as the GPU takes them (blur.metal's Fast).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuFast {
+    w: u32,
+    h: u32,
+    mode: u32,
+    pad: u32,
+    cx: [f32; 2],
+    cy: [f32; 2],
+    s: [f32; 2],
+    sf: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuFast {}
 
 const MAP_PROPERTIES: &[&str] = &["red", "green", "blue", "alpha", "luminance", "lightness", "hue", "saturation"];
 
@@ -837,6 +954,16 @@ fn zoom_blur(ctx: &Ctx, mut b: Buf) -> Buf {
     // zooms: a part of the distance to the centre; turns: radians of arc
     let zoom = (amount / 100.0).clamp(-1.0, 1.0) * 0.5;
     let arc = amount.to_radians() * 0.25;
+    if veymelo_raster::gpu::wanted(b.img.px.len()) {
+        use veymelo_raster::gpu::{self, split};
+        let k = if kind >= 3 { arc.abs() } else { zoom.abs() } * quality / 50.0;
+        let p = GpuZoom { w: b.img.width as u32, h: b.img.height as u32, kind, pad: 0, cx: split(c.x), cy: split(c.y), k: split(k), zoom: zoom as f32, arc: arc as f32 };
+        let kernel = gpu::Kernel { source: gpu::program(&[gpu::COMMON, include_str!("blur.metal")]), name: "zoom_blur" };
+        if let Some(img) = gpu::apply(&b.img, &[gpu::Op::new(kernel, &p, [b.img.width, b.img.height])]) {
+            b.img = img;
+            return b;
+        }
+    }
     map_px(&mut b.img, |x, y, p| {
         let (dx, dy) = (x as f64 + 0.5 - c.x, y as f64 + 0.5 - c.y);
         let r = dx.hypot(dy);

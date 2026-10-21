@@ -241,3 +241,76 @@ fn a_shaken_frame_takes_its_sharper_neighbours() {
     let red = |img: &Image| img.px.iter().map(|p| p[0] - p[1]).sum::<f32>();
     assert!(red(&shown.img) > red(&out.img) + 10.0);
 }
+
+/// The GPU blurs toward and round a centre as the processor does, on a full frame (where the
+/// samples go hundreds of pixels): Radial Fast Blur's mean, brightest and darkest, Radial Blur
+/// spun and zoomed, Zoom Blur's every kind. Its samples are counted exactly as the processor's; where they lie is worked
+/// in floats, a hundred-thousandth of a pixel or so off at most, so where the picture changes
+/// sharply within a pixel the colour moves by about that.
+#[test]
+fn the_gpu_blurs_round_a_centre_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let (w, h) = (1080, 1920);
+    let mut img = Image::new(w, h);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let a = if (x / 50 + y / 70) % 5 == 0 { 0.4 } else { 1.0 };
+        *p = [x as f32 / w as f32 * a, if (x / 9 + y / 9) % 2 == 0 { 0.9 * a } else { 0.1 * a }, y as f32 / h as f32 * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let cases: Vec<(&Spec, Vec<(&str, Value)>)> = vec![
+        (&RADIAL_FAST, vec![("amount", Value::Number(60.0)), ("center", Value::Vec2([540.0, 960.0]))]),
+        (&RADIAL_FAST, vec![("zoom", c(1)), ("center", Value::Vec2([300.5, 1500.25]))]),
+        (&RADIAL_FAST, vec![("zoom", c(2)), ("amount", Value::Number(100.0)), ("center", Value::Vec2([540.0, 960.0]))]),
+        (&RADIAL, vec![("amount", Value::Number(8.0)), ("center", Value::Vec2([540.0, 960.0]))]),
+        (&RADIAL, vec![("type", c(1)), ("amount", Value::Number(30.0)), ("center", Value::Vec2([800.25, 300.5]))]),
+    ];
+    let mut cases = cases;
+    for kind in 0..5 {
+        cases.push((&ZOOM, vec![("type", c(kind)), ("amount", Value::Number(if kind >= 3 { 25.0 } else { -40.0 })), ("quality", Value::Number(70.0)), ("center", Value::Vec2([400.5, 1100.25]))]));
+    }
+    for (spec, values) in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || run(spec, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| run(spec, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        let mean = gpu.img.px.iter().zip(&cpu.img.px).map(|(p, q)| (0..4).map(|k| (p[k] - q[k]).abs()).sum::<f32>()).sum::<f32>() / (gpu.img.px.len() * 4) as f32;
+        assert!(most <= 2e-5 && mean <= 1e-7, "{} {values:?}: most {most}, mean {mean}", spec.def.id);
+    }
+}
+
+/// The GPU's edge-keeping blurs are the processor's: Bilateral Blur in colour and grey, small and
+/// wide (every few neighbours standing for the rest), and Smart Blur's blur, edges and both.
+#[test]
+fn the_gpu_keeps_edges_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let (w, h) = (320, 260);
+    let mut img = Image::new(w, h);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let a = if (x / 40 + y / 30) % 4 == 0 { 0.5 } else { 1.0 };
+        let v = if (x / 16 + y / 16) % 2 == 0 { 0.8 } else { 0.25 };
+        *p = [v * a, (x as f32 / w as f32) * a, (((x * 13 + y * 7) % 17) as f32 / 17.0) * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let cases: Vec<(&Spec, Vec<(&str, Value)>)> = vec![
+        (&BILATERAL, vec![("radius", Value::Number(4.0))]),
+        (&BILATERAL, vec![("radius", Value::Number(40.0)), ("threshold", Value::Number(35.0)), ("colorize", Value::Bool(false))]),
+        (&SMART, vec![("radius", Value::Number(5.0))]),
+        (&SMART, vec![("radius", Value::Number(9.0)), ("mode", c(1))]),
+        (&SMART, vec![("radius", Value::Number(3.0)), ("mode", c(2)), ("threshold", Value::Number(10.0))]),
+    ];
+    for (spec, values) in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || run(spec, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| run(spec, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{} {values:?}: {most}", spec.def.id);
+    }
+}

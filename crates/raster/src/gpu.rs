@@ -336,30 +336,37 @@ pub(crate) fn along(img: &Image, dir: (f64, f64), length: f64, n: usize) -> Opti
     apply(img, &[Op::new(filter("along_blur"), &Along { w: img.width as u32, h: img.height as u32, n: n as u32 }, [img.width, img.height]).with(&steps)])
 }
 
-/// What a blur round a point takes: the picture's size, the point (its whole pixels and the
-/// fraction past them), how far round or in, and which.
+/// What a blur round a point takes: the picture's size, which (round or toward), the point,
+/// how many pixels the farthest sample moves a pixel from the point, and how far round or in.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Round {
     w: u32,
     h: u32,
-    cx: i32,
-    cy: i32,
-    fx: f32,
-    fy: f32,
-    amount: f32,
     zoom: u32,
+    pad: u32,
+    cx: [f32; 2],
+    cy: [f32; 2],
+    reach: [f32; 2],
+    amount: f32,
 }
 
 unsafe impl Plain for Round {}
+
+/// A double as two floats that add up to it, as the GPU holds numbers it must keep exactly
+/// (common.metal's df).
+pub fn split(v: f64) -> [f32; 2] {
+    let hi = v as f32;
+    [hi, (v - hi as f64) as f32]
+}
 
 /// [`crate::filter::round`] on the GPU (None: leave it to the processor).
 pub(crate) fn round(img: &Image, centre: (f64, f64), amount: f64, zoom: bool) -> Option<Image> {
     if !wanted(img.px.len()) {
         return None;
     }
-    let (cx, cy) = (centre.0.floor(), centre.1.floor());
-    let r = Round { w: img.width as u32, h: img.height as u32, cx: cx as i32, cy: cy as i32, fx: (centre.0 - cx) as f32, fy: (centre.1 - cy) as f32, amount: amount as f32, zoom: zoom as u32 };
+    let reach = if zoom { amount.abs() } else { amount.abs().to_radians() };
+    let r = Round { w: img.width as u32, h: img.height as u32, zoom: zoom as u32, pad: 0, cx: split(centre.0), cy: split(centre.1), reach: split(reach), amount: amount as f32 };
     apply(img, &[Op::new(filter("round_blur"), &r, [img.width, img.height])])
 }
 

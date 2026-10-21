@@ -105,3 +105,44 @@ fn a_shape_layer_is_drawn_over_all_of_it() {
     let board = run_on(&CHECKERBOARD, &[("width", n(5.0))], b2, Rect::new(-20.0, -10.0, 20.0, 10.0), None);
     assert!(px_at(&board, -17.5, -7.5)[3] > 0.99);
 }
+
+/// The GPU makes Light Burst, Light Rays and Cell Pattern as the processor does: every mode,
+/// shape and pattern, tiled and evolved.
+#[test]
+fn the_gpu_makes_light_and_cells_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let (w, h) = (330, 250);
+    let mut img = Image::new(w, h);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let a = if (x / 30 + y / 20) % 3 == 0 { 0.0 } else { 1.0 };
+        *p = [(x as f32 / w as f32) * a, if (x / 7 + y / 7) % 2 == 0 { 0.9 * a } else { 0.2 * a }, (y as f32 / h as f32) * a, a];
+    }
+    let c = |k: u32| Value::Choice(k);
+    let centre = Value::Vec2([140.5, 110.25]);
+    let mut cases: Vec<(&Spec, Vec<(&str, Value)>)> = vec![];
+    for mode in 0..3 {
+        cases.push((&LIGHT_BURST, vec![("burst", c(mode)), ("center", centre.clone()), ("rayLength", n(70.0))]));
+    }
+    cases.push((&LIGHT_BURST, vec![("setColor", Value::Bool(true)), ("intensity", n(180.0)), ("center", centre.clone())]));
+    for mode in 0..4 {
+        cases.push((&LIGHT_RAYS, vec![("transferMode", c(mode)), ("center", centre.clone()), ("radius", n(60.0))]));
+    }
+    cases.push((&LIGHT_RAYS, vec![("shape", c(1)), ("colorFromSource", Value::Bool(false)), ("intensity", n(250.0)), ("center", centre.clone())]));
+    for pattern in 0..12 {
+        cases.push((&CELL_PATTERN, vec![("cellPattern", c(pattern)), ("size", n(37.0)), ("evolution", n(130.0))]));
+    }
+    cases.push((&CELL_PATTERN, vec![("enableTiling", Value::Bool(true)), ("cellsHorizontal", n(5.0)), ("cellsVertical", n(3.0)), ("overflow", c(1)), ("contrast", n(260.0)), ("offset", Value::Vec2([-40.5, 900.0]))]));
+    cases.push((&CELL_PATTERN, vec![("overflow", c(2)), ("contrast", n(400.0)), ("invert", Value::Bool(true)), ("disperse", n(1.4)), ("cycleEvolution", Value::Bool(true)), ("evolution", n(3000.0))]));
+    for (spec, values) in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || run(spec, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU: {} {values:?}", spec.def.id);
+        let cpu = veymelo_raster::gpu::on_processor(|| run(spec, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{} {values:?}: {most}", spec.def.id);
+    }
+}
+

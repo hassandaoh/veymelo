@@ -146,25 +146,25 @@ kernel void along_blur(device float4 *out [[buffer(0)]], const device float4 *sr
 struct Round {
     uint w;
     uint h;
-    int cx;
-    int cy;
-    float fx;
-    float fy;
-    float amount;
     uint zoom;
+    uint pad;
+    df cx;
+    df cy;
+    df reach;
+    float amount;
 };
 
 // Each pixel the mean of the picture round a point (turned either way by half the amount, in
 // degrees) or along the line to it (scaled by half the amount either way): as many samples as
-// the farthest moves pixels. Where a sample lies is worked out from its pixel (how far it moves),
-// so it is as near the processor's as can be.
+// the farthest moves pixels (that counted from the point and the pixel held exactly, so it is
+// the processor's count). Where a sample lies is worked out from its pixel (how far it moves).
 kernel void round_blur(device float4 *out [[buffer(0)]], const device float4 *src [[buffer(1)]], constant Round &p [[buffer(2)]], uint2 g [[thread_position_in_grid]]) {
     // from the point to the pixel's middle
-    float vx = float(int(g.x) - p.cx) + (0.5 - p.fx);
-    float vy = float(int(g.y) - p.cy) + (0.5 - p.fy);
-    float reach = precise::sqrt(vx * vx + vy * vy);
-    float travel = p.zoom ? reach * abs(p.amount) : reach * abs(p.amount) * (M_PI_F / 180.0);
-    uint n = uint(clamp(ceil(travel) + 1.0, 2.0, 512.0));
+    df dvx = df_sub(df_of(float(g.x) + 0.5), p.cx);
+    df dvy = df_sub(df_of(float(g.y) + 0.5), p.cy);
+    long far = df_ceil(df_mul(df_sqrt(df_add(df_mul(dvx, dvx), df_mul(dvy, dvy))), p.reach));
+    uint n = uint(clamp(far + 1, 2l, 512l));
+    float vx = df_float(dvx), vy = df_float(dvy);
     float4 acc = float4(0.0);
     for (uint i = 0; i < n; i++) {
         float t = float(i) / float(n - 1) - 0.5;
