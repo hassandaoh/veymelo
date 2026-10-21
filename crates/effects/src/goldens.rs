@@ -372,8 +372,12 @@ fn effects_take() {
         let t = Tick::from_seconds(0.5);
         let read = |p: &veymelo_project::Property| p.value_at(t);
         let ctx = Ctx::new(&g, &read, t, bounds, 7);
-        // once to warm up (a GPU program is built the first time), then timed
+        // once to warm up (a GPU program is built the first time), then timed (VEYMELO_REPEAT
+        // times more, to profile)
         std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
+        for _ in 0..std::env::var("VEYMELO_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize) {
+            std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
+        }
         let started = std::time::Instant::now();
         std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
         took.push((started.elapsed().as_secs_f64() * 1000.0, spec.def.id));

@@ -298,9 +298,15 @@ effect!(
 pub const MINIMAX: Spec = Spec::new(&MINIMAX_DEF, CATEGORY, minimax);
 
 /// The least (or, `most`, the greatest) of each `r` either side along a line, past its ends
-/// `outside` (or, None, its end values).
+/// `outside` (or, None, its end values). By van Herk and Gil-Werman: the line (with `r` more each
+/// side) cut into blocks a window long, each block's running extreme from its start and from its
+/// end; a window spans the end of one block and the start of the next, so its extreme is the
+/// better of those two.
 pub(crate) fn line_extreme(v: &[f32], r: usize, most: bool, outside: Option<f32>) -> Vec<f32> {
     let n = v.len();
+    if n == 0 || r == 0 {
+        return v.to_vec();
+    }
     let at = |i: i64| -> f32 {
         if i >= 0 && (i as usize) < n {
             v[i as usize]
@@ -308,45 +314,54 @@ pub(crate) fn line_extreme(v: &[f32], r: usize, most: bool, outside: Option<f32>
             outside.unwrap_or(v[i.clamp(0, n as i64 - 1) as usize])
         }
     };
-    let better = |a: f32, b: f32| if most { a >= b } else { a <= b };
-    // a queue of places whose values are still in the running, best first
-    let mut q: std::collections::VecDeque<(i64, f32)> = std::collections::VecDeque::new();
-    let ri = r as i64;
-    let mut out = Vec::with_capacity(n);
-    for i in -ri..(n as i64 + ri) {
-        let x = at(i);
-        while q.back().is_some_and(|b| better(x, b.1)) {
-            q.pop_back();
-        }
-        q.push_back((i, x));
-        let centre = i - ri;
-        if centre >= 0 {
-            while q.front().is_some_and(|f| f.0 < centre - ri) {
-                q.pop_front();
-            }
-            out.push(q.front().expect("one at least").1);
+    let pick = |a: f32, b: f32| if most { a.max(b) } else { a.min(b) };
+    let k = 2 * r + 1;
+    let len = n + 2 * r;
+    let padded: Vec<f32> = (0..len as i64).map(|i| at(i - r as i64)).collect();
+    let (mut from_start, mut from_end) = (padded.clone(), padded.clone());
+    for i in 1..len {
+        if i % k != 0 {
+            from_start[i] = pick(from_start[i - 1], padded[i]);
         }
     }
-    out
+    for i in (0..len - 1).rev() {
+        if (i + 1) % k != 0 {
+            from_end[i] = pick(from_end[i + 1], padded[i]);
+        }
+    }
+    // the window of pixel x is padded[x .. x + k]
+    (0..n).map(|x| pick(from_end[x], from_start[x + k - 1])).collect()
 }
 
 /// A plane's extremes over a box `rx` across and `ry` down each way.
 pub(crate) fn box_extreme(plane: &[f32], w: usize, h: usize, rx: usize, ry: usize, most: bool, outside: Option<f32>) -> Vec<f32> {
     let mut out = plane.to_vec();
+    // the rows on the cores apart, then the columns (as the rows of the plane turned)
     if rx > 0 {
-        for y in 0..h {
-            let row = line_extreme(&out[y * w..(y + 1) * w], rx, most, outside);
-            out[y * w..(y + 1) * w].copy_from_slice(&row);
-        }
+        veymelo_raster::par::rows(&mut out, w, |_, row| {
+            let done = line_extreme(row, rx, most, outside);
+            row.copy_from_slice(&done);
+        });
     }
     if ry > 0 {
-        for x in 0..w {
-            let col: Vec<f32> = (0..h).map(|y| out[y * w + x]).collect();
-            for (y, v) in line_extreme(&col, ry, most, outside).into_iter().enumerate() {
-                out[y * w + x] = v;
-            }
-        }
+        let mut cols = turned(&out, w, h);
+        veymelo_raster::par::rows(&mut cols, h, |_, col| {
+            let done = line_extreme(col, ry, most, outside);
+            col.copy_from_slice(&done);
+        });
+        out = turned(&cols, h, w);
     }
+    out
+}
+
+/// A plane `w` × `h` turned on its diagonal (its rows its columns).
+pub(crate) fn turned(plane: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0f32; w * h];
+    veymelo_raster::par::rows(&mut out, h, |x, row| {
+        for (y, o) in row.iter_mut().enumerate() {
+            *o = plane[y * w + x];
+        }
+    });
     out
 }
 
@@ -867,3 +882,25 @@ pub const ALL: [Spec; 13] = [INVERT, SET_CHANNELS, SHIFT_CHANNELS, COMBINER, MIN
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod extreme_tests {
+    /// The extremes over each window, by blocks, are the ones found by looking at every pixel of
+    /// it: every radius, both ways, past the ends nothing or the end pixel.
+    #[test]
+    fn line_extremes_are_each_windows() {
+        let v: Vec<f32> = (0..97).map(|i| (((i * 37) % 23) as f32 - 9.0) * 0.17).collect();
+        for r in [1, 2, 3, 7, 30, 120] {
+            for most in [true, false] {
+                for outside in [Some(0.0), None, Some(-5.0)] {
+                    let got = super::line_extreme(&v, r, most, outside);
+                    for (x, g) in got.iter().enumerate() {
+                        let window = (x as i64 - r as i64..=x as i64 + r as i64).map(|i| if i >= 0 && (i as usize) < v.len() { v[i as usize] } else { outside.unwrap_or(v[i.clamp(0, v.len() as i64 - 1) as usize]) });
+                        let want = if most { window.fold(f32::MIN, f32::max) } else { window.fold(f32::MAX, f32::min) };
+                        assert_eq!(*g, want, "r {r} most {most} outside {outside:?} at {x}");
+                    }
+                }
+            }
+        }
+    }
+}

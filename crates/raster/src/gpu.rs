@@ -132,8 +132,10 @@ impl Pass {
 }
 
 /// A step done to a picture on the GPU: a kernel run over it, its grid, and its groups. The
-/// kernel takes the picture out, the picture in (what the step before made), then its numbers
-/// (if it has some), the picture as it first was (if it asks), and its settings.
+/// kernel takes the picture out, the picture in (what the step before made, or what a step put
+/// in slot `input`), then its numbers (if it has some), the picture as it first was (if it asks:
+/// `original`), the picture in slot `also` (if asked), and its settings. With `save`, what it
+/// makes goes in that slot (the steps after it read it from there).
 pub struct Op {
     pub kernel: Kernel,
     pub data: Option<Vec<u8>>,
@@ -141,12 +143,18 @@ pub struct Op {
     pub settings: Vec<u8>,
     pub grid: [usize; 2],
     pub group: Option<[usize; 2]>,
+    pub input: Option<usize>,
+    pub also: Option<usize>,
+    pub save: Option<usize>,
 }
+
+/// How many slots a run of steps has to keep pictures in.
+pub const SLOTS: usize = 4;
 
 impl Op {
     /// `kernel` with `settings`, over `grid`.
     pub fn new<T: Plain>(kernel: Kernel, settings: &T, grid: [usize; 2]) -> Op {
-        Op { kernel, data: None, original: false, settings: bytes_of(settings).to_vec(), grid, group: None }
+        Op { kernel, data: None, original: false, settings: bytes_of(settings).to_vec(), grid, group: None, input: None, also: None, save: None }
     }
 
     /// The step with `data` (numbers it reads) too.
@@ -198,11 +206,12 @@ fn both_ways(across: Vec<Op>, down: Vec<Op>, w: usize, h: usize) -> Vec<Op> {
     ops
 }
 
-/// Buffers kept between pictures on this thread: the picture, and two to pass it between.
-struct Kept([Option<Buffer>; 3]);
+/// Buffers kept between pictures on this thread: the picture, two to pass it between, and the
+/// slots.
+struct Kept([Option<Buffer>; 3 + SLOTS]);
 
 thread_local! {
-    static KEPT: RefCell<Kept> = const { RefCell::new(Kept([None, None, None])) };
+    static KEPT: RefCell<Kept> = const { RefCell::new(Kept([const { None }; 3 + SLOTS])) };
 }
 
 /// The most bytes a thread keeps between pictures.
@@ -239,29 +248,50 @@ pub fn apply(img: &Image, ops: &[Op]) -> Option<Image> {
         let mut source = take(0, len)?;
         source.slice_mut::<Px>()[..img.px.len()].copy_from_slice(&img.px);
         let (a, b) = (take(1, len)?, take(2, len)?);
+        let used = |k: usize| ops.iter().any(|op| op.input == Some(k) || op.also == Some(k) || op.save == Some(k));
+        let slots: Vec<Option<Buffer>> = (0..SLOTS).map(|k| used(k).then(|| take(3 + k, len)).transpose()).collect::<Result<_, _>>()?;
+        let slot = |k: usize| -> Result<&Buffer, String> { slots.get(k).and_then(Option::as_ref).ok_or_else(|| format!("no slot {k}")) };
         let data: Vec<Option<Buffer>> = ops.iter().map(|op| op.data.as_deref().map(Buffer::of).transpose()).collect::<Result<_, _>>()?;
+        // where the last step's picture is: 0 the picture, 1 and 2 the two, 3 on the slots
+        let mut here = 0usize;
+        let buffer = |w: usize| -> Result<&Buffer, String> {
+            match w {
+                0 => Ok(&source),
+                1 => Ok(&a),
+                2 => Ok(&b),
+                k => slot(k - 3),
+            }
+        };
         let mut steps = Vec::with_capacity(ops.len());
         for (k, op) in ops.iter().enumerate() {
-            // from the picture, then back and forth between the two
-            let from = if k == 0 { &source } else if k % 2 == 1 { &a } else { &b };
-            let to = if k % 2 == 0 { &a } else { &b };
-            let mut args = vec![Arg::Pass(to), Arg::Pass(from)];
+            let from = op.input.map_or(here, |s| 3 + s);
+            // into a slot, or back and forth between the two
+            let to = op.save.map_or(if from == 1 { 2 } else { 1 }, |s| 3 + s);
+            let mut args = vec![Arg::Pass(buffer(to)?), Arg::Pass(buffer(from)?)];
             if let Some(n) = &data[k] {
                 args.push(Arg::Read(n));
             }
             if op.original {
                 args.push(Arg::Pass(&source));
             }
+            if let Some(s) = op.also {
+                args.push(Arg::Pass(slot(s)?));
+            }
             args.push(Arg::Bytes(&op.settings));
             steps.push(Step { kernel: &op.kernel, args, grid: op.grid, group: op.group });
+            here = to;
         }
         veymelo_os::gpu::run_steps(&steps)?;
         drop(steps);
-        let last = if ops.len() % 2 == 1 { &a } else { &b };
-        let out = Image { width: img.width, height: img.height, px: last.slice::<Px>()[..img.px.len()].to_vec() };
+        let out = Image { width: img.width, height: img.height, px: buffer(here)?.slice::<Px>()[..img.px.len()].to_vec() };
         keep(0, source);
         keep(1, a);
         keep(2, b);
+        for (k, s) in slots.into_iter().enumerate() {
+            if let Some(s) = s {
+                keep(3 + k, s);
+            }
+        }
         Ok(out)
     };
     match go() {
@@ -295,6 +325,25 @@ pub fn gaussian_ops(w: usize, h: usize, sx: f64, sy: f64, edge: Edge) -> Vec<Op>
     let across = if sx > 0.01 { bell_ops(w, h, sx, edge, &bell) } else { Vec::new() };
     let down = if sy > 0.01 { bell_ops(h, w, sy, edge, &bell) } else { Vec::new() };
     both_ways(across, down, w, h)
+}
+
+/// A step that puts the picture (`w` × `h`) as it is in a slot (with `save`).
+pub fn copy_op(w: usize, h: usize) -> Op {
+    Op::new(filter("copy_picture"), &(w as u32), [w, h])
+}
+
+/// [`gaussian_ops`] reading the picture in slot `from` and putting the blur in slot `into` (or
+/// leaving it as the run's picture), at least one step (a copy, where nothing blurs).
+pub fn gaussian_between(w: usize, h: usize, s: f64, edge: Edge, from: usize, into: Option<usize>) -> Vec<Op> {
+    let mut ops = gaussian_ops(w, h, s, s, edge);
+    if ops.is_empty() {
+        ops.push(copy_op(w, h));
+    }
+    ops[0].input = Some(from);
+    if let Some(last) = ops.last_mut() {
+        last.save = into;
+    }
+    ops
 }
 
 /// [`crate::filter::boxes`] on the GPU (None: leave it to the processor).

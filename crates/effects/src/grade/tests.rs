@@ -135,3 +135,34 @@ fn change_limit_neutralize_map() {
     let inverted: String = (0..256).map(|i| (255 - i).to_string()).collect::<Vec<_>>().join(",");
     assert!(near(px(&ARBITRARY_MAP, &[("map", text(&inverted))], grey(0.25)), grey(0.75), 1e-3));
 }
+
+/// The GPU corrects shadows and highlights as the processor does (radii apart and alike, worked
+/// out amounts, midtone contrast, kept part way to the original, the tones' ends clipped).
+#[test]
+fn the_gpu_lifts_shadows_as_the_processor_does() {
+    if !veymelo_raster::gpu::available() {
+        return;
+    }
+    let (w, h) = (320, 240);
+    let mut img = veymelo_raster::Image::new(w, h);
+    for (i, p) in img.px.iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let a = if (x / 50 + y / 40) % 5 == 0 { 0.6 } else { 1.0 };
+        let v = (x as f32 / w as f32).powi(2);
+        *p = [v * a, (y as f32 / h as f32) * 0.8 * a, ((x * y) % 17) as f32 / 17.0 * 0.3 * a, a];
+    }
+    let cases: Vec<Vec<(&str, veymelo_keyframe::Value)>> = vec![
+        vec![],
+        vec![("highlightAmount", n(60.0)), ("shadowRadius", n(12.0)), ("highlightRadius", n(45.0)), ("midtoneContrast", n(30.0))],
+        vec![("autoAmounts", veymelo_keyframe::Value::Bool(true)), ("colorCorrection", n(60.0)), ("blendWithOriginal", n(25.0))],
+        vec![("blackClip", n(0.0)), ("whiteClip", n(0.0)), ("shadowTonalWidth", n(80.0)), ("highlightTonalWidth", n(20.0)), ("highlightAmount", n(40.0))],
+    ];
+    for values in cases {
+        let before = veymelo_raster::gpu::ran();
+        let gpu = veymelo_raster::gpu::with_mode(false, || run(&SHADOW_HIGHLIGHT, &values, img.clone()));
+        assert!(veymelo_raster::gpu::ran() > before, "drawn by the GPU");
+        let cpu = veymelo_raster::gpu::on_processor(|| run(&SHADOW_HIGHLIGHT, &values, img.clone()));
+        let most = gpu.img.px.iter().zip(&cpu.img.px).flat_map(|(p, q)| (0..4).map(move |k| (p[k] - q[k]).abs())).fold(0f32, f32::max);
+        assert!(most <= 1e-5, "{values:?}: {most}");
+    }
+}

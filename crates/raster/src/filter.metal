@@ -187,3 +187,8 @@ kernel void round_blur(device float4 *out [[buffer(0)]], const device float4 *sr
     }
     out[g.y * p.w + g.x] = acc / float(n);
 }
+
+// The picture as it is (to put a picture in a slot unchanged).
+kernel void copy_picture(device float4 *out [[buffer(0)]], const device float4 *src [[buffer(1)]], constant uint &w [[buffer(2)]], uint2 g [[thread_position_in_grid]]) {
+    out[g.y * w + g.x] = src[g.y * w + g.x];
+}

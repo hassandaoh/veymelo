@@ -27,26 +27,32 @@ fn keep_by(img: &mut Image, m: &[f32], view: u32) {
     if view == 1 {
         return;
     }
-    for (p, k) in img.px.iter_mut().zip(m) {
-        let k = k.clamp(0.0, 1.0);
-        *p = if view == 2 {
-            let a = p[3] * k;
-            [a, a, a, 1.0]
-        } else {
-            p.map(|v| v * k)
-        };
-    }
+    veymelo_raster::par::chunks(&mut img.px, PIECE, |n, part| {
+        for (p, k) in part.iter_mut().zip(&m[n * PIECE..]) {
+            let k = k.clamp(0.0, 1.0);
+            *p = if view == 2 {
+                let a = p[3] * k;
+                [a, a, a, 1.0]
+            } else {
+                p.map(|v| v * k)
+            };
+        }
+    });
 }
 
+/// How many pixels a core takes at a time.
+const PIECE: usize = 1 << 14;
+
 /// A matte from each pixel's straight colour and alpha.
-fn matte_by(img: &Image, f: impl Fn([f32; 3], f32) -> f32) -> Vec<f32> {
-    img.px
-        .iter()
-        .map(|p| {
+fn matte_by(img: &Image, f: impl Fn([f32; 3], f32) -> f32 + Sync) -> Vec<f32> {
+    let mut m = vec![0f32; img.px.len()];
+    veymelo_raster::par::chunks(&mut m, PIECE, |n, part| {
+        for (o, p) in part.iter_mut().zip(&img.px[n * PIECE..]) {
             let (c, a) = unpremul(*p);
-            f(c, a)
-        })
-        .collect()
+            *o = f(c, a);
+        }
+    });
+    m
 }
 
 /// A matte thinned (above 0) or grown (below 0) and feathered, in buffer pixels.

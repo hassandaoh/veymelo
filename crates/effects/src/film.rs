@@ -473,19 +473,31 @@ pub const REMOVE_GRAIN: Spec = Spec::new(&REMOVE_GRAIN_DEF, CATEGORY, remove_gra
 /// `guide` fitted over a square `r` each way; changes bigger than about √`eps` stay).
 pub(crate) fn guided(guide: &[f32], p: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
     let size = (2 * r + 1) as f64;
+    const PIECE: usize = 1 << 14;
     let mut img = Image::new(w, h);
-    for (k, o) in img.px.iter_mut().enumerate() {
-        *o = [guide[k], p[k], guide[k] * guide[k], guide[k] * p[k]];
-    }
+    veymelo_raster::par::chunks(&mut img.px, PIECE, |n, part| {
+        for (i, o) in part.iter_mut().enumerate() {
+            let k = n * PIECE + i;
+            *o = [guide[k], p[k], guide[k] * guide[k], guide[k] * p[k]];
+        }
+    });
     let m = filter::boxes(&img, size, size, 1, Edge::Repeat);
     let mut ab = Image::new(w, h);
-    for (k, o) in ab.px.iter_mut().enumerate() {
-        let [mi, mp, mii, mip] = m.px[k];
-        let a = (mip - mi * mp) / ((mii - mi * mi).max(0.0) + eps);
-        *o = [a, mp - a * mi, 0.0, 0.0];
-    }
+    veymelo_raster::par::chunks(&mut ab.px, PIECE, |n, part| {
+        for (o, &[mi, mp, mii, mip]) in part.iter_mut().zip(&m.px[n * PIECE..]) {
+            let a = (mip - mi * mp) / ((mii - mi * mi).max(0.0) + eps);
+            *o = [a, mp - a * mi, 0.0, 0.0];
+        }
+    });
     let mab = filter::boxes(&ab, size, size, 1, Edge::Repeat);
-    (0..w * h).map(|k| mab.px[k][0] * guide[k] + mab.px[k][1]).collect()
+    let mut out = vec![0f32; w * h];
+    veymelo_raster::par::chunks(&mut out, PIECE, |n, part| {
+        for (i, o) in part.iter_mut().enumerate() {
+            let k = n * PIECE + i;
+            *o = mab.px[k][0] * guide[k] + mab.px[k][1];
+        }
+    });
+    out
 }
 
 fn remove_grain(ctx: &Ctx, mut b: Buf) -> Buf {

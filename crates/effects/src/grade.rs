@@ -208,19 +208,37 @@ const BINS: usize = 1024;
 
 /// How many pixels (by their alpha) have each tone of red, green, blue and brightness.
 fn histograms(img: &Image) -> [Vec<f64>; 4] {
-    let mut h: [Vec<f64>; 4] = std::array::from_fn(|_| vec![0.0; BINS]);
     let bin = |v: f32| ((v.clamp(0.0, 1.0) * (BINS - 1) as f32).round() as usize).min(BINS - 1);
-    for p in &img.px {
-        let (c, a) = unpremul(*p);
-        if a <= 1e-4 {
-            continue;
-        }
-        for k in 0..3 {
-            h[k][bin(c[k])] += a as f64;
-        }
-        h[3][bin(luma(c))] += a as f64;
-    }
-    h
+    // each alpha counted exactly: every alpha past 1e-4 is a whole number of 2⁻³⁸ (a float has 24
+    // bits below its leading one), so the pieces of the picture are added up on the cores apart
+    // and together in any order alike
+    const ONE: f64 = (1u64 << 38) as f64;
+    const PIECE: usize = 1 << 16;
+    let pieces: Vec<[Vec<u64>; 4]> = std::thread::scope(|s| {
+        let work: Vec<_> = img
+            .px
+            .chunks(PIECE * 4)
+            .map(|part| {
+                s.spawn(move || {
+                    let mut h: [Vec<u64>; 4] = std::array::from_fn(|_| vec![0; BINS]);
+                    for p in part {
+                        let (c, a) = unpremul(*p);
+                        if a <= 1e-4 {
+                            continue;
+                        }
+                        let units = (a as f64 * ONE) as u64;
+                        for k in 0..3 {
+                            h[k][bin(c[k])] += units;
+                        }
+                        h[3][bin(luma(c))] += units;
+                    }
+                    h
+                })
+            })
+            .collect();
+        work.into_iter().map(|w| w.join().expect("a histogram's piece")).collect()
+    });
+    std::array::from_fn(|k| (0..BINS).map(|i| pieces.iter().map(|h| h[k][i]).sum::<u64>() as f64 / ONE).collect())
 }
 
 /// The darkest and lightest tones once `black` and `white` of the pixels (fractions) are left out.
@@ -437,6 +455,59 @@ fn shadow_highlight(ctx: &Ctx, mut b: Buf) -> Buf {
     let (s_r, h_r) = (ctx.num("shadowRadius", 30.0).max(0.0) * b.scale / 2.0, ctx.num("highlightRadius", 30.0).max(0.0) * b.scale / 2.0);
     let (cc, mc) = (ctx.num("colorCorrection", 20.0) as f32 / 100.0, ctx.num("midtoneContrast", 0.0) as f32 / 100.0);
     let keep = (ctx.num("blendWithOriginal", 0.0) / 100.0).clamp(0.0, 1.0) as f32;
+    let (w, h) = (b.img.width, b.img.height);
+    let on_gpu = veymelo_raster::gpu::wanted(w * h).then(|| {
+        use veymelo_raster::gpu;
+        let source = gpu::program(&[gpu::COMMON, include_str!("grade.metal")]);
+        let p = GpuShadowHighlight { w: w as u32, s_amt, h_amt, s_tw, h_tw, cc, mc, keep };
+        // the brightness in slot 0, blurred by the shadows' radius into slot 1 and by the
+        // highlights' as the run's picture
+        let mut ops = vec![gpu::Op { save: Some(0), ..gpu::Op::new(gpu::Kernel { source, name: "brightness_map" }, &(w as u32), [w, h]) }];
+        let same = (h_r - s_r).abs() < 1e-9;
+        ops.extend(gpu::gaussian_between(w, h, s_r, Edge::Repeat, 0, Some(1)));
+        if same {
+            ops.push(gpu::Op { input: Some(1), ..gpu::copy_op(w, h) });
+        } else {
+            ops.extend(gpu::gaussian_between(w, h, h_r, Edge::Repeat, 0, None));
+        }
+        ops.push(gpu::Op { original: true, also: Some(1), ..gpu::Op::new(gpu::Kernel { source, name: "shadow_highlight" }, &p, [w, h]) });
+        gpu::apply(&b.img, &ops)
+    });
+    if let Some(Some(img)) = on_gpu {
+        b.img = img;
+    } else {
+        shadow_highlight_here(&mut b, s_amt, h_amt, s_tw, h_tw, s_r, h_r, cc, mc, keep);
+    }
+    // the ends of the tones put back where they were, so lifting shadows does not flatten them
+    if let Some((lo0, hi0)) = before {
+        let (lo1, hi1) = ends(&histograms(&b.img)[3], bc, wc);
+        if (lo0, hi0) != (lo1, hi1) && hi1 - lo1 > 1e-3 {
+            let k = (hi0 - lo0) / (hi1 - lo1);
+            map_straight(&mut b.img, |c| c.map(|v| (lo0 + (v - lo1) * k).max(0.0)));
+        }
+    }
+    b
+}
+
+/// Shadow/Highlight's settings as the GPU takes them (grade.metal's ShadowHighlight).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuShadowHighlight {
+    w: u32,
+    s_amt: f32,
+    h_amt: f32,
+    s_tw: f32,
+    h_tw: f32,
+    cc: f32,
+    mc: f32,
+    keep: f32,
+}
+
+unsafe impl veymelo_raster::gpu::Plain for GpuShadowHighlight {}
+
+/// Shadow/Highlight's correction on the processor.
+#[allow(clippy::too_many_arguments)]
+fn shadow_highlight_here(b: &mut Buf, s_amt: f32, h_amt: f32, s_tw: f32, h_tw: f32, s_r: f64, h_r: f64, cc: f32, mc: f32, keep: f32) {
     // each area's brightness: the picture's, blurred
     let mut bright = b.img.clone();
     map_px(&mut bright, |_, _, p| {
@@ -465,15 +536,6 @@ fn shadow_highlight(ctx: &Ctx, mut b: Buf) -> Buf {
         }
         premul(mix3(o.map(|v| v.max(0.0)), c, keep), a)
     });
-    // the ends of the tones put back where they were, so lifting shadows does not flatten them
-    if let Some((lo0, hi0)) = before {
-        let (lo1, hi1) = ends(&histograms(&b.img)[3], bc, wc);
-        if (lo0, hi0) != (lo1, hi1) && hi1 - lo1 > 1e-3 {
-            let k = (hi0 - lo0) / (hi1 - lo1);
-            map_straight(&mut b.img, |c| c.map(|v| (lo0 + (v - lo1) * k).max(0.0)));
-        }
-    }
-    b
 }
 
 /// Selective Color's ranges and their four inks.
