@@ -597,19 +597,29 @@ prop.list/get/set/keys, render.frame
   เล่นต่อ: 23–57 ms ต่อเฟรม
 - goldens เอฟเฟกต์รันบน CPU; `VEYMELO_GOLDENS_GPU=1 VEYMELO_GPU_FROM=0` ผ่าน GPU: 4771/4784 เท่าเดิม ที่เหลือคือเศษ float
   ถูกขยายที่ threshold/รอยต่อ (Environment ตรงรอยต่อของแผนที่สะท้อน, Cartoon ขอบ) ; 3D focus x4 เขียนใหม่ (ต่าง ≤1/255)
-- [ ] ต่อไป (ข้อ 1 ของ "งานที่เหลือ"; ตาม effects_take): noise (Fractal/Turbulent/VR Fractal/Curl/Cell, Turbulent Displace: ต้องใช้พิกัดแบบ double-float บน GPU
-      เพราะ octave ละเอียดเกิน f32), Radial Fast Blur, Hair, VR Converter, Bilateral, Light Burst, Cartoon, Color Range, Remove Grain,
-      Light Rays …; การวางชั้น (transform + blend) บน GPU และเก็บภาพไว้บน GPU ระหว่างเอฟเฟกต์ (ไม่ต้องคัดลอกไปกลับ); เติม path บน GPU
+- [x] 15.5 noise บน GPU: Fractal/Turbulent Noise (noise 32 บิตเหมือน CPU), noise 64 บิตเก็บพิกัดเป็นเลขสองตัว (df) ตรงกับ CPU
+      ≤1e-6: Curl Noise, Turbulent Displace, Roughen Edges, VR Fractal Noise; hash แบบ 32 บิตสองซีก (GPU คูณ 64 บิตช้า);
+      1080×1920: Fractal 54→12 ms, Curl 329→10, VR Fractal 381→26, Turbulent Displace 44→7, Roughen 82→10
+- [x] 15.6 blend modes ทั้ง 38 บน GPU (common.metal) ตรงกับ veymelo_color::blend; ขั้นตอน GPU ต่อกันเก็บภาพในช่อง (slots) ได้
+- [x] 15.7 เอฟเฟกต์บน GPU: Radial Fast Blur 510→44, Zoom 64→12, Bilateral 112→10, Smart 20→8, Light Burst 101→12,
+      Light Rays 95→6, Cell Pattern 65→13, Shadow/Highlight 55→18 (นับตัวอย่างจากระยะแบบ df จึงเท่า CPU)
+- [x] 15.8 แม่นยำบน CPU แต่ทุกคอร์ (ภาพเท่าเดิมทุกบิต): histogram นับเป็นจำนวนเต็ม, matte ของ key ทั้งหมด, min/max
+      (van Herk/Gil-Werman), clamp/quantize/settle, พื้นหลัง, เส้นโค้งจองที่ก่อน, ชั้นรูปทรงใหญ่เติมและผสมบนทุกคอร์;
+      Color Range 77→18, Refine Soft 72→42, Refine Hard 52→34
+- [x] 15.9 ภาพที่ GPU ทำอยู่ในหน่วยความจำที่ใช้ร่วม (raster::Pixels): ขั้น GPU ถัดไปอ่านที่เดิม ไม่คัดลอกไปกลับ;
+      3D คัดลอกภาพของชั้นที่ GPU ทำด้วย GPU (blit); เอฟเฟกต์ GPU เร็วขึ้นอีก 10–35%
+- ผล picture-memory (เล่นต่อ, ต่อเฟรม): 5 วิ 24→17 ms, 20 วิ 26→22, 40 วิ 37→33, 60 วิ 59→52, 80 วิ 47→41
+  (ก่อนขั้น 15: เฟรมเดิมซ้ำ 43/30/66/105/67 ms)
+- ไม่ย้าย (เหตุผล): Hair และ Flow Motion (วาดเส้นหรือจำลองตามลำดับ ผลขึ้นกับลำดับ), Remove Grain และ Cartoon (สายขั้นตอนยาว
+  ใช้กับฟุตเทจเป็นหลัก — ทำได้ด้วยช่องของ GPU ถ้าต้องการ), VR Converter/Plane↔Sphere/Blur/Glow/Sharpen/De-Noise/Chromatic
+  (จำนวนตัวอย่างต่อพิกเซลขึ้นกับมุมที่ต้องคิดแบบ df trig ให้เท่า CPU), การวางชั้น 2D และเติม path บน GPU (ชั้น 2D ส่วนใหญ่
+  เล็ก งานกระจายบน CPU แล้ว; เหลือเป็นงานใหญ่: ภาพทั้งเฟรมอยู่บน GPU)
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
 (ปุ่ม แผงตั้งค่า การลากแก้ ฯลฯ) จนกว่าผู้ใช้จะสั่ง เรียงตามลำดับที่จะทำ
 
-1. **2D บน GPU (ขั้น 15 ต่อ)**
-   - noise: Fractal / Turbulent / VR Fractal / Curl / Cell Noise, Turbulent Displace (พิกัดแบบ double-float บน GPU)
-   - เอฟเฟกต์ที่ยังช้า (ตาม effects_take): Radial Fast Blur, Hair, VR Converter, Bilateral, Light Burst, Cartoon, Color Range,
-     Remove Grain, Light Rays, Roughen Edges, Refine Matte, Flow Motion …
-   - วางชั้น (transform + blend) บน GPU และเก็บภาพไว้บน GPU ระหว่างขั้น (ไม่ต้องคัดลอกไปกลับ); เติม path บน GPU
+1. ~~**2D บน GPU (ขั้น 15)**~~ — เสร็จ 2026-10-21 (ดูขั้น 15; ที่ไม่ย้ายมีเหตุผลอยู่ที่นั่น)
 2. **3D ที่เหลือจากขั้น 14**: caustics, เงาของแก้วให้แสงผ่าน (มีสี), รูปบนโมเดลในเงาสะท้อนอ่านทุกพิกเซล
 3. **3D รายการเก่า**: ม่านรูรับแสงหลายเหลี่ยม (bokeh), shadow map สำหรับฉากใหญ่มาก, ความโปร่งใสเรียงลำดับในโมเดล, FBX,
    ชั้นที่เห็นกันในเงาสะท้อน (appearsInReflections)
