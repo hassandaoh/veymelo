@@ -59,6 +59,8 @@ pub fn commands() -> Vec<Command> {
                 Param::opt("adaptiveLimit", Ty::Whole, "the most pictures, for layers that move far, 16 to 256 (default 128)"),
                 Param::opt("frameBlending", Ty::Bool, "blend frames of layers whose frame blending switch is on (default true)"),
                 Param::opt("hideShy", Ty::Bool, "leave shy layers out of the layer list"),
+                Param::opt("lightBounce", Ty::Number, "how much light bounces from surface to surface in its 3D scenes, in percent (global illumination: a red wall tints the floor by it, shadows fill with the light round them); 0 (the default) none, 100 all of it"),
+                Param::opt("bounces", Ty::Whole, "how many times light bounces on, 1 to 4 (default 2)"),
             ] },
             returns: "{comp}",
             run: Run::Edit(comp_set),
@@ -200,6 +202,18 @@ fn comp_set(cx: &mut Ctx, a: &Args) -> Result<Json> {
     if let Some(on) = a.bool("hideShy") {
         c.hide_shy = on;
     }
+    if let Some(v) = a.num("lightBounce") {
+        if !(0.0..=400.0).contains(&v) {
+            return Err(Error::params(format!("`lightBounce` is 0 to 400 percent, not {v}")));
+        }
+        c.bounce.amount = v / 100.0;
+    }
+    if let Some(v) = a.whole("bounces") {
+        if !(1..=veymelo_project::MOST_BOUNCES as u64).contains(&v) {
+            return Err(Error::params(format!("`bounces` is 1 to {}, not {v}", veymelo_project::MOST_BOUNCES)));
+        }
+        c.bounce.bounces = v as u32;
+    }
     Ok(Json::object([("comp", id as f64)]))
 }
 
@@ -233,6 +247,7 @@ fn comp_info(l: &Look, a: &Args) -> Result<Json> {
         ("background", Value::Color(c.background).to_json(Kind::Color)),
         ("workArea", Json::array([Json::Number(c.work_area.start.seconds()), Json::Number(c.work_area.end().seconds())])),
         ("posterTime", Json::Number(c.poster.seconds())),
+        ("lightBounce", Json::object([("amount", Json::Number(c.bounce.amount * 100.0)), ("bounces", Json::Number(c.bounce.bounces as f64))])),
         ("layers", Json::array(layers)),
     ]))
 }

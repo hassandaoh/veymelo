@@ -373,11 +373,11 @@ impl Files {
         let Some(f) = faces() else { return };
         let (x0, y0, w, h) = column;
         let px = |v: f64| v * scale;
-        canvas.fill_faded(&Label::new(f.title.clone(), 15.0, "Files").path(x0 + 20.0, y0 + 32.0, 1.0, scale), INK, alpha);
+        Label::new(f.title.clone(), 15.0, "Files").draw(canvas, x0 + 20.0, y0 + 32.0, 1.0, scale, INK, alpha);
         let bottom = y0 + h - 8.0;
         let mut last_y = y0 + ROWS_TOP;
         if self.rows.is_empty() {
-            canvas.fill_faded(&Label::new(f.body.clone(), 12.5, "Nothing in the folder yet").path(x0 + 20.0, y0 + ROWS_TOP + 17.0, 1.0, scale), FAINT, alpha);
+            Label::new(f.body.clone(), 12.5, "Nothing in the folder yet").draw(canvas, x0 + 20.0, y0 + ROWS_TOP + 17.0, 1.0, scale, FAINT, alpha);
         }
         for (r, y) in self.placed(column) {
             if y < y0 + ROWS_TOP - 2.0 || y + ROW > bottom {
@@ -416,17 +416,17 @@ impl Files {
             let mut room = x0 + w - 16.0 - (ix + 18.0);
             if !said.is_empty() {
                 let l = Label::new(f.small.clone(), 11.0, &said);
-                canvas.fill_faded(&l.path(x0 + w - 16.0 - l.wide, cy + 4.0, 1.0, scale), colour, alpha);
+                l.draw(canvas, x0 + w - 16.0 - l.wide, cy + 4.0, 1.0, scale, colour, alpha);
                 room -= l.wide + 8.0;
             }
-            canvas.fill_faded(&crate::workspace::fit(&f.body, 12.5, &r.name, room.max(20.0)).path(ix + 18.0, cy + 4.5, 1.0, scale), ink, alpha);
+            crate::workspace::fit(&f.body, 12.5, &r.name, room.max(20.0)).draw(canvas, ix + 18.0, cy + 4.5, 1.0, scale, ink, alpha);
         }
         // used from outside the folder
         if !self.outside.is_empty() {
             let mut y = last_y + 14.0;
             if y + 20.0 < bottom {
                 canvas.fill_faded(&Path::rounded(px(x0 + 20.0), px(y), px(w - 40.0), px(crate::iso::STROKE), 0.0), RULE, alpha);
-                canvas.fill_faded(&Label::new(f.small.clone(), 11.0, "Used from outside this folder").path(x0 + 20.0, y + 22.0, 1.0, scale), GREY, alpha);
+                Label::new(f.small.clone(), 11.0, "Used from outside this folder").draw(canvas, x0 + 20.0, y + 22.0, 1.0, scale, GREY, alpha);
             }
             y += 30.0;
             for p in &self.outside {
@@ -443,8 +443,8 @@ impl Files {
                     None => String::new(),
                 };
                 let l = Label::new(f.small.clone(), 11.0, &said);
-                canvas.fill_faded(&l.path(x0 + w - 16.0 - l.wide, cy + 4.0, 1.0, scale), if u.is_some_and(|u| u.missing) { RED } else { GREY }, alpha);
-                canvas.fill_faded(&crate::workspace::fit(&f.body, 12.5, &name, w - 80.0 - l.wide).path(x0 + 44.0, cy + 4.5, 1.0, scale), INK, alpha);
+                l.draw(canvas, x0 + w - 16.0 - l.wide, cy + 4.0, 1.0, scale, if u.is_some_and(|u| u.missing) { RED } else { GREY }, alpha);
+                crate::workspace::fit(&f.body, 12.5, &name, w - 80.0 - l.wide).draw(canvas, x0 + 44.0, cy + 4.5, 1.0, scale, INK, alpha);
                 y += ROW;
             }
         }
@@ -463,7 +463,7 @@ impl Files {
         canvas.fill_faded(&Path::rounded(px(x), px(y), px(w), px(h), px(h / 2.0)), Rgb(255, 255, 255), alpha);
         canvas.stroke(&Path::rounded_points(px(x), px(y), px(w), px(h), px(h / 2.0)), true, crate::iso::STROKE * scale, if can { INK } else { EDGE }, alpha);
         icon(canvas, scale, Kind::of(path), (x + 18.0, y + h / 2.0), INK, alpha);
-        canvas.fill_faded(&l.path(x + 30.0, y + h / 2.0 + 4.5, 1.0, scale), INK, alpha);
+        l.draw(canvas, x + 30.0, y + h / 2.0 + 4.5, 1.0, scale, INK, alpha);
     }
 }
 

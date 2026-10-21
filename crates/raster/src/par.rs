@@ -40,13 +40,17 @@ pub fn rows<T: Send>(px: &mut [T], width: usize, f: impl Fn(usize, &mut [T]) + S
         return;
     }
     let per = height.div_ceil(threads);
+    // the threads draw where this one does (on the processor alone, or not)
+    let mode = crate::gpu::processor_only();
     std::thread::scope(|s| {
         for (k, block) in px.chunks_mut(per * width).enumerate() {
             let f = &f;
             s.spawn(move || {
-                for (i, row) in block.chunks_mut(width).enumerate() {
-                    f(k * per + i, row);
-                }
+                crate::gpu::with_mode(mode, || {
+                    for (i, row) in block.chunks_mut(width).enumerate() {
+                        f(k * per + i, row);
+                    }
+                })
             });
         }
     });
@@ -67,13 +71,16 @@ pub fn chunks<T: Send>(px: &mut [T], size: usize, f: impl Fn(usize, &mut [T]) + 
         return;
     }
     let per = count.div_ceil(threads);
+    let mode = crate::gpu::processor_only();
     std::thread::scope(|s| {
         for (t, block) in px.chunks_mut(per * size).enumerate() {
             let f = &f;
             s.spawn(move || {
-                for (i, c) in block.chunks_mut(size).enumerate() {
-                    f(t * per + i, c);
-                }
+                crate::gpu::with_mode(mode, || {
+                    for (i, c) in block.chunks_mut(size).enumerate() {
+                        f(t * per + i, c);
+                    }
+                })
             });
         }
     });

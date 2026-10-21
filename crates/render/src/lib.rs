@@ -14,6 +14,7 @@
 //! projects every step is rounded to that many bits, as such a project is; in 32-bit ones colours
 //! may go past white. What cannot be drawn yet is left out and said in the notes.
 
+mod bounce;
 mod extrude;
 mod gpu;
 mod masks;
@@ -67,11 +68,13 @@ pub struct Options {
     /// Draw on the GPU what it can draw (Metal on Apple silicon; by default when there is one),
     /// the same pictures as the processor's to within the last bits of a float.
     pub gpu: bool,
+    /// A composition seen other than through its own camera (a preview looked round).
+    pub orbit: Option<veymelo_expr::Orbit>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { scale: 1.0, background: true, motion_blur: true, guides: false, quality: None, effects: None, solo: true, depth: None, proxies: ProxyUse::Current, gpu: veymelo_os::gpu::available() }
+        Options { scale: 1.0, background: true, motion_blur: true, guides: false, quality: None, effects: None, solo: true, depth: None, proxies: ProxyUse::Current, gpu: veymelo_os::gpu::available(), orbit: None }
     }
 }
 
@@ -103,9 +106,15 @@ fn held(s: f64, area: f64) -> f64 {
 const MAX_SIDE: f64 = 8192.0;
 
 pub use gpu::{let_go, scenes_drawn};
+pub use veymelo_expr::Orbit;
 
 /// Composition `comp` of `project` at time `t`.
 pub fn render(project: &Project, comp: u64, t: Tick, options: &Options) -> Result<Rendered, String> {
+    // its pictures filtered by the GPU too, or all of it drawn by the processor
+    veymelo_raster::gpu::with_mode(!options.gpu, || render_on(project, comp, t, options))
+}
+
+fn render_on(project: &Project, comp: u64, t: Tick, options: &Options) -> Result<Rendered, String> {
     let c = project.comp(comp).ok_or_else(|| format!("there is no composition {comp}"))?;
     if !(options.scale > 0.0 && options.scale <= 4.0) {
         return Err(format!("the scale is more than 0 and at most 4, not {}", options.scale));
@@ -466,7 +475,9 @@ impl<'a> Renderer<'a> {
             16 => Some(32768.0),
             _ => None,
         };
-        Renderer { project, eval: Eval::new(project), options, fixed: None, linear: project.settings.linear_blending, levels, within: Vec::new(), notes: RefCell::new(Vec::new()) }
+        let mut eval = Eval::new(project);
+        eval.orbit = options.orbit;
+        Renderer { project, eval, options, fixed: None, linear: project.settings.linear_blending, levels, within: Vec::new(), notes: RefCell::new(Vec::new()) }
     }
 
     /// A layer's rectangle in its own units; one without a size of its own has the
@@ -1107,7 +1118,11 @@ impl<'a> Renderer<'a> {
             }
         };
         let mut s = self.detail(comp, layer, t, view);
-        let area = self.seen(comp, layer, t, view, canvas, w, h);
+        let mut area = self.seen(comp, layer, t, view, canvas, w, h);
+        // a 3D layer: only the part the camera sees, as finely as it is seen there
+        if let Some((part, seen)) = self.seen_part(comp, layer, t, view, canvas, Rect::from_size(w, h)) {
+            (s, area) = (seen, part.intersect(&Rect::from_size(w, h)));
+        }
         if area.is_empty() {
             return None;
         }
@@ -1207,7 +1222,11 @@ impl Renderer<'_> {
         };
         let (w, h) = (doc.width.ceil().max(1.0), doc.height.ceil().max(1.0));
         let mut s = self.detail(comp, layer, t, view);
-        let area = self.seen(comp, layer, t, view, canvas, w, h);
+        let mut area = self.seen(comp, layer, t, view, canvas, w, h);
+        // a 3D layer: only the part the camera sees, as finely as it is seen there
+        if let Some((part, seen)) = self.seen_part(comp, layer, t, view, canvas, Rect::from_size(w, h)) {
+            (s, area) = (seen, part.intersect(&Rect::from_size(w, h)));
+        }
         if area.is_empty() {
             return None;
         }

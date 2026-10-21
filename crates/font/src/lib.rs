@@ -512,6 +512,11 @@ impl Font {
         f
     }
 
+    /// Where this instance was asked to be on axis `tag` (its own units), if it was.
+    pub fn setting(&self, tag: &str) -> Option<f64> {
+        self.user.iter().find(|(t, _)| t == tag.as_bytes()).map(|(_, v)| *v)
+    }
+
     /// The font's own remapping of a normalized axis value (its `avar` table), if it has one.
     fn avar_map(&self, axis: usize, v: f64) -> f64 {
         if self.avar == 0 {

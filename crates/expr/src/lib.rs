@@ -41,6 +41,19 @@ pub struct Eval<'a> {
     /// Names an expression may read besides the usual ones while one is worked out (a text
     /// selector's `textIndex`, `textTotal`, `selectorValue`).
     pub(crate) vars: RefCell<Vec<(String, Vec<f64>)>>,
+    /// A composition seen other than through its own camera (the project unchanged).
+    pub orbit: Option<Orbit>,
+}
+
+/// A way to see composition `comp` other than through its own camera, as a preview is looked
+/// round: its camera (or the standard one) turned round the middle of what it sees, `turn`
+/// degrees about the vertical and `tilt` up and down, and `dolly` times as far from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Orbit {
+    pub comp: u64,
+    pub turn: f64,
+    pub tilt: f64,
+    pub dolly: f64,
 }
 
 /// What expressions may ask of the pictures, from whatever draws them: the box of what a layer
@@ -80,7 +93,7 @@ const MAX_DEPTH: usize = 32;
 
 impl<'a> Eval<'a> {
     pub fn new(project: &'a Project) -> Eval<'a> {
-        Eval { project, notes: RefCell::new(Vec::new()), busy: RefCell::new(Vec::new()), parsed: RefCell::new(HashMap::new()), vars: RefCell::new(Vec::new()) }
+        Eval { project, notes: RefCell::new(Vec::new()), busy: RefCell::new(Vec::new()), parsed: RefCell::new(HashMap::new()), vars: RefCell::new(Vec::new()), orbit: None }
     }
 
     /// What went wrong in expressions so far, each once.
@@ -266,6 +279,24 @@ impl<'a> Eval<'a> {
     /// eye, its zoom, and its layer (none: the standard one, a 50 mm lens in front of the
     /// composition's middle, showing the z = 0 plane at its own size).
     pub fn camera(&self, comp: &'a Comp, t: Tick) -> (Mat4, Vec3, f64, Option<&'a Layer>) {
+        let (view, eye, zoom, layer) = self.own_camera(comp, t);
+        let Some(o) = self.orbit.filter(|o| self.project.comp(o.comp).is_some_and(|c| std::ptr::eq(c, comp)) && (o.turn != 0.0 || o.tilt != 0.0 || o.dolly != 1.0)) else { return (view, eye, zoom, layer) };
+        let Some(back) = view.inverse() else { return (view, eye, zoom, layer) };
+        // round the middle of what it sees (as far off as its zoom), about the world's vertical
+        // and its own across
+        let ahead = back.apply_vec(vec3(0.0, 0.0, 1.0)).normalize();
+        let across = back.apply_vec(vec3(1.0, 0.0, 0.0)).normalize();
+        let pivot = eye + ahead * zoom;
+        let turn = (veymelo_geom::Quat::from_axis_deg(vec3(0.0, 1.0, 0.0), o.turn) * veymelo_geom::Quat::from_axis_deg(across, -o.tilt)).to_mat4();
+        let at = pivot + turn.apply_vec(eye - pivot) * o.dolly.max(1e-3);
+        let mut moved = turn * back;
+        (moved.0[0][3], moved.0[1][3], moved.0[2][3]) = (at.x, at.y, at.z);
+        (moved.inverse().unwrap_or(view), at, zoom, layer)
+    }
+
+    /// The composition's own camera at `t` (its top camera layer that is on and there, or the
+    /// standard one): from the world to its space, where it is, its zoom, and its layer.
+    fn own_camera(&self, comp: &'a Comp, t: Tick) -> (Mat4, Vec3, f64, Option<&'a Layer>) {
         let (w, h) = (comp.width as f64, comp.height as f64);
         let Some(layer) = comp.layers.iter().find(|l| l.source == veymelo_project::Source::Camera && l.switches.video && l.is_active_at(t)) else {
             let zoom = veymelo_project::scene::default_zoom(w);

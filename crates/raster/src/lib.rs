@@ -9,6 +9,7 @@
 pub mod blur;
 pub mod filter;
 pub mod flow;
+pub mod gpu;
 mod image;
 pub mod par;
 pub mod passes;

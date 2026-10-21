@@ -211,6 +211,7 @@ version = "0.1.0"
 dependencies = [
  "veymelo-color",
  "veymelo-geom",
+ "veymelo-os",
  "veymelo-path",
 ]
 
@@ -245,9 +246,11 @@ dependencies = [
  "veymelo-font",
  "veymelo-json",
  "veymelo-mcp",
+ "veymelo-os",
  "veymelo-path",
  "veymelo-raster",
  "veymelo-render",
+ "veymelo-text",
  "veymelo-time",
 ]
 

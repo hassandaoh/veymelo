@@ -968,6 +968,112 @@ mod watching {
         save(&frames(&mut t, 0.3, true), "real-tall");
     }
 
+    /// A 3D project's preview looked round: as its camera sees it, the hint under the pointer,
+    /// a draft while it is dragged round, whole once let go (with the way back), nearer by a
+    /// scroll, and back to its camera (run by hand: VEYMELO_FRAMES=/tmp/f cargo test
+    /// a_3d_preview_looks_round).
+    #[test]
+    fn a_3d_preview_looks_round() {
+        let Some(dir) = std::env::var_os("VEYMELO_FRAMES") else { return };
+        let dir = std::path::PathBuf::from(dir).join("look");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::live::use_library(dir.join("projects.json"));
+        // a scene: a floor, a wall, three solids, a light and its shadows
+        let file = dir.join("Scene.veymelo");
+        {
+            let mut s = veymelo_engine::Session::new();
+            let run = |s: &mut veymelo_engine::Session, id: &str, params: &str| s.run(id, &veymelo_json::Value::parse(params).unwrap()).unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            run(&mut s, "comp.new", r##"{"name": "Scene", "width": 1280, "height": 720, "fps": 30, "duration": 4, "background": "#e9e7e2"}"##);
+            let set = |s: &mut veymelo_engine::Session, layer: &str, path: &str, value: &str| {
+                s.run("prop.set", &veymelo_json::Value::parse(&format!(r#"{{"layer": "{layer}", "path": "{path}", "value": {value}}}"#)).unwrap()).unwrap_or_else(|e| panic!("{layer} {path}: {e:?}"));
+            };
+            for (name, color, size) in [("Floor", "#3a3d44", (4000, 4000)), ("Wall", "#d8d2c6", (4000, 1400))] {
+                run(&mut s, "layer.add", &format!(r##"{{"type": "solid", "color": "{color}", "width": {}, "height": {}, "name": "{name}"}}"##, size.0, size.1));
+                run(&mut s, "layer.set", &format!(r#"{{"layer": "{name}", "switches": {{"threeD": true}}}}"#));
+            }
+            set(&mut s, "Floor", "transform/position", "[640, 620, 900]");
+            set(&mut s, "Floor", "transform/rotationX", "90");
+            set(&mut s, "Floor", "materialOptions/reflectionIntensity", "40");
+            set(&mut s, "Wall", "transform/position", "[640, -80, 1300]");
+            for (shape, at, color) in [("cube", [420, 500, 600], "#c8323c"), ("sphere", [700, 490, 520], "#d9d9de"), ("cone", [920, 490, 650], "#e8a33d")] {
+                let size = match shape {
+                    "cube" => r#""width": 240, "height": 240, "depth": 240"#,
+                    "sphere" => r#""radius": 125"#,
+                    _ => r#""radius": 120, "height": 260"#,
+                };
+                run(&mut s, "layer.newPrimitive", &format!(r#"{{"shape": "{shape}", "name": "{shape}", "position": [{}, {}, {}], "baseColor": "{color}", "metallic": 0, "roughness": 0.4, {size}}}"#, at[0], at[1], at[2]));
+                set(&mut s, shape, "materialOptions/castsShadows", "\"on\"");
+            }
+            run(&mut s, "layer.add", r#"{"type": "light", "light": "spot", "name": "Key"}"#);
+            set(&mut s, "Key", "transform/position", "[200, -400, -100]");
+            set(&mut s, "Key", "transform/pointOfInterest", "[640, 500, 600]");
+            set(&mut s, "Key", "lightOptions/castsShadows", "true");
+            set(&mut s, "Key", "lightOptions/coneAngle", "120");
+            set(&mut s, "Key", "lightOptions/shadowDiffusion", "30");
+            run(&mut s, "layer.add", r#"{"type": "light", "light": "ambient", "name": "Fill"}"#);
+            set(&mut s, "Fill", "lightOptions/intensity", "40");
+            set(&mut s, "Fill", "lightOptions/ambientOcclusion", "100");
+            set(&mut s, "Fill", "lightOptions/occlusionDistance", "150");
+            run(&mut s, "layer.add", r#"{"type": "camera", "lens": 35, "name": "Camera"}"#);
+            set(&mut s, "Camera", "transform/position", "[500, 150, -900]");
+            set(&mut s, "Camera", "transform/pointOfInterest", "[660, 470, 600]");
+            run(&mut s, "project.save", &format!(r#"{{"path": "{}"}}"#, file.display()));
+        }
+        let (w, h, scale) = (2560, 1600, 2.0);
+        let save = |c: &Canvas, name: &str| {
+            let png = veymelo_render::to_png(&veymelo_raster::Image {
+                width: w,
+                height: h,
+                px: c.pixels.chunks(4).map(|p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, 1.0]).collect(),
+            });
+            std::fs::write(dir.join(format!("{name}.png")), png).unwrap();
+        };
+        let frames = |t: &mut f64, secs: f64| -> Canvas {
+            let mut c = paint(w, h, scale, *t);
+            for _ in 0..(secs * 60.0) as usize {
+                *t += 1.0 / 60.0;
+                c = paint(w, h, scale, *t);
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+            c
+        };
+        let mut t = 0.0;
+        frames(&mut t, 5.5);
+        let b = live().button.rest.unwrap();
+        press(true, (b.0 + 10.0, b.1 + 10.0), t);
+        press(false, (b.0 + 10.0, b.1 + 10.0), t);
+        frames(&mut t, 1.5);
+        answer(crate::workspace::Ask::OpenProject, Some(file), t);
+        frames(&mut t, 4.0);
+        save(&frames(&mut t, 0.2), "a-as-is");
+        // the pointer over it: how to look round
+        let middle = (585.0, 250.0);
+        pointer(Some(middle), t);
+        save(&frames(&mut t, 0.3), "b-hint");
+        // dragged round: a draft as it goes
+        press(true, middle, t);
+        for k in 1..=20 {
+            pointer(Some((middle.0 - 7.0 * k as f64, middle.1 + 2.5 * k as f64)), t);
+            frames(&mut t, 0.03);
+        }
+        save(&frames(&mut t, 0.05), "c-turning");
+        let end = (middle.0 - 140.0, middle.1 + 50.0);
+        press(false, end, t);
+        // let go: whole again, and the way back to its camera
+        pointer(Some((900.0, 600.0)), t);
+        save(&frames(&mut t, 1.5), "d-turned");
+        // nearer
+        scroll((0.0, -120.0), middle, t);
+        save(&frames(&mut t, 1.5), "e-nearer");
+        // back to its camera
+        let (x, y) = (278.0 + 10.0 + 30.0, 84.0 + 8.0 + 13.0);
+        pointer(Some((x, y)), t);
+        press(true, (x, y), t);
+        press(false, (x, y), t);
+        save(&frames(&mut t, 1.5), "f-reset");
+    }
+
     /// The projects page as it is first met (no projects, no AI: the card that connects one
     /// lies under the plates), then with projects: the card opened from the status, its
     /// Claude Desktop tab, and the plate in dashes under the pointer (run by hand:
@@ -1157,5 +1263,107 @@ mod watching {
         key(53, "", t);
         assert_eq!(live().work.mode, crate::workspace::Mode::Home);
         save(&frames(&mut t, 1.0, false), "back");
+    }
+
+    /// A project in many scripts, made as the AI makes it: its name, its composition's, its
+    /// layers' names and words in Thai, Arabic, Hebrew, Persian, Japanese, Chinese, Korean,
+    /// Hindi, Bengali, Tamil, Khmer, Myanmar, Lao, Georgian, Russian, Greek, Vietnamese,
+    /// Armenian, Amharic, Sinhala, Gujarati, Malayalam, Tibetan, with emoji (toned, joined, a
+    /// flag, a keycap), and mixed; on the page of projects and inside, the steps and the timeline (run by
+    /// hand: VEYMELO_FRAMES=/tmp/f cargo test many_scripts_show).
+    #[test]
+    fn many_scripts_show() {
+        let Some(dir) = std::env::var_os("VEYMELO_FRAMES") else { return };
+        let dir = std::path::PathBuf::from(dir).join("scripts");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::live::use_library(dir.join("projects.json"));
+        let mut agent = veymelo_mcp::Agent::new(crate::live::library());
+        let mut call = |name: &str, args: &veymelo_json::Value| {
+            let _ = agent.call(name, args);
+        };
+        let v = |s: &str| veymelo_json::Value::parse(s).unwrap();
+        let folder = dir.display().to_string();
+        call("project_new", &v(&format!(r#"{{"name": "ภาษา 世界 عالم", "folder": "{folder}"}}"#)));
+        call("command_run", &v(r##"{"command": "comp.new", "params": {"name": "หลายภาษา · 多言語 · لغات", "width": 1920, "height": 1080, "fps": 30, "duration": 21, "background": "#1d2b3a"}}"##));
+        let scripts = [
+            ("ไทย", "สวัสดีครับ ยินดีต้อนรับ ผู้ใหญ่ ฤๅษี"),
+            ("عربي", "مرحبا بالعالم"),
+            ("עברית", "שלום עולם"),
+            ("فارسی", "سلام دنیا ۱۲۳"),
+            ("日本語", "こんにちは世界、日本語です"),
+            ("中文", "你好，世界"),
+            ("한국어", "안녕하세요 세계"),
+            ("हिन्दी", "नमस्ते दुनिया क्षत्रिय"),
+            ("বাংলা", "ওহে বিশ্ব"),
+            ("தமிழ்", "வணக்கம் உலகம்"),
+            ("ខ្មែរ", "សួស្តីពិភពលោក"),
+            ("မြန်မာ", "မင်္ဂလာပါ"),
+            ("ລາວ", "ສະບາຍດີ"),
+            ("ქართული", "გამარჯობა"),
+            ("Русский", "Привет, мир"),
+            ("Ελληνικά", "Γειά σου Κόσμε"),
+            ("Tiếng Việt", "Xin chào thế giới"),
+            ("Emoji 😀", "Hello 👋🌍✨ 👍🏽 👨‍👩‍👧 🇹🇭 ❤️ 1️⃣"),
+            ("Հայերեն", "Բարեւ աշխարհ"),
+            ("አማርኛ", "ሰላም ልዑል"),
+            ("සිංහල", "ආයුබෝවන්"),
+            ("ગુજરાતી", "નમસ્તે દુનિયા"),
+            ("മലയാളം", "നമസ്കാരം ലോകം"),
+            ("བོད་ཡིག", "བཀྲ་ཤིས་བདེ་ལེགས"),
+            ("Mixed ผสม", "Veymelo مرحبا 123 ไทย 日本"),
+        ];
+        for (k, (name, words)) in scripts.iter().enumerate() {
+            let (from, to) = ((k % 3) as f64 * 7.0, (k % 3) as f64 * 7.0 + 7.0);
+            let params = veymelo_json::Value::object([
+                ("type", "text".into()),
+                ("text", (*words).into()),
+                ("name", (*name).into()),
+                ("in", veymelo_json::Value::Number(from)),
+                ("out", veymelo_json::Value::Number(to)),
+            ]);
+            call("command_run", &veymelo_json::Value::object([("command", "layer.add".into()), ("params", params)]));
+        }
+        let (w, h, scale) = (2560, 1600, 2.0);
+        let save = |c: &Canvas, name: &str| {
+            let png = veymelo_render::to_png(&veymelo_raster::Image {
+                width: w,
+                height: h,
+                px: c.pixels.chunks(4).map(|p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, 1.0]).collect(),
+            });
+            std::fs::write(dir.join(format!("{name}.png")), png).unwrap();
+        };
+        let frames = |t: &mut f64, secs: f64| -> Canvas {
+            let mut c = paint(w, h, scale, *t);
+            for _ in 0..(secs * 60.0) as usize {
+                *t += 1.0 / 60.0;
+                c = paint(w, h, scale, *t);
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+            c
+        };
+        let mut t = 0.0;
+        frames(&mut t, 5.5);
+        let b = live().button.rest.unwrap();
+        press(true, (b.0 + 10.0, b.1 + 10.0), t);
+        press(false, (b.0 + 10.0, b.1 + 10.0), t);
+        save(&frames(&mut t, 2.0), "a-projects");
+        let file = crate::live::library().find("ภาษา 世界 عالم").unwrap();
+        answer(crate::workspace::Ask::OpenProject, Some(file), t);
+        save(&frames(&mut t, 4.0), "b-inside");
+        // the timeline dragged taller by its top edge, so all its rows show
+        let size = live().size;
+        let edge = size.1 - (size.1 * 0.44).clamp(220.0, 420.0) - 4.0 - 6.0;
+        pointer(Some((400.0, edge)), t);
+        press(true, (400.0, edge), t);
+        pointer(Some((400.0, 160.0)), t);
+        press(false, (400.0, 160.0), t);
+        save(&frames(&mut t, 0.5), "c-tall");
+        let start = std::time::Instant::now();
+        for _ in 0..30 {
+            t += 1.0 / 60.0;
+            std::hint::black_box(paint(w, h, scale, t));
+        }
+        eprintln!("{:.1} ms a frame", start.elapsed().as_secs_f64() * 1000.0 / 30.0);
     }
 }

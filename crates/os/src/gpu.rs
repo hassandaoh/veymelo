@@ -3,7 +3,7 @@
 //! `VEYMELO_GPU=0` leaves it unused, so everything is drawn by the processor.
 
 #[cfg(target_os = "macos")]
-pub use crate::mac::gpu::{Buffer, name, prepare, run};
+pub use crate::mac::gpu::{Buffer, Shapes, name, prepare, run, run_steps, traces};
 
 /// A GPU program: its source and the kernel in it to run.
 #[derive(Clone, Copy, Debug)]
@@ -13,11 +13,24 @@ pub struct Kernel {
 }
 
 /// What a kernel takes, in the order of its parameters: a buffer it reads, one it writes (or
-/// reads and writes), or a few bytes (a struct of settings).
+/// reads and writes), a few bytes (a struct of settings), or triangles it traces rays through.
 pub enum Arg<'a> {
     Read(&'a Buffer),
     Write(&'a mut Buffer),
     Bytes(&'a [u8]),
+    Shapes(&'a Shapes),
+    /// A buffer the steps of one run pass along: written by one, read by the next.
+    Pass(&'a Buffer),
+}
+
+/// One step of a run of several: a kernel, what it takes, its grid (across, down), and the
+/// groups its threads work in (threads that share memory; none: as many as suit the kernel).
+/// The steps run in order, each seeing what those before it wrote.
+pub struct Step<'a> {
+    pub kernel: &'a Kernel,
+    pub args: Vec<Arg<'a>>,
+    pub grid: [usize; 2],
+    pub group: Option<[usize; 2]>,
 }
 
 /// Plain data, the same bytes on the processor and the GPU (numbers, and `#[repr(C)]` structs
@@ -100,7 +113,24 @@ mod none {
         None
     }
 
+    /// No GPU here: nothing is ever made.
+    pub struct Shapes(());
+
+    impl Shapes {
+        pub fn new(_corners: &[[f32; 3]]) -> Result<Option<Shapes>, String> {
+            Err("there is no GPU to draw with here".into())
+        }
+    }
+
+    pub fn traces() -> bool {
+        false
+    }
+
     pub fn run(_kernel: &Kernel, _args: &[Arg], _grid: [usize; 2]) -> Result<(), String> {
+        Err("there is no GPU to draw with here".into())
+    }
+
+    pub fn run_steps(_steps: &[super::Step]) -> Result<(), String> {
         Err("there is no GPU to draw with here".into())
     }
 
@@ -110,4 +140,4 @@ mod none {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub use none::{Buffer, name, prepare, run};
+pub use none::{Buffer, Shapes, name, prepare, run, run_steps, traces};

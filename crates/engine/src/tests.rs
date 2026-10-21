@@ -3802,3 +3802,26 @@ fn a_3d_composition_gives_its_passes() {
     let edge = at(&r, (132, 50));
     assert!(edge[0] < n[0] - 0.1, "{edge:?}");
 }
+
+/// How long frames of a project take to draw, played on from each time asked frame by frame for
+/// two seconds (run by hand, under a profiler if wanted: VEYMELO_PROJECT=/path/to.veymelo
+/// VEYMELO_TIMES=5,40 VEYMELO_GPU=0|1 cargo test --release frames_take -- --ignored --nocapture).
+#[test]
+#[ignore]
+fn frames_take() {
+    let Some(file) = std::env::var_os("VEYMELO_PROJECT") else { return };
+    let s = Session::open(std::path::Path::new(&file)).unwrap();
+    let times: Vec<f64> = std::env::var("VEYMELO_TIMES").unwrap_or_else(|_| "5".into()).split(',').filter_map(|t| t.parse().ok()).collect();
+    let gpu = std::env::var("VEYMELO_GPU").map_or(veymelo_os::gpu::available(), |v| v != "0");
+    let options = veymelo_render::Options { gpu, ..veymelo_render::Options::default() };
+    let fps = s.view.comp.and_then(|c| s.project().comp(c)).map_or(30.0, |c| c.frame_rate.num as f64 / c.frame_rate.den as f64);
+    for t in times {
+        s.render(None, Some(veymelo_time::Tick::from_seconds(t)), &options).unwrap();
+        let frames = (fps * 2.0) as usize;
+        let started = std::time::Instant::now();
+        for k in 1..=frames {
+            std::hint::black_box(s.render(None, Some(veymelo_time::Tick::from_seconds(t + k as f64 / fps)), &options).unwrap());
+        }
+        eprintln!("{t} s on: {:.1} ms a frame", started.elapsed().as_secs_f64() * 1000.0 / frames as f64);
+    }
+}

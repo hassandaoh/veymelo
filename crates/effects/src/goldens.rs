@@ -8,7 +8,10 @@
 //! The first run writes what each effect makes (`/tmp/g/<effect>.bin`); later runs compare with
 //! it and list what changed, with a picture of each change (before, after, and the difference
 //! made bright) in `/tmp/g/changed/`. `VEYMELO_GOLDENS_ONLY=word` runs only the effects whose id
-//! holds the word; `VEYMELO_GOLDENS_WRITE=1` writes anew.
+//! holds the word; `VEYMELO_GOLDENS_WRITE=1` writes anew. The effects run on the processor:
+//! `VEYMELO_GOLDENS_GPU=1` (with `VEYMELO_GPU_FROM=0`, so even these small pictures go) runs them
+//! with the GPU, to see that what it filters is the processor's (some results move by more than
+//! a float's last bits where an effect makes much of a small change: a threshold, a seam).
 
 use std::path::{Path, PathBuf};
 
@@ -295,12 +298,13 @@ fn goldens() {
     let only = std::env::var("VEYMELO_GOLDENS_ONLY").ok();
     let rewrite = std::env::var_os("VEYMELO_GOLDENS_WRITE").is_some();
     let (mut written, mut same, mut changed, mut runs) = (0, 0, vec![], 0);
+    let gpu = std::env::var_os("VEYMELO_GOLDENS_GPU").is_some();
     for spec in crate::all() {
         if only.as_deref().is_some_and(|w| !spec.def.id.contains(w)) {
             continue;
         }
         let started = std::time::Instant::now();
-        let results: Vec<_> = cases(spec).into_iter().map(|c| (c.name.clone(), run(spec, &c))).collect();
+        let results: Vec<_> = veymelo_raster::gpu::with_mode(!gpu, || cases(spec).into_iter().map(|c| (c.name.clone(), run(spec, &c))).collect());
         runs += results.len();
         let took = started.elapsed().as_secs_f64();
         if took > 20.0 {
@@ -340,4 +344,38 @@ fn goldens() {
         eprintln!("  {c}");
     }
     assert!(changed.is_empty(), "{} runs changed (see {})", changed.len(), dir.join("changed").display());
+}
+
+/// How long each effect takes with its defaults on a 1080 × 1920 picture, the slowest first
+/// (run by hand: cargo test -p veymelo-effects --release effects_take -- --ignored --nocapture;
+/// VEYMELO_GPU=0 for the processor alone).
+#[test]
+#[ignore]
+fn effects_take() {
+    let (w, h) = (1080, 1920);
+    let small = picture();
+    let mut img = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            img.px[y * w + x] = small.px[(y * H / h) * W + x * W / w];
+        }
+    }
+    let bounds = veymelo_geom::Rect::from_size(w as f64, h as f64);
+    let mut took = vec![];
+    for spec in crate::all() {
+        let mut g: Group = instance(spec, &[]);
+        spec.start(&mut g, bounds);
+        let t = Tick::from_seconds(0.5);
+        let read = |p: &veymelo_project::Property| p.value_at(t);
+        let ctx = Ctx::new(&g, &read, t, bounds, 7);
+        let started = std::time::Instant::now();
+        std::hint::black_box((spec.run)(&ctx, buf(img.clone())));
+        took.push((started.elapsed().as_secs_f64() * 1000.0, spec.def.id));
+    }
+    took.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let all: f64 = took.iter().map(|t| t.0).sum();
+    eprintln!("{} effects, {all:.0} ms in all", took.len());
+    for (ms, id) in took.iter().take(60) {
+        eprintln!("{ms:9.1} ms  {id}");
+    }
 }

@@ -58,6 +58,8 @@ struct Plane<'d> {
     matte: Option<std::sync::Arc<Vec<f32>>>,
     /// Drawn only where what is under the run is.
     keep_under: bool,
+    /// The points the light bouncing onto it is gathered at (none: none bounces onto it).
+    grid: Option<crate::bounce::Grid>,
 }
 
 impl Plane<'_> {
@@ -177,16 +179,18 @@ impl<'a> Renderer<'a> {
     /// A layer whose unseen parts can still change what shows (blurred along its motion,
     /// changed by effects or styles, made solid) is not cut: it is only left out when it, and
     /// a wide margin round it, is nowhere in the picture (none comes back otherwise: drawn
-    /// whole). None either in a scene with lights (a layer out of the picture casts its
-    /// shadow into it), or for one seen through collapsed compositions.
+    /// whole). None either for a layer casting a shadow by a light that throws them (its part
+    /// out of the picture casts its shadow into it), in a scene with an environment light, or
+    /// for one seen through collapsed compositions.
     pub(crate) fn seen_3d(&self, comp: &Comp, layer: &Layer, t: Tick, view: Mat3, size: (usize, usize), r: veymelo_geom::Rect) -> Option<(veymelo_geom::Rect, f64)> {
         if self.fixed.is_some() || r.is_empty() || size.0 == 0 || size.1 == 0 {
             return None;
         }
-        if !scene::lights(&self.eval, comp, t, self.linear).is_empty() || comp.layers.iter().any(|l| l.environment && l.is_active_at(t)) {
+        let at = self.at(comp, layer);
+        let shadowing = scene::lights(&self.eval, comp, t, self.linear).iter().any(|l| l.shadows) && scene::Material::of(&self.eval, at, t).casts != 0;
+        if shadowing || comp.layers.iter().any(|l| l.environment && l.is_active_at(t)) {
             return None;
         }
-        let at = self.at(comp, layer);
         let solid = matches!(layer.source, veymelo_project::Source::Text | veymelo_project::Source::Shape) && layer.props.prop("geometryOptions/extrusionDepth").is_ok_and(|p| self.eval.value(p, at, t).as_f64() > 0.0);
         let whole = self.blurs(comp, layer) || self.has_effects(layer) || crate::styles::list(layer).is_some() || solid;
         let cam = scene::camera(&self.eval, comp, t);
@@ -487,7 +491,7 @@ impl<'a> Renderer<'a> {
     /// The environment lighting composition `comp` at `t`: its light's picture (its source layer's,
     /// else the composition's environment layer's) made light.
     fn environment(&self, comp: &Comp, t: Tick, depth: usize) -> Option<scene::Environment> {
-        let (source, tint, rotation) = scene::environment_light(&self.eval, comp, t, self.linear)?;
+        let scene::EnvLight { source, tint, rotation, occlusion, occlusion_distance } = scene::environment_light(&self.eval, comp, t, self.linear)?;
         let layer = match source {
             Some(id) => comp.layer(id),
             None => comp.layers.iter().find(|l| l.environment && l.is_active_at(t)),
@@ -495,7 +499,10 @@ impl<'a> Renderer<'a> {
         let pano = self.panorama(comp, layer, t, depth)?;
         // as much light as there is picture (premultiplied), times the light's colour
         let px = pano.px.iter().map(|p| [p[0] * tint[0], p[1] * tint[1], p[2] * tint[2]]).collect();
-        scene::Environment::new(pano.width, pano.height, px, rotation)
+        scene::Environment::new(pano.width, pano.height, px, rotation).map(|mut e| {
+            (e.occlusion, e.occlusion_distance) = (occlusion, occlusion_distance);
+            e
+        })
     }
 
     /// A layer's picture as a panorama: drawn whole at its own size (none bigger than 4096
@@ -532,7 +539,7 @@ impl<'a> Renderer<'a> {
         }
         let Some(img) = self.panorama(comp, layer, t, depth) else { return };
         let (iw, ih) = (img.width as f64, img.height as f64);
-        let rotation = scene::environment_light(&self.eval, comp, t, self.linear).map_or(0.0, |e| e.2);
+        let rotation = scene::environment_light(&self.eval, comp, t, self.linear).map_or(0.0, |e| e.rotation);
         let cam = scene::camera(&self.eval, comp, t);
         let Some(world) = cam.view.inverse() else { return };
         let (w, h) = (comp.width as f64, comp.height as f64);
@@ -627,6 +634,7 @@ impl<'a> Renderer<'a> {
                 seed: self.seed(comp, layer, t),
                 matte: matte.clone(),
                 keep_under: layer.preserve_transparency,
+                grid: None,
             });
         }
         if planes.is_empty() && models.is_empty() {
@@ -644,15 +652,111 @@ impl<'a> Renderer<'a> {
                 (scene::Material::of(&self.eval, at, *when), pose, *world * to_layer)
             })
             .collect();
-        let casting: Vec<crate::meshes::Caster> = models.iter().zip(&posed).filter(|(_, (m, _, _))| m.casts != 0 && !lights.is_empty()).map(|((d, ..), (_, pose, place))| crate::meshes::Caster::new(&d.model.as_ref().expect("a model").0, pose, place)).collect();
+        let casting = Casting { models: models.iter().zip(&posed).filter(|(_, (m, _, _))| m.casts != 0 && !lights.is_empty()).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect(), trees: std::sync::OnceLock::new() };
+        // every model (seen, or casting a shadow alone), for what hides the sky from a point and
+        // what a mirror sees (each of its triangles as a reflection sees it, one after another)
+        let open_reach = scene::occlusion_reach(&lights, env);
+        let mirrors = planes.iter().map(|p| &p.material).chain(posed.iter().map(|(m, ..)| m)).any(|m| m.reflection > 0.0) || posed.iter().any(|(m, ..)| m.transparency > 0.0);
+        // light bouncing (where there is light to bounce)
+        let bounce = if comp.bounce.amount > 0.0 && (!lights.is_empty() || env.is_some()) { comp.bounce.amount as f32 } else { 0.0 };
+        let everything = Casting { models: if open_reach.is_some() || mirrors || bounce > 0.0 { models.iter().zip(&posed).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect() } else { Vec::new() }, trees: std::sync::OnceLock::new() };
+        // the points the bouncing light is gathered at: a grid over each flat layer that takes
+        // light (on the side the camera sees), then every model's vertices
+        let mut probes: Vec<crate::bounce::Probe> = Vec::new();
+        let mut model_probes: Vec<(usize, usize)> = Vec::new();
+        if bounce > 0.0 {
+            for (i, p) in planes.iter_mut().enumerate() {
+                if !p.material.lit || p.material.casts == 2 {
+                    continue;
+                }
+                let (w, h) = (p.own.img.width as f64 / p.own.scale, p.own.img.height as f64 / p.own.scale);
+                let grid = crate::bounce::Grid::over(p.own.origin.x, p.own.origin.y, w, h, probes.len());
+                let n = if p.normal.dot(cam.eye - p.origin) < 0.0 { -p.normal } else { p.normal };
+                probes.extend(grid.points().map(|(u, v)| crate::bounce::Probe { at: p.origin + p.across * u + p.down * v, n, own: i }));
+                p.grid = Some(grid);
+            }
+            for ((d, ..), (_, pose, place)) in models.iter().zip(&posed) {
+                let first = probes.len();
+                probes.extend(crate::meshes::probes(&d.model.as_ref().expect("a model").0, pose, place).into_iter().map(|(at, n)| crate::bounce::Probe { at, n, own: usize::MAX }));
+                model_probes.push((first, probes.len() - first));
+            }
+        }
+        let mut faces: Vec<crate::meshes::Face> = Vec::new();
+        let mut face_first = Vec::new();
+        if mirrors || bounce > 0.0 {
+            for (k, ((d, ..), (m, pose, place))) in models.iter().zip(&posed).enumerate() {
+                face_first.push(faces.len());
+                faces.extend(crate::meshes::faces(&d.model.as_ref().expect("a model").0, pose, place, m, self.linear, model_probes.get(k).map(|p| p.0)));
+            }
+        }
+        // what casts shadows, as the GPU reads it (none: the processor draws what they fall on)
+        let gpu_shadows = if self.options.gpu && !crate::gpu::given_up() {
+            let shadowing = lights.iter().any(|l| l.shadows) && (!casters.is_empty() || !casting.is_empty());
+            let f = |v: f64| v as f32;
+            let list: Vec<(crate::gpu::Caster, &Image)> = planes
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let u = &p.unworld.0;
+                    let caster = crate::gpu::Caster {
+                        origin: [f(p.origin.x), f(p.origin.y), f(p.origin.z), p.material.transmission],
+                        normal: [f(p.normal.x), f(p.normal.y), f(p.normal.z), if p.material.casts != 0 { 1.0 } else { 0.0 }],
+                        unworld: [0, 1, 2, 3].map(|r| u[r].map(f)),
+                        own: [f(p.own.origin.x), f(p.own.origin.y), f(p.own.scale), 0.0],
+                        img: [0, 0, 0, i as u32],
+                        mat: [p.material.ambient, p.material.diffuse, p.material.lit as u32 as f32, if p.material.casts == 2 { 0.0 } else { 1.0 }],
+                        map: crate::gpu::Caster::grid(p.grid).0,
+                        cell: crate::gpu::Caster::grid(p.grid).1,
+                        mirror: [p.material.reflection, p.material.rolloff, 0.0, 0.0],
+                    };
+                    (caster, &p.own.img)
+                })
+                .collect();
+            crate::gpu::Shadows::new(&list, &if shadowing { casting.corners() } else { Vec::new() }, &everything.corners(), &faces).unwrap_or_else(|e| {
+                crate::gpu::failed(&e);
+                None
+            })
+        } else {
+            None
+        };
+        // the light bouncing onto each point, bounce after bounce: on the GPU when it can, else
+        // by the processor
+        let on_gpu = gpu_shadows.as_ref().filter(|_| !probes.is_empty() && !crate::gpu::given_up()).and_then(|sh| {
+            gather_on_gpu(sh, &probes, &lights, env, bounce, comp.bounce.bounces)
+                .map_err(|e| crate::gpu::failed(&e))
+                .ok()
+        });
+        let mut light: Vec<[f32; 3]> = match on_gpu {
+            Some(light) => light,
+            None if probes.is_empty() => Vec::new(),
+            None => {
+                let none: Vec<[f32; 3]> = Vec::new();
+                let gather = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None };
+                let mut e = vec![[0f32; 3]; probes.len()];
+                for _ in 0..comp.bounce.bounces {
+                    let before = e.clone();
+                    veymelo_raster::par::chunks(&mut e, 16, |k, part| {
+                        for (i, out) in part.iter_mut().enumerate() {
+                            *out = gather.gather_light(&probes[k * 16 + i], &before);
+                        }
+                    });
+                }
+                e
+            }
+        };
+        crate::bounce::smooth(&mut light, &planes.iter().filter_map(|p| p.grid).collect::<Vec<_>>());
         // the model layers, drawn with the shadows falling on them
         let shots: Vec<ModelShot> = {
-            let lit = Scene { planes: &planes, shots: &[], casting: &casting, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env };
+            let lit = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None };
+            let open = |q: Vec3, n: Vec3| lit.open(usize::MAX, q, n);
+            let mirror = |q: Vec3, n: Vec3, viewer: Vec3, sharpness: f32, none: [f32; 3]| lit.mirrored(usize::MAX, q, n, viewer, sharpness, none);
+            let through = |q: Vec3, n: Vec3, viewer: Vec3, ior: f32| lit.seen_through(q, n, viewer, ior);
             let standard = crate::meshes::standard_lights(&cam);
             let unshadowed = |l: usize, q: Vec3| if l < lights.len() { lit.unshadowed(usize::MAX, l, q) } else { [1.0; 3] };
             let lens = Mat3([[cam.zoom, 0.0, w / 2.0], [0.0, cam.zoom, h / 2.0], [0.0, 0.0, 1.0]]);
             let mut out = Vec::new();
-            for ((d, _, _, alpha), (material, pose, place)) in models.iter().zip(posed) {
+            for (k, ((d, _, _, alpha), (material, pose, place))) in models.iter().zip(&posed).enumerate() {
+                let (material, place) = (*material, *place);
                 let layer = d.layer;
                 let model = &d.model.as_ref().expect("a model").0;
                 // its shadow alone
@@ -672,6 +776,15 @@ impl<'a> Renderer<'a> {
                     unshadowed: &unshadowed,
                     linear: self.linear,
                     env,
+                    shadowed: material.accepts != 0 && lights.iter().any(|l| l.shadows) && (!casters.is_empty() || !casting.is_empty()),
+                    shadows: gpu_shadows.as_ref(),
+                    open: open_reach.map(|_| &open as &(dyn Fn(Vec3, Vec3) -> f32 + Sync)),
+                    reach: open_reach,
+                    mirror: mirrors.then_some(&mirror as crate::meshes::Mirror),
+                    bounce: model_probes.get(k).filter(|_| bounce > 0.0).map(|&(first, count)| (&light[first..first + count], bounce)),
+                    through: (material.transparency > 0.0).then_some(&through as crate::meshes::Through),
+                    scene_light: (&light, bounce),
+                    gpu: self.options.gpu,
                 };
                 if let Some(mut shot) = crate::meshes::shoot(&look) {
                     // out of focus: blurred by its depth
@@ -685,7 +798,7 @@ impl<'a> Renderer<'a> {
         };
         if let Some(record) = record {
             let bounds: Vec<(usize, veymelo_geom::Rect)> = drawn.iter().map(|d| (d.order, self.bounds(d.comp, d.layer))).collect();
-            let scene = Scene { planes: &planes, shots: &shots, casting: &casting, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env };
+            let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
             veymelo_raster::par::rows(record, canvas.width, |y, row| {
                 for (x, hits) in row.iter_mut().enumerate() {
                     hits.extend(scene.hits(x, y, &bounds));
@@ -698,7 +811,7 @@ impl<'a> Renderer<'a> {
             // blurred out of focus: each lit in its own picture first (so its light and shadows
             // blur with it), then blurred by its depth
             let lit: Vec<Buf> = {
-                let scene = Scene { planes: &planes, shots: &shots, casting: &casting, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env };
+                let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
                 // as far past the canvas as anything can blur in from
                 let margin = (focus.aperture * focus.level * 2.0).min(800.0);
                 (0..planes.len()).map(|i| scene.lit_picture(i, canvas.width as f64, canvas.height as f64, margin)).collect()
@@ -715,14 +828,14 @@ impl<'a> Renderer<'a> {
         if y0 >= y1 {
             return;
         }
-        let scene = Scene { planes: &planes, shots: &shots, casting: &casting, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env };
+        let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
         let (x0, x1) = (reach[0].max(0) as usize, (reach[2].max(0) as usize).min(width));
         let on_gpu = self.options.gpu
-            && !GPU_GIVEN_UP.load(std::sync::atomic::Ordering::Relaxed)
+            && !crate::gpu::given_up()
             && match scene.on_gpu(canvas, [x0, y0, x1, y1]) {
                 Ok(drawn) => drawn,
                 Err(e) => {
-                    gpu_failed(&e);
+                    crate::gpu::failed(&e);
                     false
                 }
             };
@@ -734,6 +847,9 @@ impl<'a> Renderer<'a> {
                     *px = scene.pixel(x, y, *px);
                 }
             });
+        }
+        if let Some(s) = gpu_shadows {
+            s.keep();
         }
         self.settle(canvas);
     }
@@ -750,13 +866,94 @@ struct Laid<'s> {
     keep_under: bool,
 }
 
+/// How many points of a diffuse light's disc a point in the soft edge of its shadow looks at.
+const SOFT_POINTS: usize = 128;
+
+/// How many surfaces deep a reflection goes (a mirror in a mirror in a mirror).
+const MIRROR_DEPTH: usize = 3;
+
+/// How many times a way through glass is reflected whole inside it, at most.
+const GLASS_TURNS: usize = 4;
+
+/// A surface a reflection meets: how far along the ray, how it looks (lit as a mirror sees it),
+/// which way it faces (toward where the ray came from), how much it mirrors and how much less
+/// face on, and the flat layer it is (`usize::MAX`: a model's).
+struct Met {
+    d: f64,
+    lit: [f32; 3],
+    n: Vec3,
+    mirror: (f32, f32),
+    own: usize,
+}
+
+/// The light bouncing onto each of `probes` (in order), gathered on the GPU `bounces` times
+/// over, `amount` of it taken each time: what `Scene::gather_light` gathers.
+fn gather_on_gpu(sh: &crate::gpu::Shadows, probes: &[crate::bounce::Probe], lights: &[Light], env: Option<&scene::Environment>, amount: f32, bounces: u32) -> Result<Vec<[f32; 3]>, String> {
+    use crate::gpu;
+    use veymelo_os::gpu::{Arg, Buffer, bytes_of, run};
+    let f = |v: f64| v as f32;
+    let list: Vec<gpu::Probe> = probes.iter().map(|p| gpu::Probe { at: [f(p.at.x), f(p.at.y), f(p.at.z), f32::from_bits(if p.own == usize::MAX { u32::MAX } else { p.own as u32 })], n: [f(p.n.x), f(p.n.y), f(p.n.z), 0.0] }).collect();
+    let lights: Vec<gpu::Light> = lights.iter().map(gpu::Light::of).collect();
+    let (env_px, env_levels, turn, shining) = gpu::environment(env)?;
+    let params = gpu::BounceParams { a: [list.len() as u32, lights.len() as u32, sh.count, shining], b: [amount, turn, 0.0, 0.0] };
+    let (list, lights) = (Buffer::of(&list)?, gpu::take_with(gpu::LIGHTS, &lights)?);
+    // what the bounce before gathered (none, the first time), and what this one does
+    let (mut before, mut out) = (Buffer::new(probes.len() * 16)?, Buffer::new(probes.len() * 16)?);
+    for _ in 0..bounces {
+        let mut args = vec![Arg::Write(&mut out), Arg::Read(&list), Arg::Read(&before), Arg::Read(&sh.casters), Arg::Read(&sh.texels), Arg::Read(&sh.faces), Arg::Read(&lights), Arg::Read(&env_px), Arg::Read(&env_levels), Arg::Bytes(bytes_of(&params))];
+        let (kernel, traced) = sh.kernel(gpu::GATHER, gpu::GATHER_RAYS)?;
+        args.extend(traced);
+        run(&kernel, &args, [probes.len(), 1])?;
+        drop(args);
+        std::mem::swap(&mut before, &mut out);
+    }
+    let light = before.slice::<[f32; 4]>()[..probes.len()].iter().map(|c| [c[0], c[1], c[2]]).collect();
+    gpu::keep(gpu::LIGHTS, lights);
+    gpu::keep(gpu::ENV, env_px);
+    gpu::keep(gpu::ENV_LEVELS, env_levels);
+    Ok(light)
+}
+
+/// The models casting shadows, posed and placed; their triangles arranged in trees for the
+/// processor's rays when it first needs them.
+struct Casting<'m> {
+    models: Vec<(&'m veymelo_model::Model, &'m veymelo_model::Pose, Mat4)>,
+    trees: std::sync::OnceLock<Vec<crate::meshes::Caster>>,
+}
+
+impl Casting<'_> {
+    fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
+    fn trees(&self) -> &[crate::meshes::Caster] {
+        self.trees.get_or_init(|| self.models.iter().map(|(m, pose, place)| crate::meshes::Caster::new(m, pose, place)).collect())
+    }
+
+    /// Their triangles in the world, three corners each.
+    fn corners(&self) -> Vec<[f32; 3]> {
+        self.models.iter().flat_map(|(m, pose, place)| crate::meshes::corners(m, pose, place)).collect()
+    }
+}
+
 /// What a run's pixels are worked out from.
 struct Scene<'s> {
     planes: &'s [Plane<'s>],
     /// The model layers as drawn (their pieces numbered after the planes').
     shots: &'s [ModelShot],
     /// The models that cast shadows.
-    casting: &'s [crate::meshes::Caster],
+    casting: &'s Casting<'s>,
+    /// Every model, and how far round a point the ambient occlusion looks for them (none: no
+    /// light occludes).
+    everything: &'s Casting<'s>,
+    reach: Option<f64>,
+    /// Every model's triangles as a reflection sees them, and where each model's start.
+    faces: &'s [crate::meshes::Face],
+    face_first: &'s [usize],
+    /// The light bouncing onto each point it is gathered at, and how much of it surfaces take
+    /// (0: none bounces).
+    light: &'s [[f32; 3]],
+    bounce: f32,
     /// The canvas's width (for the mattes).
     width: usize,
     lights: &'s [Light],
@@ -764,28 +961,20 @@ struct Scene<'s> {
     cam: &'s Camera,
     /// The environment lighting it, if one does.
     env: Option<&'s scene::Environment>,
+    /// What casts shadows, as the GPU reads it (none: the GPU does not draw it).
+    shadows: Option<&'s crate::gpu::Shadows>,
 }
-
-/// Says once (on standard error) that the GPU could not draw, and why; the processor draws
-/// from then on (a GPU that failed once, or did not answer, is not waited for again).
-fn gpu_failed(why: &str) {
-    static SAID: std::sync::Once = std::sync::Once::new();
-    GPU_GIVEN_UP.store(true, std::sync::atomic::Ordering::Relaxed);
-    SAID.call_once(|| eprintln!("the GPU could not draw a 3D scene, so the processor does: {why}"));
-}
-
-/// Whether the GPU has been given up on (for as long as the program runs).
-static GPU_GIVEN_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Scene<'_> {
     /// The pixels in `area` (x0, y0, x1, y1) of `canvas` drawn on the GPU, as `pixel` draws
-    /// them, if it can draw this scene (one with no environment light or 3D models, and not
-    /// too many layers): whether it did.
+    /// them (a pixel with more pieces than the GPU keeps at one is drawn by the processor after),
+    /// if it can draw this scene (one whose shadows it can find): whether it did.
     fn on_gpu(&self, canvas: &mut Image, area: [usize; 4]) -> Result<bool, String> {
         use crate::gpu;
         use veymelo_os::gpu::{Arg, bytes_of, run};
         let [x0, y0, x1, y1] = area;
-        if self.env.is_some() || !self.shots.is_empty() || !self.casting.is_empty() || self.planes.len() > gpu::MOST_PLANES {
+        let Some(shadows) = self.shadows else { return Ok(false) };
+        if self.planes.len() + self.shots.len() >= u32::MAX as usize {
             return Ok(false);
         }
         if x0 >= x1 || y0 >= y1 {
@@ -793,42 +982,64 @@ impl Scene<'_> {
         }
         let f = |v: f64| v as f32;
         let v4 = |v: Vec3, w: f64| [f(v.x), f(v.y), f(v.z), f(w)];
-        // the pictures, one after another (a plane's own picture apart only when it differs and
-        // casts a shadow)
-        let shadows = self.lights.iter().any(|l| l.shadows);
-        let mut pictures: Vec<&Image> = Vec::new();
-        let mut first = Vec::new();
-        let mut at = 0usize;
-        for p in self.planes {
-            let img = at;
-            at += p.buf.img.px.len();
-            pictures.push(&p.buf.img);
-            let apart = p.lit && shadows && p.material.casts != 0;
-            let own = if apart {
-                let own = at;
-                at += p.own.img.px.len();
-                pictures.push(&p.own.img);
-                own
-            } else {
-                img
-            };
-            first.push((img, own, apart));
-        }
-        if at > u32::MAX as usize || at * 16 > 1 << 31 {
+        use gpu::PIECE;
+        // the planes' pictures: as they are (in `shadows` already), or lit and blurred out of
+        // focus (copied here, one after another)
+        let mut copied = None;
+        let first: Vec<u32> = if self.planes.iter().any(|p| p.lit) {
+            let total: usize = self.planes.iter().map(|p| p.buf.img.px.len()).sum();
+            if total > u32::MAX as usize || total * 16 > 1 << 31 {
+                return Ok(false);
+            }
+            let mut texels = gpu::take(gpu::TEXELS, total * 16)?;
+            let mut first = Vec::with_capacity(self.planes.len());
+            let mut out = &mut texels.slice_mut::<[f32; 4]>()[..total];
+            let mut at = 0;
+            for img in self.planes.iter().map(|p| &p.buf.img) {
+                let (to, rest) = out.split_at_mut(img.px.len());
+                veymelo_raster::par::chunks(to, PIECE, |k, c| c.copy_from_slice(&img.px[k * PIECE..k * PIECE + c.len()]));
+                out = rest;
+                first.push(at as u32);
+                at += img.px.len();
+            }
+            copied = Some(texels);
+            first
+        } else {
+            shadows.at.clone()
+        };
+        let texels = copied.as_ref().unwrap_or(&shadows.texels);
+        // the model layers' colours (their depths apart)
+        let colours: usize = self.shots.iter().map(|s| s.shot.px.len()).sum();
+        if colours * 16 > 1 << 31 {
             return Ok(false);
         }
-        let mut texels = gpu::take(gpu::TEXELS, at * 16)?;
+        let mut shot_px = gpu::take(gpu::SHOT_PX, colours * 16)?;
         {
-            let out = texels.slice_mut::<[f32; 4]>();
-            let mut k = 0;
-            for img in pictures {
-                out[k..k + img.px.len()].copy_from_slice(&img.px);
-                k += img.px.len();
+            let mut out = &mut shot_px.slice_mut::<[f32; 4]>()[..colours];
+            for s in self.shots {
+                let (to, rest) = out.split_at_mut(s.shot.px.len());
+                veymelo_raster::par::chunks(to, PIECE, |k, c| c.iter_mut().zip(&s.shot.px[k * PIECE..]).for_each(|(o, p)| *o = p.1));
+                out = rest;
             }
         }
         // the track mattes, each once
         let mut mattes: Vec<f32> = Vec::new();
         let mut matte_at: Vec<(*const Vec<f32>, u32)> = Vec::new();
+        let mut matte_of = |matte: Option<&std::sync::Arc<Vec<f32>>>| match matte {
+            None => gpu::NONE,
+            Some(mt) => {
+                let key = std::sync::Arc::as_ptr(mt);
+                match matte_at.iter().find(|(k, _)| *k == key) {
+                    Some((_, o)) => *o,
+                    None => {
+                        let o = mattes.len() as u32;
+                        mattes.extend_from_slice(mt);
+                        matte_at.push((key, o));
+                        o
+                    }
+                }
+            }
+        };
         let mut planes = Vec::with_capacity(self.planes.len());
         let mut depths = Vec::with_capacity(self.planes.len());
         for p in self.planes {
@@ -846,43 +1057,27 @@ impl Scene<'_> {
             let (g, h) = (m[2][0] / cw, m[2][1] / cw);
             let z0 = p.depth[0] * u0 + p.depth[1] * v0 + p.depth[2];
             depths.push(z0);
-            let (img, own, apart) = first[planes.len()];
-            let matte = match &p.matte {
-                None => gpu::NONE,
-                Some(mt) => {
-                    let key = std::sync::Arc::as_ptr(mt);
-                    match matte_at.iter().find(|(k, _)| *k == key) {
-                        Some((_, o)) => *o,
-                        None => {
-                            let o = mattes.len() as u32;
-                            mattes.extend_from_slice(mt);
-                            matte_at.push((key, o));
-                            o
-                        }
-                    }
-                }
-            };
-            let u = &p.unworld.0;
+            let img = first[planes.len()];
             planes.push(gpu::Plane {
                 m: [f(a - u0 * g), f(b - u0 * h), f(d - v0 * g), f(e - v0 * h)],
                 w: [f(g), f(h), f(cx0), f(cy0)],
                 at: [f(u0), f(v0), 0.0, f(z0)],
                 dz: [f(p.depth[0]), f(p.depth[1]), 0.0, 0.0],
                 tex: [f((u0 - p.buf.origin.x) * p.buf.scale), f((v0 - p.buf.origin.y) * p.buf.scale), f(p.buf.scale), 0.0],
-                own: if apart { [f(p.own.origin.x), f(p.own.origin.y), f(p.own.scale), 0.0] } else { [f(p.buf.origin.x), f(p.buf.origin.y), f(p.buf.scale), 0.0] },
                 reach: p.reach.map(|v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32),
                 img: [img as u32, p.buf.img.width as u32, p.buf.img.height as u32, 0],
-                ownimg: if apart { [own as u32, p.own.img.width as u32, p.own.img.height as u32, 0] } else { [img as u32, p.buf.img.width as u32, p.buf.img.height as u32, 0] },
                 origin: v4(p.origin, p.opacity as f64),
                 across: v4(p.across, 0.0),
                 down: v4(p.down, 0.0),
                 normal: v4(p.normal, 0.0),
-                unworld: [0, 1, 2, 3].map(|i| u[i].map(f)),
                 mat0: [p.material.ambient, p.material.diffuse, p.material.specular, p.material.shininess],
                 mat1: [p.material.metal, p.material.transmission, f(p.material.exponent()), 0.0],
                 flags: [p.material.casts, p.material.accepts, p.material.lit as u32, p.blend as u32],
-                more: [p.seed, matte, p.keep_under as u32, p.lit as u32],
+                more: [p.seed, matte_of(p.matte.as_ref()), p.keep_under as u32, p.lit as u32],
                 order: [p.order as u32, 0, 0, 0],
+                mirror: [p.material.reflection, p.material.sharpness, p.material.rolloff, 0.0],
+                map: gpu::Caster::grid(p.grid).0,
+                cell: gpu::Caster::grid(p.grid).1,
             });
         }
         // depths from the middle of the scene, so they keep their precision
@@ -890,35 +1085,81 @@ impl Scene<'_> {
         for (p, z0) in planes.iter_mut().zip(&depths) {
             p.at[2] = f(z0 - middle);
         }
-        let lights: Vec<gpu::Light> = self
-            .lights
-            .iter()
-            .map(|l| gpu::Light {
-                at: v4(l.at, l.cone),
-                dir: v4(l.dir, l.feather),
-                color: [l.color[0], l.color[1], l.color[2], f(l.radius)],
-                fall: [f(l.falloff_distance), f(l.darkness), f(l.diffusion), 0.0],
-                kind: [
-                    match l.kind {
-                        LightKind::Parallel => 0,
-                        LightKind::Spot => 1,
-                        LightKind::Ambient => 3,
-                        _ => 2,
-                    },
-                    l.falloff,
-                    l.shadows as u32,
-                    0,
-                ],
-            })
-            .collect();
-        let casters: Vec<u32> = self.casters.iter().map(|&c| c as u32).collect();
+        // the model layers: where their colours are, and their depths (from the middle too)
+        let mut zs = gpu::take(gpu::DEPTHS, colours * 4)?;
+        let mut shots = Vec::with_capacity(self.shots.len());
+        {
+            let mut out = &mut zs.slice_mut::<f32>()[..colours];
+            let (mut colour, mut depth) = (0, 0);
+            for s in self.shots {
+                let q = &s.shot;
+                let (to, rest) = out.split_at_mut(q.px.len());
+                veymelo_raster::par::chunks(to, PIECE, |k, c| c.iter_mut().zip(&q.px[k * PIECE..]).for_each(|(o, p)| *o = f(p.0 - middle)));
+                out = rest;
+                shots.push(gpu::Shot {
+                    reach: [q.x0, q.y0, q.x0 + q.w, q.y0 + q.h].map(|v| v.min(i32::MAX as usize) as i32),
+                    at: [colour as u32, depth as u32, 0, 0],
+                    how: [s.opacity, 0.0, 0.0, 0.0],
+                    more: [s.seed, matte_of(s.matte.as_ref()), s.keep_under as u32, s.blend as u32],
+                    order: [s.order as u32, 0, 0, 0],
+                });
+                colour += q.px.len();
+                depth += q.px.len();
+            }
+        }
+        let lights: Vec<gpu::Light> = self.lights.iter().map(gpu::Light::of).collect();
         let width = canvas.width;
-        let params = gpu::Params { a: [width as u32, x0 as u32, y0 as u32, (x1 - x0) as u32], b: [planes.len() as u32, lights.len() as u32, casters.len() as u32, 0], eye: v4(self.cam.eye, 0.0) };
+        let (env, env_levels, turn, shining) = gpu::environment(self.env)?;
+        let params = gpu::Params {
+            a: [width as u32, x0 as u32, y0 as u32, (x1 - x0) as u32],
+            b: [planes.len() as u32, lights.len() as u32, shadows.count, shots.len() as u32],
+            eye: [f(self.cam.eye.x), f(self.cam.eye.y), f(self.cam.eye.z), turn],
+            c: [shining, gpu::MOST_LEFT as u32, 0, 0],
+            d: [self.env.map_or(0.0, |e| e.occlusion), self.reach.map_or(0.0, f), self.bounce, 0.0],
+        };
+        let (planes, lights, mattes, shots) = (gpu::take_with(gpu::PLANES, &planes)?, gpu::take_with(gpu::LIGHTS, &lights)?, gpu::take_with(gpu::MATTES, &mattes)?, gpu::take_with(gpu::SHOTS, &shots)?);
         let mut rows = gpu::take_with(gpu::ROWS, &canvas.px[y0 * width..y1 * width])?;
-        let (planes, lights, casters, mattes) = (gpu::take_with(gpu::PLANES, &planes)?, gpu::take_with(gpu::LIGHTS, &lights)?, gpu::take_with(gpu::CASTERS, &casters)?, gpu::take_with(gpu::MATTES, &mattes)?);
-        run(&gpu::SCENE, &[Arg::Write(&mut rows), Arg::Read(&planes), Arg::Read(&texels), Arg::Read(&lights), Arg::Read(&casters), Arg::Read(&mattes), Arg::Bytes(bytes_of(&params))], [x1 - x0, y1 - y0])?;
+        // how many pixels it leaves to the processor (a new buffer is all zero), and which
+        let mut count = veymelo_os::gpu::Buffer::new(4)?;
+        let mut left_at = gpu::take(gpu::LEFT, 4 * gpu::MOST_LEFT)?;
+        // the light bouncing onto each point
+        let bounce = gpu::take_with(gpu::BOUNCE, &self.light.iter().map(|c| [c[0], c[1], c[2], 0.0]).collect::<Vec<[f32; 4]>>())?;
+        let mut args = vec![
+            Arg::Write(&mut rows),
+            Arg::Read(&planes),
+            Arg::Read(texels),
+            Arg::Read(&lights),
+            Arg::Read(&shadows.casters),
+            Arg::Read(&mattes),
+            Arg::Bytes(bytes_of(&params)),
+            Arg::Read(&shots),
+            Arg::Read(&zs),
+            Arg::Read(&env),
+            Arg::Read(&env_levels),
+            Arg::Write(&mut count),
+            Arg::Write(&mut left_at),
+            Arg::Read(&shadows.texels),
+            Arg::Read(&shot_px),
+            Arg::Read(&shadows.faces),
+            Arg::Read(&bounce),
+        ];
+        let (kernel, traced) = shadows.kernel(gpu::SCENE, gpu::SCENE_RAYS)?;
+        args.extend(traced);
+        run(&kernel, &args, [x1 - x0, y1 - y0])?;
+        drop(args);
+        let n = count.slice::<u32>()[0] as usize;
+        if n > gpu::MOST_LEFT {
+            return Ok(false);
+        }
         canvas.px[y0 * width..y1 * width].copy_from_slice(&rows.slice::<[f32; 4]>()[..(y1 - y0) * width]);
-        for (slot, b) in [(gpu::TEXELS, texels), (gpu::ROWS, rows), (gpu::PLANES, planes), (gpu::LIGHTS, lights), (gpu::CASTERS, casters), (gpu::MATTES, mattes)] {
+        for &i in &left_at.slice::<u32>()[..n] {
+            let i = i as usize;
+            canvas.px[i] = self.pixel(i % width, i / width, canvas.px[i]);
+        }
+        if let Some(texels) = copied {
+            gpu::keep(gpu::TEXELS, texels);
+        }
+        for (slot, b) in [(gpu::SHOT_PX, shot_px), (gpu::ROWS, rows), (gpu::PLANES, planes), (gpu::LIGHTS, lights), (gpu::MATTES, mattes), (gpu::SHOTS, shots), (gpu::DEPTHS, zs), (gpu::ENV, env), (gpu::ENV_LEVELS, env_levels), (gpu::LEFT, left_at), (gpu::BOUNCE, bounce)] {
             gpu::keep(slot, b);
         }
         gpu::drew_scene();
@@ -1117,13 +1358,30 @@ impl Scene<'_> {
         let rgb = [texel[0] / a, texel[1] / a, texel[2] / a];
         let at = p.origin + p.across * u + p.down * v;
         let viewer = (self.cam.eye - at).normalize();
-        let (mut lit, shadow) = if self.lights.is_empty() { ([0.0; 3], 0.0) } else { scene::shade(rgb, at, p.normal, viewer, &p.material, self.lights, &|l, q| self.unshadowed(i, l, q)) };
+        // how open the sky round it is (on the side it is seen from)
+        let open = if self.reach.is_some() && p.material.accepts != 0 { self.open(i, at, if p.normal.dot(viewer) < 0.0 { -p.normal } else { p.normal }) } else { 1.0 };
+        let (mut lit, shadow) = if self.lights.is_empty() { ([0.0; 3], 0.0) } else { scene::shade(rgb, at, p.normal, viewer, &p.material, self.lights, &|l, q| self.unshadowed(i, l, q), open) };
         // the environment's light on it: its diffuse and shine as their options say (50 % as it
         // is), not a metal, its roughness as dull as its shine is broad
         if let Some(env) = self.env {
             let m = &p.material;
-            let add = env.light(rgb, p.normal, viewer, 0.0, 1.0 - m.shininess, m.diffuse * 2.0, m.specular * 2.0, 1.0);
+            let add = env.light(rgb, p.normal, viewer, 0.0, 1.0 - m.shininess, m.diffuse * 2.0, m.specular * 2.0, 1.0 - env.occlusion * (1.0 - open));
             (0..3).for_each(|k| lit[k] += add[k]);
+        }
+        // the light bouncing onto it from the surfaces round it
+        if let Some(g) = p.grid.filter(|_| self.bounce > 0.0) {
+            let e = g.at(self.light, u, v);
+            let k = p.material.diffuse * 2.0 * self.bounce;
+            (0..3).for_each(|c| lit[c] += rgb[c] * k * e[c]);
+        }
+        // what it mirrors, mixed in
+        if p.material.reflection > 0.0 {
+            let facing = if p.normal.dot(viewer) < 0.0 { -p.normal } else { p.normal };
+            let r = p.material.mirrors(facing, viewer);
+            if r > 0.0 {
+                let seen = self.mirrored(i, at, facing, viewer, p.material.sharpness, lit);
+                lit = std::array::from_fn(|k| lit[k] * (1.0 - r) + seen[k] * r);
+            }
         }
         if p.material.accepts == 2 {
             // only the shadows on it
@@ -1132,47 +1390,287 @@ impl Scene<'_> {
         [lit[0] * a, lit[1] * a, lit[2] * a, a]
     }
 
+    /// What a surface at world point `q` (on plane `own`, or none) facing `n` mirrors, seen from
+    /// `viewer`, as sharply as `sharpness`: along each way it looks (`scene::mirror_rays`), the
+    /// nearest model or flat layer (where it is more there than not) as a mirror sees it, else
+    /// the environment's light, else `none`; put together.
+    fn mirrored(&self, own: usize, q: Vec3, n: Vec3, viewer: Vec3, sharpness: f32, none: [f32; 3]) -> [f32; 3] {
+        let rays = scene::mirror_rays(q, n, viewer, sharpness);
+        let mut sum = [0f32; 3];
+        for dir in &rays {
+            let dir = *dir;
+            let seen = if dir.dot(n) <= 0.0 { none } else { self.seen_along(own, q, dir, sharpness).unwrap_or(none) };
+            (0..3).for_each(|k| sum[k] += seen[k]);
+        }
+        sum.map(|v| v / rays.len() as f32)
+    }
+
+    /// What the ray from world point `q` (on plane `own`, or none) along `dir` sees, as a mirror
+    /// `sharpness` sharp sees it: the surface it meets, and — where that mirrors too — what it
+    /// mirrors, from mirror to mirror up to `MIRROR_DEPTH` deep; past the last surface met, the
+    /// environment's light; none where the first meets nothing and there is no environment.
+    fn seen_along(&self, own: usize, q: Vec3, dir: Vec3, sharpness: f32) -> Option<[f32; 3]> {
+        // each surface met: how it looks, and how much it mirrors
+        let mut chain: Vec<([f32; 3], f32)> = Vec::with_capacity(MIRROR_DEPTH);
+        let mut beyond = None;
+        let (mut own, mut q, mut dir) = (own, q, dir);
+        for level in 0..MIRROR_DEPTH {
+            let Some(m) = self.meet(own, q, dir) else {
+                beyond = self.env.map(|e| e.shine(dir, if level == 0 { 1.0 - sharpness } else { 0.0 }));
+                break;
+            };
+            let r = m.mirror.0 * (1.0 - m.mirror.1 * m.n.dot(-dir).clamp(0.0, 1.0) as f32);
+            chain.push((m.lit, r));
+            if r <= 0.0 {
+                break;
+            }
+            (own, q, dir) = (m.own, q + dir * m.d, dir - m.n * (2.0 * dir.dot(m.n)));
+        }
+        // put together from the last met: each its own look and as much of what is beyond it as
+        // it mirrors (nothing beyond: its own look alone)
+        for (lit, r) in chain.into_iter().rev() {
+            beyond = Some(match beyond {
+                Some(b) if r > 0.0 => std::array::from_fn(|k| lit[k] * (1.0 - r) + b[k] * r),
+                _ => lit,
+            });
+        }
+        beyond
+    }
+
+    /// What is seen through a model at world point `q` on its surface facing `n`, from `viewer`:
+    /// the way in bent by index of refraction `ior`, on through it to where it goes out (bent
+    /// again; reflected whole inside where it cannot, a few times at most), and what that way
+    /// meets past it (`seen_along`); none where it meets nothing and there is no environment.
+    fn seen_through(&self, q: Vec3, n: Vec3, viewer: Vec3, ior: f32) -> Option<[f32; 3]> {
+        let ior = ior as f64;
+        let mut dir = scene::refract(-viewer, n, 1.0 / ior)?;
+        let mut at = q;
+        for _ in 0..GLASS_TURNS {
+            // where it goes out: the nearest of the model's (any model's) surfaces inside
+            let mut out: Option<(f64, Vec3)> = None;
+            for (k, tree) in self.everything.trees().iter().enumerate() {
+                let far = out.map_or(f64::INFINITY, |o| o.0);
+                if let Some((d, which, u, v)) = tree.nearest(at, dir, 0.5, far) {
+                    let f = &self.faces[self.face_first[k] + which as usize];
+                    let w = [1.0 - u - v, u, v];
+                    let nn = vec3((0..3).map(|j| f.normals[j][0] as f64 * w[j]).sum(), (0..3).map(|j| f.normals[j][1] as f64 * w[j]).sum(), (0..3).map(|j| f.normals[j][2] as f64 * w[j]).sum());
+                    out = Some((d, if nn.length() > 1e-12 { nn.normalize() } else { -dir }));
+                }
+            }
+            let Some((d, n_out)) = out else { break };
+            at += dir * d;
+            // the surface faces out; going out, the way meets it from inside
+            let inward = if n_out.dot(dir) > 0.0 { -n_out } else { n_out };
+            match scene::refract(dir, inward, ior) {
+                Some(leaving) => return self.seen_along(usize::MAX, at, leaving, 1.0),
+                None => dir = dir - inward * (2.0 * dir.dot(inward)),
+            }
+        }
+        self.seen_along(usize::MAX, at, dir, 1.0)
+    }
+
+    /// The nearest surface the ray from world point `q` (on plane `own`, or none) along `dir`
+    /// meets — a model, or a flat layer where it is more there than not — as a mirror sees it.
+    fn meet(&self, own: usize, q: Vec3, dir: Vec3) -> Option<Met> {
+        // the nearest model (a pixel off the surface, so it does not see itself where it is)
+        let mut best: Option<Met> = None;
+        for (k, tree) in self.everything.trees().iter().enumerate() {
+            let far = best.as_ref().map_or(f64::INFINITY, |b| b.d);
+            if let Some((d, which, u, v)) = tree.nearest(q, dir, 1.0, far) {
+                let f = &self.faces[self.face_first[k] + which as usize];
+                let w = [1.0 - u - v, u, v];
+                let mix = |c: &[[f32; 4]; 3], i: usize| (0..3).map(|j| c[j][i] as f64 * w[j]).sum::<f64>();
+                let nn = vec3(mix(&f.normals, 0), mix(&f.normals, 1), mix(&f.normals, 2));
+                let nn = if nn.length() > 1e-12 { nn.normalize() } else { -dir };
+                let nn = if nn.dot(dir) > 0.0 { -nn } else { nn };
+                let rgb = [0, 1, 2].map(|i| mix(&f.colours, i) as f32);
+                let fell: [f32; 3] = std::array::from_fn(|c| (0..3).map(|j| self.light.get(f.probes[j] as usize).map_or(0.0, |p| p[c] * w[j] as f32)).sum::<f32>() * self.bounce);
+                let lit = scene::seen_in_mirror(rgb, q + dir * d, nn, f.normals[0][3], f.normals[1][3], f.normals[2][3] > 0.5, self.lights, self.env, fell);
+                best = Some(Met { d, lit: std::array::from_fn(|i| lit[i] + f.glow[i]), n: nn, mirror: (f.colours[0][3], f.colours[1][3]), own: usize::MAX });
+            }
+        }
+        // the nearest flat layer nearer still
+        for (k, p) in self.planes.iter().enumerate() {
+            let facing = dir.dot(p.normal);
+            if k == own || p.material.casts == 2 || facing.abs() < 1e-12 {
+                continue;
+            }
+            let s = (p.origin - q).dot(p.normal) / facing;
+            if s <= 1e-6 || s >= best.as_ref().map_or(f64::INFINITY, |b| b.d) {
+                continue;
+            }
+            let hit = p.unworld.apply(q + dir * s);
+            let t = p.shadow_texel(hit.x, hit.y);
+            if t[3] < 0.5 {
+                continue;
+            }
+            let rgb = [t[0] / t[3], t[1] / t[3], t[2] / t[3]];
+            let nn = if facing > 0.0 { -p.normal } else { p.normal };
+            let fell = p.grid.filter(|_| self.bounce > 0.0).map_or([0.0; 3], |g| g.at(self.light, hit.x, hit.y).map(|v| v * self.bounce));
+            let lit = scene::seen_in_mirror(rgb, q + dir * s, nn, p.material.ambient, p.material.diffuse, p.material.lit, self.lights, self.env, fell);
+            best = Some(Met { d: s, lit, n: nn, mirror: (p.material.reflection, p.material.rolloff), own: k });
+        }
+        best
+    }
+
+    /// How much light gets through to world point `q` (on plane `own`) from a point of a light
+    /// `len` away along `dir`, per colour: none past a model in the way (a pixel off the surface,
+    /// so one does not shade itself where it is), as much as each flat layer casting shadows in
+    /// the way lets through.
+    fn passes(&self, own: usize, q: Vec3, dir: Vec3, len: f64) -> [f32; 3] {
+        if self.casting.trees().iter().any(|c| c.blocks(q, dir, 1.0, len - 1.0)) {
+            return [0.0; 3];
+        }
+        let mut pass = [1f32; 3];
+        for &c in self.casters.iter().filter(|&&c| c != own) {
+            let p = &self.planes[c];
+            let facing = dir.dot(p.normal);
+            if facing.abs() < 1e-12 {
+                continue;
+            }
+            let s = (p.origin - q).dot(p.normal) / facing;
+            if s <= 1e-6 || s >= len - 1e-6 {
+                continue;
+            }
+            let hit = p.unworld.apply(q + dir * s);
+            let t = p.shadow_texel(hit.x, hit.y);
+            let a = t[3].clamp(0.0, 1.0);
+            if a <= 0.0 {
+                continue;
+            }
+            let tr = p.material.transmission;
+            for k in 0..3 {
+                pass[k] *= 1.0 - a + a * tr * (t[k] / a);
+            }
+        }
+        pass
+    }
+
+    /// The light coming back to `probe` from all round (the mean along its rays, `bounce::rays`),
+    /// `before` what the bounce before gathered.
+    fn gather_light(&self, probe: &crate::bounce::Probe, before: &[[f32; 3]]) -> [f32; 3] {
+        let mut sum = [0f32; 3];
+        for dir in crate::bounce::rays(probe.at, probe.n) {
+            let c = self.bounced_from(probe.own, probe.at, dir, before);
+            (0..3).for_each(|k| sum[k] += c[k]);
+        }
+        sum.map(|v| v / crate::bounce::RAYS as f32)
+    }
+
+    /// The light the ray from world point `q` (on plane `own`, or none) along `dir` brings back:
+    /// the nearest model's or flat layer's (where it is more there than not), lit simply
+    /// (`lit_simply`), else the environment's sky, else none.
+    fn bounced_from(&self, own: usize, q: Vec3, dir: Vec3, before: &[[f32; 3]]) -> [f32; 3] {
+        let mut best: Option<(f64, [f32; 3])> = None;
+        for (k, tree) in self.everything.trees().iter().enumerate() {
+            let far = best.map_or(f64::INFINITY, |b| b.0);
+            if let Some((d, which, u, v)) = tree.nearest(q, dir, 1.0, far) {
+                let f = &self.faces[self.face_first[k] + which as usize];
+                let w = [1.0 - u - v, u, v];
+                let mix = |c: &[[f32; 4]; 3], i: usize| (0..3).map(|j| c[j][i] as f64 * w[j]).sum::<f64>();
+                let nn = vec3(mix(&f.normals, 0), mix(&f.normals, 1), mix(&f.normals, 2));
+                let nn = if nn.length() > 1e-12 { nn.normalize() } else { -dir };
+                let nn = if nn.dot(dir) > 0.0 { -nn } else { nn };
+                let rgb = [0, 1, 2].map(|i| mix(&f.colours, i) as f32);
+                let e: [f32; 3] = std::array::from_fn(|c| (0..3).map(|j| before.get(f.probes[j] as usize).map_or(0.0, |p| p[c] * w[j] as f32)).sum());
+                let lit = self.lit_simply(rgb, q + dir * d, nn, (f.normals[0][3], f.normals[1][3], f.normals[2][3] > 0.5), usize::MAX, e);
+                best = Some((d, std::array::from_fn(|i| lit[i] + f.glow[i])));
+            }
+        }
+        for (k, p) in self.planes.iter().enumerate() {
+            let facing = dir.dot(p.normal);
+            if k == own || p.material.casts == 2 || facing.abs() < 1e-12 {
+                continue;
+            }
+            let s = (p.origin - q).dot(p.normal) / facing;
+            if s <= 1e-6 || s >= best.map_or(f64::INFINITY, |b| b.0) {
+                continue;
+            }
+            let hit = p.unworld.apply(q + dir * s);
+            let t = p.shadow_texel(hit.x, hit.y);
+            if t[3] < 0.5 {
+                continue;
+            }
+            let rgb = [t[0] / t[3], t[1] / t[3], t[2] / t[3]];
+            let nn = if facing > 0.0 { -p.normal } else { p.normal };
+            let e = p.grid.map_or([0.0; 3], |g| g.at(before, hit.x, hit.y));
+            best = Some((s, self.lit_simply(rgb, q + dir * s, nn, (p.material.ambient, p.material.diffuse, p.material.lit), k, e)));
+        }
+        best.map(|b| b.1).unwrap_or_else(|| self.env.map_or([0.0; 3], |e| e.shine(dir, 1.0)))
+    }
+
+    /// A surface the bouncing light meets, lit simply: colour `rgb` (straight) at `at` facing `n`
+    /// (toward where the ray came from), taking `ambient` of the ambient lights, `diffuse` of the
+    /// light falling on it (its shadows looked for along one ray to each light's middle), of the
+    /// light the environment lets fall on it, and of what the bounce before brought it
+    /// (`before`); as it is when it takes no light (`lit`).
+    fn lit_simply(&self, rgb: [f32; 3], at: Vec3, n: Vec3, (ambient, diffuse, lit): (f32, f32, bool), own: usize, before: [f32; 3]) -> [f32; 3] {
+        if !lit {
+            return rgb;
+        }
+        let (mut amb, mut dif) = ([0f32; 3], [0f32; 3]);
+        for l in self.lights {
+            if l.kind == LightKind::Ambient {
+                (0..3).for_each(|c| amb[c] += l.color[c]);
+                continue;
+            }
+            let k = l.reach(at);
+            let (to, far) = l.toward(at);
+            let facing = n.dot(to);
+            if k <= 0.0 || facing <= 0.0 {
+                continue;
+            }
+            let through = if l.shadows && (self.casters.iter().any(|&c| c != own) || !self.casting.is_empty()) {
+                let p = self.passes(own, at, to, far);
+                p.map(|v| 1.0 - l.darkness as f32 * (1.0 - v))
+            } else {
+                [1.0; 3]
+            };
+            (0..3).for_each(|c| dif[c] += l.color[c] * (facing * k) as f32 * through[c]);
+        }
+        let fall = self.env.map_or([0.0; 3], |e| e.falling(n));
+        std::array::from_fn(|c| rgb[c] * (ambient * amb[c] + diffuse * dif[c] + diffuse * 2.0 * (fall[c] + self.bounce * before[c])))
+    }
+
+    /// How much of the sky round world point `q` (on plane `own`, or none, facing `n`) is open,
+    /// as far as the ambient occlusion looks: the share of the rays from it (`scene::open_rays`)
+    /// that meet no model, each as much as the flat layers it passes let it through.
+    fn open(&self, own: usize, q: Vec3, n: Vec3) -> f32 {
+        let Some(reach) = self.reach else { return 1.0 };
+        let mut sum = 0.0f32;
+        for dir in scene::open_rays(q, n) {
+            // a pixel off the surface, so it does not hide itself where it is
+            if self.everything.trees().iter().any(|c| c.blocks(q, dir, 1.0, reach)) {
+                continue;
+            }
+            let mut pass = 1.0f32;
+            for (k, p) in self.planes.iter().enumerate() {
+                let facing = dir.dot(p.normal);
+                if k == own || facing.abs() < 1e-12 {
+                    continue;
+                }
+                let s = (p.origin - q).dot(p.normal) / facing;
+                if s <= 1e-6 || s >= reach {
+                    continue;
+                }
+                let hit = p.unworld.apply(q + dir * s);
+                pass *= 1.0 - p.shadow_texel(hit.x, hit.y)[3].clamp(0.0, 1.0);
+            }
+            sum += pass;
+        }
+        sum / scene::OPEN_RAYS as f32
+    }
+
     /// How much of light `l` reaches world point `q` on plane `own` past the layers that cast
     /// shadows (per colour, 0 to 1), its darkness applied; a diffuse light looked at from many
     /// points of its disc.
     fn unshadowed(&self, own: usize, l: usize, q: Vec3) -> [f32; 3] {
         let light = &self.lights[l];
-        let others: Vec<usize> = self.casters.iter().copied().filter(|&c| c != own).collect();
-        if others.is_empty() && self.casting.is_empty() {
+        if !self.casters.iter().any(|&c| c != own) && self.casting.is_empty() {
             return [1.0; 3];
         }
         let (to, far) = light.toward(q);
-        // how much of the light gets through from one of its points (`dir`, `len` away)
-        let pass_from = |dir: Vec3, len: f64| -> [f32; 3] {
-            // a model in the way blocks it (a pixel off the surface, so one does not shade itself
-            // where it is)
-            if self.casting.iter().any(|c| c.blocks(q, dir, 1.0, len - 1.0)) {
-                return [0.0; 3];
-            }
-            let mut pass = [1f32; 3];
-            for &c in &others {
-                let p = &self.planes[c];
-                let facing = dir.dot(p.normal);
-                if facing.abs() < 1e-12 {
-                    continue;
-                }
-                let s = (p.origin - q).dot(p.normal) / facing;
-                if s <= 1e-6 || s >= len - 1e-6 {
-                    continue;
-                }
-                let hit = p.unworld.apply(q + dir * s);
-                let t = p.shadow_texel(hit.x, hit.y);
-                let a = t[3].clamp(0.0, 1.0);
-                if a <= 0.0 {
-                    continue;
-                }
-                let tr = p.material.transmission;
-                for k in 0..3 {
-                    pass[k] *= 1.0 - a + a * tr * (t[k] / a);
-                }
-            }
-            pass
-        };
+        let pass_from = |dir: Vec3, len: f64| self.passes(own, q, dir, len);
         let dark = light.darkness as f32;
         let finish = |sum: [f32; 3], n: f32| sum.map(|s| 1.0 - dark * (1.0 - s / n));
         if light.diffusion <= 0.0 {
@@ -1194,12 +1692,19 @@ impl Scene<'_> {
             let len = d.length();
             pass_from(d / len.max(1e-9), if parallel { f64::INFINITY } else { len })
         };
-        // a few points first: where they agree (wholly lit or wholly shadowed) that is it; in
-        // the soft edge between, many more
-        let few: Vec<[f32; 3]> = (0..4).map(|k| from(k, 4)).collect();
+        // its middle and eight points round its rim first: where they agree (wholly lit or wholly
+        // shadowed) that is it (a shadow's edge coming over the disc crosses its rim); in the
+        // soft edge between, many points over it
+        let rim = |k: usize| -> [f32; 3] {
+            let r = if k == 8 { 0.0 } else { light.diffusion };
+            let ang = k as f64 * std::f64::consts::TAU / 8.0 + turn;
+            let d = centre + a * (r * ang.cos()) + b * (r * ang.sin()) - q;
+            let len = d.length();
+            pass_from(d / len.max(1e-9), if parallel { f64::INFINITY } else { len })
+        };
+        let few: Vec<[f32; 3]> = (0..9).map(rim).collect();
         let agree = few.iter().all(|p| (0..3).all(|c| (p[c] - few[0][c]).abs() < 1e-3));
-        let n = if agree { 4 } else { 48 };
-        let samples: Vec<[f32; 3]> = if agree { few } else { (0..n).map(|k| from(k, n)).collect() };
+        let (n, samples): (usize, Vec<[f32; 3]>) = if agree { (1, vec![few[0]]) } else { (SOFT_POINTS, (0..SOFT_POINTS).map(|k| from(k, SOFT_POINTS)).collect()) };
         let mut sum = [0f32; 3];
         for p in &samples {
             (0..3).for_each(|k| sum[k] += p[k]);

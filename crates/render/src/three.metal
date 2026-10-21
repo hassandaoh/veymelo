@@ -7,12 +7,9 @@
 // x' = x - cx0 and y' = y - cy0, the layer point is (u0 + du, v0 + dv) where
 //     w = g x' + h y' + 1,   du = (Au x' + Bu y') / w,   dv = (Av x' + Bv y') / w,
 // and its depth from the camera is z0 + d0 du + d1 dv.
-
-#include <metal_stdlib>
-using namespace metal;
-
-#define NEAR 1.0
-#define NONE 0xffffffffu
+//
+// Built after light.metal (the lights, and an environment's) and shadows.metal (the pictures,
+// and the shadows).
 
 struct Plane {
     float4 m;        // Au, Bu, Av, Bv
@@ -20,86 +17,54 @@ struct Plane {
     float4 at;       // u0, v0, depth there (from the scene's middle), depth there (from the eye)
     float4 dz;       // d0, d1
     float4 tex;      // the picture's pixel at (u0, v0): x, y; its pixels a unit
-    float4 own;      // its own picture (for shadows): origin x, y; its pixels a unit
     int4 reach;      // the canvas pixels it may cover: x0, y0, x1, y1
     uint4 img;       // the picture: first texel, width, height
-    uint4 ownimg;    // its own picture: first texel, width, height
     float4 origin;   // the world point of (0, 0); opacity
     float4 across;
     float4 down;
     float4 normal;
-    float4 unworld[4];
     float4 mat0;     // ambient, diffuse, specular, shininess
     float4 mat1;     // metal, transmission, shine exponent
     uint4 flags;     // casts shadows (0 off, 1 on, 2 only), accepts them (0, 1, 2 only), takes light, blend mode
     uint4 more;      // seed, matte's first value (NONE: no matte), only over what is under, lit already
     uint4 order;     // its place in the stack
+    float4 mirror;   // how much it mirrors, how sharply, how much less face on
+    uint4 map;       // the points the light bouncing onto it is gathered at (Caster's)
+    float4 cell;
 };
 
-struct Light {
-    float4 at;       // xyz, half the cone (radians)
-    float4 dir;      // xyz, cone feather
-    float4 color;    // rgb, radius
-    float4 fall;     // falloff distance, shadow darkness, shadow diffusion
-    uint4 kind;      // 0 parallel, 1 spot, 2 point, 3 ambient; falloff; casts shadows
+// A model layer as drawn (lit already): its colours and its depths (from the scene's middle,
+// endless where it is not), a row of each `width` long.
+struct Shot {
+    int4 reach;      // the canvas pixels it covers: x0, y0, x1, y1
+    uint4 at;        // its first colour, its first depth
+    float4 how;      // opacity
+    uint4 more;      // seed, matte's first value (NONE: no matte), only over what is under, blend mode
+    uint4 order;     // its place in the stack
 };
 
 struct Params {
     uint4 a;         // canvas width, first column, first row, columns
-    uint4 b;         // planes, lights, casters
-    float4 eye;
+    uint4 b;         // planes, lights, flat layers casting shadows, shots
+    float4 eye;      // xyz; the environment's turn
+    uint4 c;         // the environment's levels it shines with (0: none); how many pixels the list of those left to the processor holds
+    float4 d;        // the environment's occlusion; how far round a point the ambient occlusion looks (0: none occludes); how much light bounces
 };
 
 struct World {
-    constant Plane *planes;
+    const device Plane *planes;
     const device float4 *texels;
     constant Light *lights;
-    constant uint *casters;
+    Shadows shadows;
     const device float *mattes;
     constant Params *params;
+    const device Shot *shots;
+    const device float *depths;
+    const device float4 *shot_px;
+    Env env;
+    const device Face *faces;
+    const device float4 *bounce;   // the light bouncing onto each point it was gathered at
 };
-
-// ---- pictures ----------------------------------------------------------------------------
-
-static float4 fetch(const device float4 *t, uint4 img, int x, int y) {
-    if (x < 0 || y < 0 || x >= int(img.y) || y >= int(img.z)) {
-        return float4(0.0);
-    }
-    return t[img.x + uint(y) * img.y + uint(x)];
-}
-
-// between its pixels (centres at .5), clear outside
-static float4 bilinear(const device float4 *t, uint4 img, float x, float y) {
-    float fx = x - 0.5;
-    float fy = y - 0.5;
-    // far outside: nothing (and no number too big to be a whole one)
-    if (!(fx > -2.0 && fy > -2.0 && fx < float(img.y) + 2.0 && fy < float(img.z) + 2.0)) {
-        return float4(0.0);
-    }
-    float x0 = floor(fx);
-    float y0 = floor(fy);
-    float tx = fx - x0;
-    float ty = fy - y0;
-    int ix = int(x0);
-    int iy = int(y0);
-    float4 a = fetch(t, img, ix, iy);
-    float4 b = fetch(t, img, ix + 1, iy);
-    float4 c = fetch(t, img, ix, iy + 1);
-    float4 d = fetch(t, img, ix + 1, iy + 1);
-    float4 top = a + (b - a) * tx;
-    float4 bottom = c + (d - c) * tx;
-    return top + (bottom - top) * ty;
-}
-
-static float noise(uint x, uint y, uint seed) {
-    uint h = (x * 0x8DA6B343u) ^ (y * 0xD8163841u) ^ (seed * 0xCB1AB31Fu);
-    h ^= h >> 15;
-    h *= 0x2C1B3C6Du;
-    h ^= h >> 12;
-    h *= 0x297A2D39u;
-    h ^= h >> 15;
-    return float(h >> 8) / float(1u << 24);
-}
 
 // ---- blend modes (veymelo_color::blend) --------------------------------------------------
 
@@ -277,7 +242,7 @@ static float4 blend(uint m, float4 dst, float4 src, float n) {
 
 // The layer point (relative to the plane's (u0, v0)) and depth under canvas point (x, y), if it
 // is in front of the camera.
-static bool under(constant Plane &p, float x, float y, thread float &du, thread float &dv, thread float &z) {
+static bool under(const device Plane &p, float x, float y, thread float &du, thread float &dv, thread float &z) {
     float xr = x - p.w.z;
     float yr = y - p.w.w;
     float w = p.w.x * xr + p.w.y * yr + 1.0;
@@ -291,12 +256,12 @@ static bool under(constant Plane &p, float x, float y, thread float &du, thread 
     return true;
 }
 
-static float4 texel(thread const World &s, constant Plane &p, float du, float dv) {
+static float4 texel(thread const World &s, const device Plane &p, float du, float dv) {
     return bilinear(s.texels, p.img, p.tex.x + du * p.tex.z, p.tex.y + dv * p.tex.z);
 }
 
 // with more samples where it is seen smaller than its pixels
-static float4 sample(thread const World &s, constant Plane &p, float du, float dv, float cx, float cy) {
+static float4 sample(thread const World &s, const device Plane &p, float du, float dv, float cx, float cy) {
     float step = 0.0;
     float a, b, z;
     if (under(p, cx + 1.0, cy, a, b, z)) step = max(step, length(float2(a - du, b - dv)));
@@ -322,155 +287,28 @@ static float4 sample(thread const World &s, constant Plane &p, float du, float d
 
 // ---- light ---------------------------------------------------------------------------------
 
-enum Kind : uint { PARALLEL = 0, SPOT = 1, POINT = 2, AMBIENT = 3 };
-
-static float3 toward(constant Light &l, float3 p, thread float &far) {
-    if (l.kind.x == PARALLEL) {
-        far = INFINITY;
-        return -l.dir.xyz;
-    }
-    float3 d = l.at.xyz - p;
-    float len = length(d);
-    if (len < 1e-9) {
-        far = 0.0;
-        return float3(0.0, 0.0, -1.0);
-    }
-    far = len;
-    return d / len;
-}
-
-static float smooth_step(float t) {
-    return t * t * (3.0 - 2.0 * t);
-}
-
-static float reach(constant Light &l, float3 p) {
-    float dist;
-    float3 to = toward(l, p, dist);
-    float k = 1.0;
-    if (l.kind.y == 1 && isfinite(dist)) {
-        float radius = l.color.w, fd = l.fall.x;
-        k = dist <= radius ? 1.0 : (fd <= 0.0 ? 0.0 : 1.0 - smooth_step(clamp((dist - radius) / fd, 0.0, 1.0)));
-    } else if (l.kind.y == 2 && isfinite(dist)) {
-        float r = max(l.color.w, 1.0);
-        k = dist <= r ? 1.0 : (r / dist) * (r / dist);
-    }
-    if (l.kind.x == SPOT) {
-        float a = acos(clamp(dot(-to, l.dir.xyz), -1.0, 1.0));
-        float cone = l.at.w;
-        float inner = cone * (1.0 - l.dir.w);
-        k *= a <= inner ? 1.0 : (a >= cone ? 0.0 : 1.0 - smooth_step((a - inner) / max(cone - inner, 1e-9)));
-    }
-    return k;
-}
-
-static float3 apply(constant float4 *m, float3 p) {
-    float x = dot(m[0].xyz, p) + m[0].w;
-    float y = dot(m[1].xyz, p) + m[1].w;
-    float z = dot(m[2].xyz, p) + m[2].w;
-    float w = dot(m[3].xyz, p) + m[3].w;
-    if (w != 1.0 && w != 0.0) return float3(x / w, y / w, z / w);
-    return float3(x, y, z);
-}
-
-// how much of the light gets through to q from one of its points (`dir`, `len` away)
-static float3 pass_from(thread const World &s, uint own, float3 q, float3 dir, float len) {
-    float3 pass = float3(1.0);
-    uint n = s.params->b.z;
-    for (uint k = 0; k < n; k++) {
-        uint c = s.casters[k];
-        if (c == own) continue;
-        constant Plane &p = s.planes[c];
-        float facing = dot(dir, p.normal.xyz);
-        if (fabs(facing) < 1e-12) continue;
-        float t = dot(p.origin.xyz - q, p.normal.xyz) / facing;
-        if (t <= 1e-6 || t >= len - 1e-6) continue;
-        float3 hit = apply(p.unworld, q + dir * t);
-        float4 tx = bilinear(s.texels, p.ownimg, (hit.x - p.own.x) * p.own.z, (hit.y - p.own.y) * p.own.z);
-        float a = clamp(tx.w, 0.0, 1.0);
-        if (a <= 0.0) continue;
-        float tr = p.mat1.y;
-        pass *= 1.0 - a + a * tr * (tx.xyz / a);
-    }
-    return pass;
-}
-
-static uint whole(float v) {
-    // as the processor's `as usize` then `as u32`: below zero (or not a number) is 0
-    return v > 0.0 ? (v < 4294967296.0 ? uint(v) : 0xffffffffu) : 0u;
-}
-
-static float3 unshadowed(thread const World &s, uint own, uint li, float3 q) {
-    constant Light &l = s.lights[li];
-    bool others = false;
-    for (uint k = 0; k < s.params->b.z; k++) {
-        if (s.casters[k] != own) {
-            others = true;
-            break;
-        }
-    }
-    if (!others) return float3(1.0);
-    float far;
-    float3 to = toward(l, q, far);
-    float dark = l.fall.y;
-    float diffusion = l.fall.z;
-    if (diffusion <= 0.0) {
-        float3 p = pass_from(s, own, q, to, far);
-        return 1.0 - dark * (1.0 - p);
-    }
-    float3 side = fabs(to.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
-    float3 a = normalize(cross(to, side));
-    float3 b = cross(to, a);
-    bool parallel = l.kind.x == PARALLEL;
-    float3 centre = parallel ? q + to * 1000.0 : l.at.xyz;
-    float turn = noise(whole(q.x * 7.0), whole(q.y * 7.0), as_type<uint>(int(q.z))) * 6.283185307179586;
-    float3 few[4];
-    for (uint k = 0; k < 4; k++) {
-        float r = diffusion * sqrt((float(k) + 0.5) / 4.0);
-        float ang = float(k) * 2.399963 + turn;
-        float3 d = centre + a * (r * cos(ang)) + b * (r * sin(ang)) - q;
-        float len = length(d);
-        few[k] = pass_from(s, own, q, d / max(len, 1e-9), parallel ? INFINITY : len);
-    }
-    bool agree = true;
-    for (uint k = 1; k < 4; k++) {
-        float3 e = fabs(few[k] - few[0]);
-        if (!(e.x < 1e-3 && e.y < 1e-3 && e.z < 1e-3)) agree = false;
-    }
-    float3 sum = float3(0.0);
-    float n = 4.0;
-    if (agree) {
-        for (uint k = 0; k < 4; k++) sum += few[k];
-    } else {
-        n = 48.0;
-        for (uint k = 0; k < 48; k++) {
-            float r = diffusion * sqrt((float(k) + 0.5) / 48.0);
-            float ang = float(k) * 2.399963 + turn;
-            float3 d = centre + a * (r * cos(ang)) + b * (r * sin(ang)) - q;
-            float len = length(d);
-            sum += pass_from(s, own, q, d / max(len, 1e-9), parallel ? INFINITY : len);
-        }
-    }
-    return 1.0 - dark * (1.0 - sum / n);
-}
-
-// A plane's texel (premultiplied) at its point (u, v), lit by the lights.
+// A plane's texel (premultiplied) at its point (u, v), lit by the lights and the environment.
 static float4 light(thread const World &s, uint i, float u, float v, float4 tx) {
-    constant Plane &p = s.planes[i];
+    const device Plane &p = s.planes[i];
     uint nl = s.params->b.y;
-    if (nl == 0 || p.flags.z == 0) return tx;
+    bool env = s.env.count != 0;
+    if ((nl == 0 && !env) || p.flags.z == 0) return tx;
     float a = tx.w;
     float3 rgb = tx.xyz / a;
     float3 at = p.origin.xyz + p.across.xyz * u + p.down.xyz * v;
     float3 viewer = normalize(s.params->eye.xyz - at);
     float3 n = p.normal.xyz;
     if (dot(n, viewer) < 0.0) n = -n;
+    // how open the sky round it is (on the side it is seen from)
+    float looks = s.params->d.y;
+    float open = (looks > 0.0 && p.flags.y != 0) ? open_sky(s.shadows, i, at, n, looks) : 1.0;
     float3 ambient = float3(0.0), diffuse = float3(0.0), shine = float3(0.0);
     float shadow = 0.0;
     float exponent = p.mat1.z;
     for (uint li = 0; li < nl; li++) {
         constant Light &l = s.lights[li];
         if (l.kind.x == AMBIENT) {
-            ambient += l.color.xyz;
+            ambient += l.color.xyz * (1.0 - l.more.x * (1.0 - open));
             continue;
         }
         float k = reach(l, at);
@@ -480,7 +318,7 @@ static float4 light(thread const World &s, uint i, float u, float v, float4 tx) 
         float facing = dot(n, to);
         float lambert = facing > 0.0 ? facing : -facing * p.mat1.y;
         if (lambert <= 0.0) continue;
-        float3 through = (l.kind.z != 0 && p.flags.y != 0) ? unshadowed(s, i, li, at) : float3(1.0);
+        float3 through = (l.kind.z != 0 && p.flags.y != 0) ? unshadowed(s.shadows, l, i, at) : float3(1.0);
         shadow = max(shadow, 1.0 - (through.x + through.y + through.z) / 3.0);
         float kd = lambert * k;
         diffuse += l.color.xyz * kd * through;
@@ -491,126 +329,191 @@ static float4 light(thread const World &s, uint i, float u, float v, float4 tx) 
             shine += l.color.xyz * sh * through * tint;
         }
     }
+    float3 lit = nl == 0 ? float3(0.0) : rgb * (p.mat0.x * ambient + p.mat0.y * diffuse) + p.mat0.z * shine;
+    // the environment's light: its diffuse and shine as its options say (50 % as it is), not a
+    // metal, as dull as its shine is broad
+    if (env) lit += env_light(s.env, rgb, p.normal.xyz, viewer, 0.0, 1.0 - p.mat0.w, p.mat0.y * 2.0, p.mat0.z * 2.0, 1.0 - s.params->d.x * (1.0 - open));
+    // the light bouncing onto it from the surfaces round it
+    if (s.params->d.z > 0.0 && p.map.w != 0) {
+        lit += rgb * (p.mat0.y * 2.0 * s.params->d.z) * grid_at(s.bounce, p.map, p.cell, u, v);
+    }
+    // what it mirrors, mixed in
+    if (p.mirror.x > 0.0) {
+        float r = p.mirror.x * (1.0 - p.mirror.z * clamp(dot(n, viewer), 0.0, 1.0));
+        if (r > 0.0) {
+            Seen by = { s.faces, s.lights, nl, s.env, s.bounce, s.params->d.z };
+            float3 seen = mirrored(s.shadows, by, i, at, n, viewer, p.mirror.y, lit);
+            lit = lit * (1.0 - r) + seen * r;
+        }
+    }
     if (p.flags.y == 2) {
         return float4(0.0, 0.0, 0.0, a * shadow);
     }
-    float3 lit = rgb * (p.mat0.x * ambient + p.mat0.y * diffuse) + p.mat0.z * shine;
     return float4(lit * a, a);
 }
 
 // ---- a pixel -------------------------------------------------------------------------------
 //
-// A pixel's pieces are the planes there (in front, not clear) — which ones are kept as bits, so
-// a thread holds no list. They are laid from the farthest to the nearest by picking, again and
-// again, the farthest of those not laid yet (at the same depth, the lower in the stack first,
-// as the processor's stable sort has it).
+// A pixel's pieces are the planes there (in front, not clear), then the model layers there
+// (numbered after the planes'), kept in a short list with their depths. They are laid from the
+// farthest to the nearest by picking, again and again, the farthest of those not laid yet (at the
+// same depth, the lower in the stack first, then the one gathered first, as the processor's stable
+// sort has it). A pixel with more pieces than the list holds is left to the processor.
 
-// which planes have a piece at canvas point (cx, cy) of pixel (x, y); how many
-static uint gather(thread const World &s, uint x, uint y, float cx, float cy, thread uint2 &bits) {
-    uint n = 0;
-    bits = uint2(0);
+#define MOST_AT 16
+
+struct Pieces {
+    uint id[MOST_AT];
+    float z[MOST_AT];
+    uint n;
+    bool over;       // more than it holds
+};
+
+static void add(thread Pieces &out, uint id, float z) {
+    if (out.n == MOST_AT) {
+        out.over = true;
+        return;
+    }
+    out.id[out.n] = id;
+    out.z[out.n] = z;
+    out.n++;
+}
+
+// where in a model layer's colours and depths canvas pixel (x, y) is
+static uint shot_at(const device Shot &q, uint x, uint y) {
+    return (y - uint(q.reach.y)) * uint(q.reach.z - q.reach.x) + (x - uint(q.reach.x));
+}
+
+// the pieces at canvas point (cx, cy) of pixel (x, y)
+static void gather(thread const World &s, uint x, uint y, float cx, float cy, thread Pieces &out) {
+    out.n = 0;
+    out.over = false;
     uint planes = s.params->b.x;
+    int xi = int(x), yi = int(y);
     for (uint i = 0; i < planes; i++) {
-        constant Plane &p = s.planes[i];
-        int xi = int(x), yi = int(y);
+        const device Plane &p = s.planes[i];
         if (xi < p.reach.x || xi >= p.reach.z || yi < p.reach.y || yi >= p.reach.w || p.flags.x == 2) continue;
         float du, dv, z;
         if (!under(p, cx, cy, du, dv, z)) continue;
         if (sample(s, p, du, dv, cx, cy).w <= 1e-5) continue;
-        bits[i >> 5] |= 1u << (i & 31);
-        n++;
+        add(out, i, z);
     }
-    return n;
-}
-
-static bool has(uint2 bits, uint i) {
-    return (bits[i >> 5] >> (i & 31)) & 1u;
+    // a model layer's piece is the same all over the pixel
+    for (uint k = 0; k < s.params->b.w; k++) {
+        const device Shot &q = s.shots[k];
+        if (xi < q.reach.x || xi >= q.reach.z || yi < q.reach.y || yi >= q.reach.w) continue;
+        uint at = shot_at(q, x, y);
+        float z = s.depths[q.at.y + at];
+        if (!isfinite(z) || !(s.shot_px[q.at.x + at].w > 1e-5)) continue;
+        add(out, planes + k, z);
+    }
 }
 
 // how much a plane's depth changes across the pixel
-static float change(constant Plane &p, float z, float cx, float cy) {
+static float change(const device Plane &p, float z, float cx, float cy) {
     float c = 0.0, du, dv, z1;
     if (under(p, cx + 1.0, cy, du, dv, z1)) c += fabs(z1 - z);
     if (under(p, cx, cy + 1.0, du, dv, z1)) c += fabs(z1 - z);
     return c;
 }
 
-// whether the pieces' depths cross within the pixel
-static bool crossing(thread const World &s, uint2 bits, float cx, float cy) {
+// whether the pieces' depths cross within the pixel (a model's edges are smooth already: only
+// planes change across it)
+static bool crossing(thread const World &s, thread const Pieces &ps, float cx, float cy) {
     uint planes = s.params->b.x;
-    for (uint a = 0; a < planes; a++) {
-        if (!has(bits, a)) continue;
-        constant Plane &pa = s.planes[a];
-        float du, dv, za;
-        under(pa, cx, cy, du, dv, za);
-        float ca = change(pa, za, cx, cy);
-        for (uint b = a + 1; b < planes; b++) {
-            if (!has(bits, b)) continue;
-            constant Plane &pb = s.planes[b];
-            float zb;
-            under(pb, cx, cy, du, dv, zb);
-            if (fabs(za - zb) < (ca + change(pb, zb, cx, cy)) * 0.75) return true;
+    for (uint a = 0; a < ps.n; a++) {
+        float ca = ps.id[a] < planes ? change(s.planes[ps.id[a]], ps.z[a], cx, cy) : 0.0;
+        for (uint b = a + 1; b < ps.n; b++) {
+            float cb = ps.id[b] < planes ? change(s.planes[ps.id[b]], ps.z[b], cx, cy) : 0.0;
+            if (fabs(ps.z[a] - ps.z[b]) < (ca + cb) * 0.75) return true;
         }
     }
     return false;
 }
 
-// whether piece (z, plane i) is laid before (zb, plane j): the farther first, then the lower in
-// the stack, then the earlier plane
+// piece i's place in the stack
+static uint order_of(thread const World &s, uint i) {
+    uint planes = s.params->b.x;
+    return i < planes ? s.planes[i].order.x : s.shots[i - planes].order.x;
+}
+
+// whether piece (z, i) is laid before (zb, j): the farther first, then the lower in the stack,
+// then the one gathered first
 static bool before(thread const World &s, float z, uint i, float zb, uint j) {
     if (z != zb) return z > zb;
-    uint oi = s.planes[i].order.x, oj = s.planes[j].order.x;
+    uint oi = order_of(s, i), oj = order_of(s, j);
     if (oi != oj) return oi < oj;
     return i < j;
 }
 
 // the pieces at (cx, cy) over `below`
-static float4 lay(thread const World &s, uint2 bits, uint n, float4 below, uint x, uint y, float cx, float cy) {
+static float4 lay(thread const World &s, thread const Pieces &ps, float4 below, uint x, uint y, float cx, float cy) {
     float4 out = below;
     uint width = s.params->a.x;
     uint planes = s.params->b.x;
     // the last laid (none yet: before everything)
-    float last_z = INFINITY;
     uint last = NONE;
-    for (uint step = 0; step < n; step++) {
+    for (uint step = 0; step < ps.n; step++) {
         uint pick = NONE;
-        float pick_z = 0.0, pick_du = 0.0, pick_dv = 0.0;
-        for (uint i = 0; i < planes; i++) {
-            if (!has(bits, i)) continue;
-            float du, dv, z;
-            under(s.planes[i], cx, cy, du, dv, z);
-            if (last != NONE && !before(s, last_z, last, z, i)) continue;
-            if (pick == NONE || before(s, z, i, pick_z, pick)) {
-                pick = i;
-                pick_z = z;
-                pick_du = du;
-                pick_dv = dv;
-            }
+        for (uint k = 0; k < ps.n; k++) {
+            if (last != NONE && !before(s, ps.z[last], ps.id[last], ps.z[k], ps.id[k])) continue;
+            if (pick == NONE || before(s, ps.z[k], ps.id[k], ps.z[pick], ps.id[pick])) pick = k;
         }
         if (pick == NONE) break;
         last = pick;
-        last_z = pick_z;
-        constant Plane &p = s.planes[pick];
+        uint id = ps.id[pick];
+        if (id >= planes) {
+            // a model layer: lit already
+            const device Shot &q = s.shots[id - planes];
+            float k = q.how.x;
+            if (q.more.y != NONE) k *= s.mattes[q.more.y + y * width + x];
+            if (q.more.z != 0) k *= below.w;
+            if (k <= 0.0) continue;
+            out = blend(q.more.w, out, s.shot_px[q.at.x + shot_at(q, x, y)] * k, noise(x, y, q.more.x));
+            continue;
+        }
+        const device Plane &p = s.planes[id];
         float k = p.origin.w;
         if (p.more.y != NONE) k *= s.mattes[p.more.y + y * width + x];
         if (p.more.z != 0) k *= below.w;
         if (k <= 0.0) continue;
-        float4 tx = sample(s, p, pick_du, pick_dv, cx, cy);
-        float4 color = p.more.w != 0 ? tx : light(s, pick, p.at.x + pick_du, p.at.y + pick_dv, tx);
+        float du, dv, z;
+        under(p, cx, cy, du, dv, z);
+        float4 tx = sample(s, p, du, dv, cx, cy);
+        float4 color = p.more.w != 0 ? tx : light(s, id, p.at.x + du, p.at.y + dv, tx);
         out = blend(p.flags.w, out, color * k, noise(x, y, p.more.x));
     }
     return out;
 }
 
 kernel void scene(device float4 *canvas [[buffer(0)]],
-                  constant Plane *planes [[buffer(1)]],
+                  const device Plane *planes [[buffer(1)]],
                   const device float4 *texels [[buffer(2)]],
                   constant Light *lights [[buffer(3)]],
-                  constant uint *casters [[buffer(4)]],
+                  const device Caster *casters [[buffer(4)]],
                   const device float *mattes [[buffer(5)]],
                   constant Params &params [[buffer(6)]],
+                  const device Shot *shots [[buffer(7)]],
+                  const device float *depths [[buffer(8)]],
+                  const device float4 *env_px [[buffer(9)]],
+                  const device uint4 *env_levels [[buffer(10)]],
+                  device atomic_uint *left [[buffer(11)]],
+                  device uint *left_at [[buffer(12)]],
+                  const device float4 *shadow_px [[buffer(13)]],
+                  const device float4 *shot_px [[buffer(14)]],
+                  const device Face *faces [[buffer(15)]],
+                  const device float4 *bounce [[buffer(16)]],
+#if RAYS
+                  primitive_acceleration_structure models [[buffer(17)]],
+                  primitive_acceleration_structure everything [[buffer(18)]],
+#endif
                   uint2 at [[thread_position_in_grid]]) {
-    World s = { planes, texels, lights, casters, mattes, &params };
+#if RAYS
+    Shadows shadows = { casters, params.b.z, shadow_px, models, everything };
+#else
+    Shadows shadows = { casters, params.b.z, shadow_px };
+#endif
+    World s = { planes, texels, lights, shadows, mattes, &params, shots, depths, shot_px, { env_px, env_levels, params.c.x, params.eye.w }, faces, bounce };
     if (at.x >= params.a.w) return;
     uint x = params.a.y + at.x;
     uint y = params.a.z + at.y;
@@ -620,21 +523,30 @@ kernel void scene(device float4 *canvas [[buffer(0)]],
     float4 below = canvas[i];
     float cx = float(x) + 0.5;
     float cy = float(y) + 0.5;
-    uint2 bits;
-    uint n = gather(s, x, y, cx, cy, bits);
-    if (n == 0) return;
-    if (n > 1 && crossing(s, bits, cx, cy)) {
+    Pieces ps;
+    gather(s, x, y, cx, cy, ps);
+    bool over = ps.over;
+    float4 out = below;
+    if (!over && ps.n > 1 && crossing(s, ps, cx, cy)) {
         // a crossing goes through this pixel: four looks, put together
         float4 sum = float4(0.0);
-        for (uint k = 0; k < 4; k++) {
+        for (uint k = 0; k < 4 && !over; k++) {
             float sx = cx + (k & 1 ? 0.25 : -0.25);
             float sy = cy + (k & 2 ? 0.25 : -0.25);
-            uint2 sub;
-            uint m = gather(s, x, y, sx, sy, sub);
-            sum += lay(s, sub, m, below, x, y, sx, sy) * 0.25;
+            Pieces sub;
+            gather(s, x, y, sx, sy, sub);
+            over = sub.over;
+            sum += lay(s, sub, below, x, y, sx, sy) * 0.25;
         }
-        canvas[i] = sum;
+        out = sum;
+    } else if (!over && ps.n > 0) {
+        out = lay(s, ps, below, x, y, cx, cy);
+    }
+    if (over) {
+        // too many pieces here: left to the processor
+        uint k = atomic_fetch_add_explicit(left, 1u, memory_order_relaxed);
+        if (k < params.c.y) left_at[k] = y * width + x;
         return;
     }
-    canvas[i] = lay(s, bits, n, below, x, y, cx, cy);
+    canvas[i] = out;
 }

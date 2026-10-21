@@ -101,6 +101,9 @@ pub struct Light {
     pub shadows: bool,
     pub darkness: f64,
     pub diffusion: f64,
+    /// An ambient light kept out of nooks (0 to 1), looked for this far round a point.
+    pub occlusion: f32,
+    pub occlusion_distance: f64,
 }
 
 impl Light {
@@ -183,6 +186,8 @@ pub fn lights(eval: &Eval, comp: &Comp, t: Tick, linear: bool) -> Vec<Light> {
                 shadows: flag("castsShadows") && kind != LightKind::Ambient,
                 darkness: (read("shadowDarkness", 100.0) / 100.0).clamp(0.0, 1.0),
                 diffusion: read("shadowDiffusion", 0.0).max(0.0),
+                occlusion: if kind == LightKind::Ambient { (read("ambientOcclusion", 0.0) / 100.0).clamp(0.0, 1.0) as f32 } else { 0.0 },
+                occlusion_distance: read("occlusionDistance", 60.0).max(0.0),
             })
         })
         .collect()
@@ -202,6 +207,15 @@ pub struct Material {
     /// 0 to 1.
     pub shininess: f32,
     pub metal: f32,
+    /// How much it mirrors (0 to 1), how sharply (1: a mirror), and how much less face on.
+    pub reflection: f32,
+    pub sharpness: f32,
+    pub rolloff: f32,
+    /// How much a model is seen through (0 to 1), how much less edge on, and how much light
+    /// bends going into it.
+    pub transparency: f32,
+    pub clear_rolloff: f32,
+    pub ior: f32,
 }
 
 impl Material {
@@ -219,7 +233,24 @@ impl Material {
             specular: part("specularIntensity", 50.0),
             shininess: part("specularShininess", 5.0).min(1.0),
             metal: part("metal", 100.0).min(1.0),
+            reflection: part("reflectionIntensity", 0.0).min(1.0),
+            sharpness: part("reflectionSharpness", 100.0).min(1.0),
+            rolloff: part("reflectionRolloff", 0.0).min(1.0),
+            transparency: part("transparency", 0.0).min(1.0),
+            clear_rolloff: part("transparencyRolloff", 0.0).min(1.0),
+            ior: value("indexOfRefraction").map_or(1.0, |v| v.as_f64()).clamp(1.0, 3.0) as f32,
         }
+    }
+
+    /// How much a model is seen through seen from `viewer` on a surface facing `n` (toward the
+    /// viewer).
+    pub fn clear(&self, n: Vec3, viewer: Vec3) -> f32 {
+        self.transparency * (1.0 - self.clear_rolloff * (1.0 - n.dot(viewer).clamp(0.0, 1.0) as f32))
+    }
+
+    /// How much it mirrors seen from `viewer` on a surface facing `n` (toward the viewer).
+    pub fn mirrors(&self, n: Vec3, viewer: Vec3) -> f32 {
+        self.reflection * (1.0 - self.rolloff * n.dot(viewer).clamp(0.0, 1.0) as f32)
     }
 
     /// The shine's sharpness: 1 at 0 %, 256 at 100 %.
@@ -229,11 +260,13 @@ impl Material {
 }
 
 /// A colour (straight) at world point `p` on a surface facing `n`, seen from `viewer` (a unit
-/// direction toward the eye), lit: the ambient lights and the light falling on it (through it
-/// from behind by its transmission), each as much as `unshadowed(light, p)` lets through, with
-/// a shine coloured by the light or, by its metal, by the surface. Unlit without lights. Also
-/// how much shadow falls there (0 to 1).
-pub fn shade(rgb: [f32; 3], p: Vec3, n: Vec3, viewer: Vec3, m: &Material, lights: &[Light], unshadowed: &dyn Fn(usize, Vec3) -> [f32; 3]) -> ([f32; 3], f32) {
+/// direction toward the eye), lit: the ambient lights (each kept out as much as it occludes
+/// where only `open` of the sky round the point is open) and the light falling on it (through
+/// it from behind by its transmission), each as much as `unshadowed(light, p)` lets through,
+/// with a shine coloured by the light or, by its metal, by the surface. Unlit without lights.
+/// Also how much shadow falls there (0 to 1).
+#[allow(clippy::too_many_arguments)]
+pub fn shade(rgb: [f32; 3], p: Vec3, n: Vec3, viewer: Vec3, m: &Material, lights: &[Light], unshadowed: &dyn Fn(usize, Vec3) -> [f32; 3], open: f32) -> ([f32; 3], f32) {
     if lights.is_empty() || !m.lit {
         return (rgb, 0.0);
     }
@@ -243,7 +276,8 @@ pub fn shade(rgb: [f32; 3], p: Vec3, n: Vec3, viewer: Vec3, m: &Material, lights
     let exp = m.exponent();
     for (i, l) in lights.iter().enumerate() {
         if l.kind == LightKind::Ambient {
-            (0..3).for_each(|c| ambient[c] += l.color[c]);
+            let k = 1.0 - l.occlusion * (1.0 - open);
+            (0..3).for_each(|c| ambient[c] += l.color[c] * k);
             continue;
         }
         let k = l.reach(p);
@@ -271,6 +305,102 @@ pub fn shade(rgb: [f32; 3], p: Vec3, n: Vec3, viewer: Vec3, m: &Material, lights
     }
     (std::array::from_fn(|c| rgb[c] * (m.ambient * ambient[c] + m.diffuse * diffuse[c]) + m.specular * shine[c]), shadow)
 }
+
+/// Direction `d` bent going through a surface facing `n` (against `d`) from a stuff into one `eta`
+/// times as slow: none where it cannot go through (reflected whole inside).
+pub fn refract(d: Vec3, n: Vec3, eta: f64) -> Option<Vec3> {
+    let c = n.dot(d);
+    let k = 1.0 - eta * eta * (1.0 - c * c);
+    (k >= 0.0).then(|| (d * eta - n * (eta * c + k.sqrt())).normalize())
+}
+
+/// The directions a surface facing `n` mirrors along, seen from `viewer`, as sharply as
+/// `sharpness` (1: a mirror, one way; less: many ways in a cone round it, wider the less, the
+/// pattern turned a little from point `q` to point).
+pub fn mirror_rays(q: Vec3, n: Vec3, viewer: Vec3, sharpness: f32) -> Vec<Vec3> {
+    let r = n * (2.0 * n.dot(viewer)) - viewer;
+    if sharpness >= 1.0 {
+        return vec![r];
+    }
+    let side = if r.x.abs() < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) };
+    let a = r.cross(side).normalize();
+    let b = r.cross(a);
+    let wide = ((1.0 - sharpness as f64) * MIRROR_CONE).tan();
+    let turn = veymelo_raster::noise((q.x * 7.0) as usize, (q.y * 7.0) as usize, (q.z as i64 as u32) ^ MIRROR_SEED) as f64 * std::f64::consts::TAU;
+    (0..MIRROR_RAYS)
+        .map(|k| {
+            let s = wide * ((k as f64 + 0.5) / MIRROR_RAYS as f64).sqrt();
+            let ang = k as f64 * 2.399_963 + turn;
+            (r + a * (s * ang.cos()) + b * (s * ang.sin())).normalize()
+        })
+        .collect()
+}
+
+/// How many ways a surface less sharp than a mirror mirrors along, and the widest cone (half
+/// across, radians) of them.
+pub const MIRROR_RAYS: usize = 16;
+pub const MIRROR_CONE: f64 = 0.5;
+
+/// What the mirrors' turns are made from (apart from the shadows' and the occlusion's).
+pub const MIRROR_SEED: u32 = 0x85EB_CA6B;
+
+/// A surface a reflection meets, lit simply (as it is seen in a mirror): colour `rgb` (straight)
+/// facing `n` (toward where it is seen from) at `p`, taking `ambient` of the ambient lights and
+/// `diffuse` of the light falling on it (no shadows, no shine), of the light the environment
+/// lets fall on it and of the light bouncing onto it (`bounce`, as much as is taken); as it is
+/// when it takes no light.
+#[allow(clippy::too_many_arguments)]
+pub fn seen_in_mirror(rgb: [f32; 3], p: Vec3, n: Vec3, ambient: f32, diffuse: f32, lit: bool, lights: &[Light], env: Option<&Environment>, bounce: [f32; 3]) -> [f32; 3] {
+    if !lit || (lights.is_empty() && env.is_none()) {
+        return rgb;
+    }
+    let (mut amb, mut dif) = ([0f32; 3], [0f32; 3]);
+    let fell = bounce;
+    for l in lights {
+        if l.kind == LightKind::Ambient {
+            (0..3).for_each(|c| amb[c] += l.color[c]);
+            continue;
+        }
+        let k = l.reach(p);
+        let (to, _) = l.toward(p);
+        let facing = n.dot(to);
+        if k <= 0.0 || facing <= 0.0 {
+            continue;
+        }
+        (0..3).for_each(|c| dif[c] += l.color[c] * (facing * k) as f32);
+    }
+    let fall = env.map_or([0.0; 3], |e| e.falling(n));
+    std::array::from_fn(|c| rgb[c] * (ambient * amb[c] + diffuse * dif[c] + diffuse * 2.0 * (fall[c] + fell[c])))
+}
+
+/// How far round a point the ambient occlusion of `lights` and `env` looks: none when none of
+/// them occludes.
+pub fn occlusion_reach(lights: &[Light], env: Option<&Environment>) -> Option<f64> {
+    let reach = lights.iter().filter(|l| l.occlusion > 0.0).map(|l| l.occlusion_distance).chain(env.filter(|e| e.occlusion > 0.0).map(|e| e.occlusion_distance)).fold(0.0, f64::max);
+    (reach > 0.0).then_some(reach)
+}
+
+/// How many rays the ambient occlusion looks along from a point.
+pub const OPEN_RAYS: usize = 32;
+
+/// The directions the ambient occlusion looks along from world point `q` on a surface facing
+/// `n`: spread evenly over the half sphere it faces, more toward its top (as light falls, by the
+/// cosine: a sunflower on the disc beneath, lifted), the pattern turned a little from point to
+/// point.
+pub fn open_rays(q: Vec3, n: Vec3) -> impl Iterator<Item = Vec3> {
+    let side = if n.x.abs() < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) };
+    let a = n.cross(side).normalize();
+    let b = n.cross(a);
+    let turn = veymelo_raster::noise((q.x * 7.0) as usize, (q.y * 7.0) as usize, (q.z as i64 as u32) ^ OPEN_SEED) as f64 * std::f64::consts::TAU;
+    (0..OPEN_RAYS).map(move |k| {
+        let r = ((k as f64 + 0.5) / OPEN_RAYS as f64).sqrt();
+        let ang = k as f64 * 2.399_963 + turn;
+        a * (r * ang.cos()) + b * (r * ang.sin()) + n * (1.0 - r * r).max(0.0).sqrt()
+    })
+}
+
+/// What the ambient occlusion's turns are made from (apart from the shadows').
+pub const OPEN_SEED: u32 = 0x9E37_79B9;
 
 /// Whether a layer draws in 3D (a 3D layer with pixels of its own, not an adjustment layer).
 pub fn in_3d(layer: &Layer) -> bool {
@@ -344,7 +474,16 @@ pub struct Environment {
     levels: Vec<Pano>,
     falling: Pano,
     rotation: f64,
+    /// Kept out of nooks (0 to 1), looked for this far round a point.
+    pub occlusion: f32,
+    pub occlusion_distance: f64,
+    /// As the GPU reads it, once asked for.
+    packed: std::sync::OnceLock<Packed>,
 }
+
+/// An environment's panoramas as the GPU reads them: their pixels one after another, and each
+/// one's first pixel, width and height.
+pub type Packed = (Vec<[f32; 4]>, Vec<[u32; 4]>);
 
 impl Environment {
     /// From a panorama's `w` × `h` pixels, turned `rotation` radians.
@@ -394,7 +533,30 @@ impl Environment {
                 })
                 .collect(),
         };
-        Some(Environment { levels, falling, rotation })
+        Some(Environment { levels, falling, rotation, occlusion: 0.0, occlusion_distance: 0.0, packed: std::sync::OnceLock::new() })
+    }
+
+    /// Its panoramas as the GPU reads them (light.metal's `Env`): their pixels one after
+    /// another, the falling light's first, and each one's first pixel, width and height.
+    pub fn packed(&self) -> &Packed {
+        self.packed.get_or_init(|| {
+            let (mut px, mut levels) = (Vec::new(), Vec::new());
+            for p in std::iter::once(&self.falling).chain(&self.levels) {
+                levels.push([px.len() as u32, p.w as u32, p.h as u32, 0]);
+                px.extend(p.px.iter().map(|c| [c[0], c[1], c[2], 0.0]));
+            }
+            (px, levels)
+        })
+    }
+
+    /// Its turn about the vertical (radians).
+    pub fn rotation(&self) -> f64 {
+        self.rotation
+    }
+
+    /// How many panoramas it shines with (the GPU's `Env::count`).
+    pub fn shining(&self) -> usize {
+        self.levels.len()
     }
 
     /// The light falling on a surface facing `n`.
@@ -436,10 +598,21 @@ impl Environment {
     }
 }
 
-/// A composition's environment light at `t` (the first that is on): the layer its picture is
-/// from (none: the composition's environment layer), its colour times its intensity in the
-/// working space (`linear`), and its turn (radians).
-pub fn environment_light(eval: &Eval, comp: &Comp, t: Tick, linear: bool) -> Option<(Option<u64>, [f32; 3], f64)> {
+/// A composition's environment light: the layer its picture is from (none: the composition's
+/// environment layer), its colour times its intensity in the working space, its turn (radians),
+/// and its ambient occlusion (0 to 1) and how far that looks.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvLight {
+    pub source: Option<u64>,
+    pub tint: [f32; 3],
+    pub rotation: f64,
+    pub occlusion: f32,
+    pub occlusion_distance: f64,
+}
+
+/// A composition's environment light at `t` (the first that is on), its colour in the working
+/// space (`linear`).
+pub fn environment_light(eval: &Eval, comp: &Comp, t: Tick, linear: bool) -> Option<EnvLight> {
     let layer = comp.layers.iter().find(|l| l.switches.video && l.is_active_at(t) && l.source == Source::Light(LightKind::Environment))?;
     let at = eval.place(comp, layer);
     let g = layer.props.group("lightOptions").ok()?;
@@ -448,5 +621,7 @@ pub fn environment_light(eval: &Eval, comp: &Comp, t: Tick, linear: bool) -> Opt
     let c = value("color").map_or(veymelo_color::Rgba::WHITE, |v| v.as_color());
     let ch = |v: f64| (if linear { veymelo_color::srgb_to_linear(v) } else { v } * intensity) as f32;
     let source = value("source").and_then(|v| v.as_layer());
-    Some((source, [ch(c.r), ch(c.g), ch(c.b)], value("rotation").map_or(0.0, |v| v.as_f64()).to_radians()))
+    let occlusion = (value("ambientOcclusion").map_or(0.0, |v| v.as_f64()) / 100.0).clamp(0.0, 1.0) as f32;
+    let distance = value("occlusionDistance").map_or(60.0, |v| v.as_f64()).max(0.0);
+    Some(EnvLight { source, tint: [ch(c.r), ch(c.g), ch(c.b)], rotation: value("rotation").map_or(0.0, |v| v.as_f64()).to_radians(), occlusion, occlusion_distance: distance })
 }

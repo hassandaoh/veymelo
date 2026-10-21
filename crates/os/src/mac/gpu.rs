@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
 use super::{Id, NIL, Pool, Sel, error_text, msg, nsstring, rust_string, sel, send, send1};
-use crate::gpu::{Arg, Kernel, Plain};
+use crate::gpu::{Arg, Kernel, Plain, Step};
 
 #[link(name = "Metal", kind = "framework")]
 unsafe extern "C" {
@@ -34,6 +34,8 @@ const APPLE7: i64 = 1007;
 const COMPLETED: i64 = 4;
 /// Bytes handed straight to a kernel (more go in a buffer).
 const INLINE: usize = 4096;
+/// MTLResourceStorageModePrivate: memory only the GPU uses.
+const PRIVATE: usize = 2 << 4;
 
 struct Gpu {
     device: Id,
@@ -189,6 +191,146 @@ impl Drop for Buffer {
     }
 }
 
+/// MTLAccelerationStructureSizes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Sizes {
+    structure: usize,
+    build: usize,
+    refit: usize,
+}
+
+/// Whether the GPU finds where rays meet triangles (Metal's ray tracing: in the hardware of the
+/// M3 and the chips after it, done by its cores before them), and kernels can be handed what it
+/// finds them in.
+pub fn traces() -> bool {
+    static TRACES: OnceLock<bool> = OnceLock::new();
+    *TRACES.get_or_init(|| {
+        let Some(g) = gpu() else { return false };
+        unsafe {
+            super::answers(g.device, "supportsRaytracing")
+                && msg!(unsafe extern "C" fn(Id, Sel) -> bool)(g.device, sel("supportsRaytracing"))
+                && super::answers(g.device, "accelerationStructureSizesWithDescriptor:")
+                && class_answers("MTLComputeCommandEncoder", "setAccelerationStructure:atBufferIndex:")
+        }
+    })
+}
+
+/// Whether instances of the protocol a Metal object of class-ish name `what` answers `name` (asked
+/// of a live one: an encoder made and ended).
+unsafe fn class_answers(what: &str, name: &str) -> bool {
+    let Some(g) = gpu() else { return false };
+    unsafe {
+        let _pool = Pool::new();
+        let commands = send(g.queue, "commandBuffer");
+        if commands.is_null() {
+            return false;
+        }
+        let encoder = match what {
+            "MTLComputeCommandEncoder" => send(commands, "computeCommandEncoder"),
+            _ => NIL,
+        };
+        if encoder.is_null() {
+            return false;
+        }
+        let yes = super::answers(encoder, name);
+        send(encoder, "endEncoding");
+        yes
+    }
+}
+
+/// Triangles arranged by the GPU so a ray finds those it meets quickly (an acceleration
+/// structure), for kernels that trace rays.
+pub struct Shapes {
+    id: Id,
+}
+
+// a Metal acceleration structure may be used from any thread
+unsafe impl Send for Shapes {}
+unsafe impl Sync for Shapes {}
+
+impl Shapes {
+    /// From triangles, three corners each one after another; none when there are none.
+    pub fn new(corners: &[[f32; 3]]) -> Result<Option<Shapes>, String> {
+        let g = gpu().ok_or("there is no GPU to draw with")?;
+        if !traces() {
+            return Err("the GPU does not trace rays".into());
+        }
+        let count = corners.len() / 3;
+        if count == 0 {
+            return Ok(None);
+        }
+        let vertices = Buffer::of(&corners[..count * 3])?;
+        unsafe {
+            let _pool = Pool::new();
+            let geometry = send(super::class("MTLAccelerationStructureTriangleGeometryDescriptor"), "descriptor");
+            let descriptor = send(super::class("MTLPrimitiveAccelerationStructureDescriptor"), "descriptor");
+            if geometry.is_null() || descriptor.is_null() {
+                return Err("the GPU cannot arrange triangles here".into());
+            }
+            send1(geometry, "setVertexBuffer:", vertices.id);
+            msg!(unsafe extern "C" fn(Id, Sel, usize))(geometry, sel("setVertexStride:"), 12);
+            msg!(unsafe extern "C" fn(Id, Sel, usize))(geometry, sel("setTriangleCount:"), count);
+            msg!(unsafe extern "C" fn(Id, Sel, bool))(geometry, sel("setOpaque:"), true);
+            let list = send1(super::class("NSArray"), "arrayWithObject:", geometry);
+            send1(descriptor, "setGeometryDescriptors:", list);
+            let sizes = msg!(unsafe extern "C" fn(Id, Sel, Id) -> Sizes)(g.device, sel("accelerationStructureSizesWithDescriptor:"), descriptor);
+            let id = msg!(unsafe extern "C" fn(Id, Sel, usize) -> Id)(g.device, sel("newAccelerationStructureWithSize:"), sizes.structure);
+            if id.is_null() {
+                return Err(format!("the GPU has no room for {} triangles", count));
+            }
+            let shapes = Shapes { id };
+            let scratch = msg!(unsafe extern "C" fn(Id, Sel, usize, usize) -> Id)(g.device, sel("newBufferWithLength:options:"), sizes.build.max(16), PRIVATE);
+            if scratch.is_null() {
+                return Err(format!("the GPU has no room to arrange {} triangles", count));
+            }
+            let scratch = Buffer { id: scratch, len: sizes.build };
+            let commands = send(g.queue, "commandBuffer");
+            let encoder = if commands.is_null() { NIL } else { send(commands, "accelerationStructureCommandEncoder") };
+            if encoder.is_null() {
+                return Err("the GPU took no work".into());
+            }
+            msg!(unsafe extern "C" fn(Id, Sel, Id, Id, Id, usize))(encoder, sel("buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:"), shapes.id, descriptor, scratch.id, 0);
+            send(encoder, "endEncoding");
+            let _turn = Turn::take();
+            send(commands, "commit");
+            wait(commands, &[&vertices, &scratch], &[])?;
+            Ok(Some(shapes))
+        }
+    }
+}
+
+impl Drop for Shapes {
+    fn drop(&mut self) {
+        unsafe { send(self.id, "release") };
+    }
+}
+
+/// Waits for `commands` to finish (not for ever: a GPU that does not answer is given up on, what
+/// it reads and writes kept for it).
+unsafe fn wait(commands: Id, buffers: &[&Buffer], shapes: &[&Shapes]) -> Result<(), String> {
+    unsafe {
+        let start = std::time::Instant::now();
+        while super::integer(commands, "status") < COMPLETED {
+            if start.elapsed() > PATIENCE {
+                for b in buffers {
+                    send(b.id, "retain");
+                }
+                for s in shapes {
+                    send(s.id, "retain");
+                }
+                send(commands, "retain");
+                return Err(format!("the GPU did not answer in {} seconds", PATIENCE.as_secs()));
+            }
+            std::thread::sleep(std::time::Duration::from_micros(150));
+        }
+        if super::integer(commands, "status") != COMPLETED {
+            return Err(format!("the GPU stopped part way: {}", error_text(send(commands, "error"))));
+        }
+        Ok(())
+    }
+}
+
 /// Builds `kernel` now (else it is built the first time it runs), saying why it cannot be.
 pub fn prepare(kernel: &Kernel) -> Result<(), String> {
     gpu().ok_or("there is no GPU to draw with")?.pipeline(kernel).map(|_| ())
@@ -197,15 +339,30 @@ pub fn prepare(kernel: &Kernel) -> Result<(), String> {
 /// Runs `kernel` once for each point of `grid` (across, down), its buffers and bytes given in
 /// the order its parameters take them, and waits for it to end.
 pub fn run(kernel: &Kernel, args: &[Arg], grid: [usize; 2]) -> Result<(), String> {
+    run_each(&[(kernel, args, grid, None)])
+}
+
+/// Runs `steps` one after another as one piece of work (each sees what those before it wrote),
+/// and waits for the last to end.
+pub fn run_steps(steps: &[Step]) -> Result<(), String> {
+    let each: Vec<OneStep> = steps.iter().map(|s| (s.kernel, s.args.as_slice(), s.grid, s.group)).collect();
+    run_each(&each)
+}
+
+/// A kernel, what it takes, its grid and its groups.
+type OneStep<'a> = (&'a Kernel, &'a [Arg<'a>], [usize; 2], Option<[usize; 2]>);
+
+fn run_each(steps: &[OneStep]) -> Result<(), String> {
     let g = gpu().ok_or("there is no GPU to draw with")?;
-    if grid[0] == 0 || grid[1] == 0 {
+    let steps: Vec<_> = steps.iter().filter(|s| s.2[0] > 0 && s.2[1] > 0).collect();
+    if steps.is_empty() {
         return Ok(());
     }
-    let (pipeline, across, down) = g.pipeline(kernel)?;
+    let pipelines = steps.iter().map(|s| g.pipeline(s.0)).collect::<Result<Vec<_>, String>>()?;
     let _pool = Pool::new();
     // bytes too many to hand straight over go in a buffer of their own
     let mut held = Vec::new();
-    for a in args.iter() {
+    for a in steps.iter().flat_map(|s| s.1.iter()) {
         if let Arg::Bytes(b) = a
             && b.len() > INLINE
         {
@@ -218,57 +375,46 @@ pub fn run(kernel: &Kernel, args: &[Arg], grid: [usize; 2]) -> Result<(), String
         if commands.is_null() || encoder.is_null() {
             return Err("the GPU took no work".into());
         }
-        send1(encoder, "setComputePipelineState:", pipeline);
         let mut extra = held.iter();
-        for (i, a) in args.iter().enumerate() {
-            let buffer = |b: &Buffer| msg!(unsafe extern "C" fn(Id, Sel, Id, usize, usize))(encoder, sel("setBuffer:offset:atIndex:"), b.id, 0, i);
-            match a {
-                Arg::Read(b) => buffer(b),
-                Arg::Write(b) => buffer(b),
-                Arg::Bytes(bytes) if bytes.len() > INLINE => buffer(extra.next().expect("held")),
-                Arg::Bytes(bytes) => {
-                    // a parameter is never empty
-                    let pad = [0u8; 16];
-                    let b: &[u8] = if bytes.is_empty() { &pad } else { bytes };
-                    msg!(unsafe extern "C" fn(Id, Sel, *const c_void, usize, usize))(encoder, sel("setBytes:length:atIndex:"), b.as_ptr().cast(), b.len(), i);
+        for (step, (pipeline, across, down)) in steps.iter().zip(&pipelines) {
+            send1(encoder, "setComputePipelineState:", *pipeline);
+            for (i, a) in step.1.iter().enumerate() {
+                let buffer = |b: &Buffer| msg!(unsafe extern "C" fn(Id, Sel, Id, usize, usize))(encoder, sel("setBuffer:offset:atIndex:"), b.id, 0, i);
+                match a {
+                    Arg::Read(b) | Arg::Pass(b) => buffer(b),
+                    Arg::Write(b) => buffer(b),
+                    Arg::Shapes(s) => msg!(unsafe extern "C" fn(Id, Sel, Id, usize))(encoder, sel("setAccelerationStructure:atBufferIndex:"), s.id, i),
+                    Arg::Bytes(bytes) if bytes.len() > INLINE => buffer(extra.next().expect("held")),
+                    Arg::Bytes(bytes) => {
+                        // a parameter is never empty
+                        let pad = [0u8; 16];
+                        let b: &[u8] = if bytes.is_empty() { &pad } else { bytes };
+                        msg!(unsafe extern "C" fn(Id, Sel, *const c_void, usize, usize))(encoder, sel("setBytes:length:atIndex:"), b.as_ptr().cast(), b.len(), i);
+                    }
                 }
             }
+            let whole = Size { width: step.2[0], height: step.2[1], depth: 1 };
+            let [across, down] = step.3.unwrap_or([*across, *down]);
+            let group = Size { width: across, height: down, depth: 1 };
+            msg!(unsafe extern "C" fn(Id, Sel, Size, Size))(encoder, sel("dispatchThreads:threadsPerThreadgroup:"), whole, group);
         }
-        let whole = Size { width: grid[0], height: grid[1], depth: 1 };
-        let group = Size { width: across, height: down, depth: 1 };
-        msg!(unsafe extern "C" fn(Id, Sel, Size, Size))(encoder, sel("dispatchThreads:threadsPerThreadgroup:"), whole, group);
         send(encoder, "endEncoding");
         // a few pieces of work on the GPU at a time (many threads drawing frames would otherwise
         // pile theirs up together), and not waited for for ever: a GPU that does not answer
         // (the computer short of memory) is given up on, and the work is done without it
         let _turn = Turn::take();
         send(commands, "commit");
-        let start = std::time::Instant::now();
-        while super::integer(commands, "status") < COMPLETED {
-            if start.elapsed() > PATIENCE {
-                // it may still finish later: what it reads and writes is kept for it
-                for a in args {
-                    match a {
-                        Arg::Read(b) => {
-                            send(b.id, "retain");
-                        }
-                        Arg::Write(b) => {
-                            send(b.id, "retain");
-                        }
-                        Arg::Bytes(_) => {}
-                    }
-                }
-                for b in &held {
-                    send(b.id, "retain");
-                }
-                send(commands, "retain");
-                return Err(format!("the GPU did not answer in {} seconds", PATIENCE.as_secs()));
+        let mut buffers: Vec<&Buffer> = held.iter().collect();
+        let mut shapes = Vec::new();
+        for a in steps.iter().flat_map(|s| s.1.iter()) {
+            match a {
+                Arg::Read(b) | Arg::Pass(b) => buffers.push(b),
+                Arg::Write(b) => buffers.push(b),
+                Arg::Shapes(s) => shapes.push(*s),
+                Arg::Bytes(_) => {}
             }
-            std::thread::sleep(std::time::Duration::from_micros(150));
         }
-        if super::integer(commands, "status") != COMPLETED {
-            return Err(format!("the GPU stopped part way: {}", error_text(send(commands, "error"))));
-        }
+        wait(commands, &buffers, &shapes)?;
     }
     Ok(())
 }
@@ -329,6 +475,38 @@ mod tests {
             assert_eq!(*v, i as f32 * 2.0 + (i % 4) as f32);
         }
         assert!(name().is_some_and(|n| !n.is_empty()));
+    }
+
+    #[test]
+    fn rays_meet_the_triangles_they_go_through() {
+        if gpu().is_none() || !traces() {
+            eprintln!("no GPU that traces rays here: nothing to test");
+            return;
+        }
+        const CAST: Kernel = Kernel {
+            source: "#include <metal_stdlib>\n#include <metal_raytracing>\nusing namespace metal;\nusing namespace metal::raytracing;\n\
+                     kernel void cast(device float *out [[buffer(0)]], primitive_acceleration_structure shapes [[buffer(1)]], uint2 at [[thread_position_in_grid]]) {\n\
+                         ray r;\n\
+                         r.origin = float3(float(at.x) - 1.5, float(at.y) - 1.5, -5.0);\n\
+                         r.direction = float3(0.0, 0.0, 1.0);\n\
+                         r.min_distance = 0.0;\n\
+                         r.max_distance = 100.0;\n\
+                         intersector<> it;\n\
+                         intersection_result<> h = it.intersect(r, shapes);\n\
+                         out[at.y * 4 + at.x] = h.type == intersection_type::triangle ? h.distance : -1.0;\n\
+                     }",
+            name: "cast",
+        };
+        // a triangle at z = 2, its long side from (1, -1) to (-1, 1)
+        let shapes = Shapes::new(&[[-1.0, -1.0, 2.0], [1.0, -1.0, 2.0], [-1.0, 1.0, 2.0]]).unwrap().expect("a triangle");
+        let mut out = Buffer::new(16 * 4).unwrap();
+        run(&CAST, &[Arg::Write(&mut out), Arg::Shapes(&shapes)], [4, 4]).unwrap();
+        let got = out.slice::<f32>();
+        // (-0.5, -0.5) is inside, 7 away; (1.5, 1.5) and (-1.5, -0.5) are not
+        assert_eq!(got[4 + 1], 7.0);
+        assert_eq!(got[3 * 4 + 3], -1.0);
+        assert_eq!(got[4], -1.0);
+        assert!(Shapes::new(&[]).unwrap().is_none());
     }
 
     #[test]

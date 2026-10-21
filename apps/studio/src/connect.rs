@@ -346,8 +346,8 @@ impl Connect {
             canvas.fill_faded(&fill, PAPER, a);
             canvas.stroke(&[(px(cx - POINT), px(top)), (px(cx), px(top - POINT)), (px(cx + POINT), px(top))], false, crate::iso::STROKE * scale, EDGE, a);
         }
-        canvas.fill_faded(&Label::new(f.title.clone(), 14.0, "Connect an AI").path(x + PAD, y + 30.0, 1.0, scale), INK, a);
-        canvas.fill_faded(&Label::new(f.body.clone(), 12.0, "Let an AI app make videos with you in Veymelo.").path(x + PAD, y + 48.0, 1.0, scale), GREY, a);
+        Label::new(f.title.clone(), 14.0, "Connect an AI").draw(canvas, x + PAD, y + 30.0, 1.0, scale, INK, a);
+        Label::new(f.body.clone(), 12.0, "Let an AI app make videos with you in Veymelo.").draw(canvas, x + PAD, y + 48.0, 1.0, scale, GREY, a);
         // the tabs: the one shown in ink, underlined, on a hairline across
         canvas.fill_faded(&Path::rounded(px(x + PAD), px(y + 88.5), px(w - 2.0 * PAD), px(crate::iso::STROKE), 0.0), RULE, a);
         for (i, name) in TABS.iter().enumerate() {
@@ -355,7 +355,7 @@ impl Connect {
             let l = Label::new(f.tab.clone(), 12.5, name);
             let near = self.pointer.is_some_and(|p| button::inside(parts.tabs[i], p));
             let ink = if i == self.tab { INK } else if near { GREY.mix(INK, 0.5) } else { GREY };
-            canvas.fill_faded(&l.path(rx + 6.0, y + 81.0, 1.0, scale), ink, a);
+            l.draw(canvas, rx + 6.0, y + 81.0, 1.0, scale, ink, a);
             if i == self.tab {
                 canvas.fill_faded(&Path::rounded(px(rx + 6.0), px(y + 87.6), px(rw - 12.0), px(1.4), 0.0), INK, a);
             }
@@ -382,13 +382,13 @@ impl Connect {
                     sx += 15.0;
                 }
                 let l = crate::workspace::fit(&f.body, 12.0, word, x + w - PAD - sx);
-                canvas.fill_faded(&l.path(sx, by + dy + bh / 2.0 + 4.0, 1.0, scale), ink, a);
+                l.draw(canvas, sx, by + dy + bh / 2.0 + 4.0, 1.0, scale, ink, a);
             }
         }
         for (line, base, ink) in &parts.said {
-            canvas.fill_faded(&Label::new(f.body.clone(), 12.0, line).path(x + PAD, base + dy, 1.0, scale), *ink, a);
+            Label::new(f.body.clone(), 12.0, line).draw(canvas, x + PAD, base + dy, 1.0, scale, *ink, a);
         }
-        canvas.fill_faded(&Label::new(f.body.clone(), 12.0, &parts.over.0).path(x + PAD, parts.over.1 + dy, 1.0, scale), GREY, a);
+        Label::new(f.body.clone(), 12.0, &parts.over.0).draw(canvas, x + PAD, parts.over.1 + dy, 1.0, scale, GREY, a);
         // Copy, and the line in its well
         let (cx, cy, cw, ch) = parts.copy;
         let fresh = self.copied.is_some_and(|c| c.0 == self.tab && t - c.1 < 1.8);
@@ -399,7 +399,7 @@ impl Connect {
         canvas.fill_faded(&Path::rounded(px(wx), px(wy + dy), px(ww), px(wh), px(8.0)), WELL, a);
         canvas.stroke(&Path::rounded_points(px(wx), px(wy + dy), px(ww), px(wh), px(8.0)), true, crate::iso::STROKE * scale, RULE, a);
         for (line, base) in &parts.lines {
-            canvas.fill_faded(&Label::new(f.mono.clone(), 11.0, line).path(wx + 12.0, base + dy, 1.0, scale), INK, a);
+            Label::new(f.mono.clone(), 11.0, line).draw(canvas, wx + 12.0, base + dy, 1.0, scale, INK, a);
         }
     }
 }

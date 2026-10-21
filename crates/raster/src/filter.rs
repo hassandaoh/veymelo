@@ -115,6 +115,11 @@ fn bell(sigma: f64) -> Vec<f32> {
     w.iter().map(|v| (v / total) as f32).collect()
 }
 
+#[cfg(test)]
+pub(crate) fn bell_weights(sigma: f64) -> Vec<f32> {
+    bell(sigma)
+}
+
 /// The error function (Abramowitz and Stegun 7.1.26, good to 1.5e-7).
 fn erf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
@@ -142,6 +147,9 @@ fn gauss_line(sigma: f64, edge: Edge) -> Box<LineFn> {
 
 /// The picture blurred by a Gaussian of deviations `sx` across and `sy` down, in pixels.
 pub fn gaussian(img: &Image, sx: f64, sy: f64, edge: Edge) -> Image {
+    if let Some(out) = crate::gpu::gaussian(img, sx, sy, edge, &|sigma| (sigma <= EXACT_MOST).then(|| bell(sigma))) {
+        return out;
+    }
     let mut out = img.clone();
     let rows = (sx > 0.01).then(|| gauss_line(sx, edge));
     let cols = (sy > 0.01).then(|| gauss_line(sy, edge));
@@ -151,6 +159,9 @@ pub fn gaussian(img: &Image, sx: f64, sy: f64, edge: Edge) -> Image {
 
 /// The picture blurred `passes` times by boxes `wx` and `wy` pixels wide.
 pub fn boxes(img: &Image, wx: f64, wy: f64, passes: usize, edge: Edge) -> Image {
+    if let Some(out) = crate::gpu::boxes(img, wx, wy, passes, edge) {
+        return out;
+    }
     let mut out = img.clone();
     let line = |width: f64| -> Box<LineFn> {
         Box::new(move |l: &mut [Px]| {
@@ -172,6 +183,9 @@ pub fn along(img: &Image, dir: (f64, f64), length: f64) -> Image {
         return img.clone();
     }
     let n = (length.ceil() as usize * 2 + 1).clamp(3, 1025);
+    if let Some(out) = crate::gpu::along(img, dir, length, n) {
+        return out;
+    }
     let mut out = Image::new(img.width, img.height);
     let w = img.width;
     par::rows(&mut out.px, w, |y, row| {
@@ -196,6 +210,9 @@ pub fn along(img: &Image, dir: (f64, f64), length: f64) -> Image {
 pub fn round(img: &Image, centre: (f64, f64), amount: f64, zoom: bool) -> Image {
     if amount.abs() < 1e-9 {
         return img.clone();
+    }
+    if let Some(out) = crate::gpu::round(img, centre, amount, zoom) {
+        return out;
     }
     let mut out = Image::new(img.width, img.height);
     let w = img.width;

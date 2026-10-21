@@ -1320,9 +1320,9 @@ impl Workspace {
             if a > 0.0 {
                 let rise = (1.0 - settle((inside - 0.35) / 0.6)) * 4.0;
                 let x = crumb.0 + 12.0;
-                canvas.fill_faded(&tx.slash.path(x, crumb.1 + rise, 1.0, scale), FAINT, a);
+                tx.slash.draw(canvas, x, crumb.1 + rise, 1.0, scale, FAINT, a);
                 let name = Label::new(tx.crumb.clone(), 16.0, &self.name);
-                canvas.fill_faded(&name.path(x + tx.slash.wide + 10.0, crumb.1 + rise, 1.0, scale), INK, a);
+                name.draw(canvas, x + tx.slash.wide + 10.0, crumb.1 + rise, 1.0, scale, INK, a);
                 // what the composition shown is, quietly after it
                 self.pencil = None;
                 self.about_line = None;
@@ -1333,7 +1333,7 @@ impl Workspace {
                         let l = fit(&tx.small, 12.0, &line, room);
                         let pencil = (from + l.wide + 8.0, crumb.1 - 18.0, 26.0, 26.0);
                         let near = self.pointer.is_some_and(|p| button::inside(pencil, p) || button::inside((from, crumb.1 - 16.0, l.wide, 22.0), p)) || self.settings.open;
-                        canvas.fill_faded(&l.path(from, crumb.1 + rise, 1.0, scale), if near { GREY } else { FAINT }, a);
+                        l.draw(canvas, from, crumb.1 + rise, 1.0, scale, if near { GREY } else { FAINT }, a);
                         // the pencil: a round button, its edge darker under the pointer
                         let px = |v: f64| v * scale;
                         let (bx, by, bw, bh) = (pencil.0, pencil.1 + rise, pencil.2, pencil.3);
@@ -1391,7 +1391,7 @@ impl Workspace {
                     let px = |v: f64| v * scale;
                     canvas.shadow(px(x), px(y + 4.0), px(w), px(h), px(h / 2.0), px(12.0), INK, a * 0.12);
                     canvas.fill_faded(&Path::rounded(px(x), px(y), px(w), px(h), px(h / 2.0)), PAPER, a);
-                    canvas.fill_faded(&l.path(x + 14.0, y + h / 2.0 + 4.0, 1.0, scale), colour, a);
+                    l.draw(canvas, x + 14.0, y + h / 2.0 + 4.0, 1.0, scale, colour, a);
                 }
             }
         }
@@ -1418,19 +1418,19 @@ impl Workspace {
         }
         let words = Label::new(tx.status.clone(), 12.0, if here { "AI connected" } else { "AI not connected" });
         let x = cx + 5.0 + 7.0;
-        canvas.fill_faded(&words.path(x, cy + 4.2, 1.0, scale), if here { INK } else { GREY }, a);
+        words.draw(canvas, x, cy + 4.2, 1.0, scale, if here { INK } else { GREY }, a);
         if !here {
             let go = Label::new(tx.status.clone(), 12.0, "Connect");
             let gx = x + words.wide + 8.0;
-            canvas.fill_faded(&go.path(gx, cy + 4.2, 1.0, scale), INK, a);
+            go.draw(canvas, gx, cy + 4.2, 1.0, scale, INK, a);
             canvas.fill_faded(&Path::rounded(px(gx), px(cy + 6.6), px(go.wide), px(0.8), 0.0), INK.mix(PAPER, 0.35 * (1.0 - near)), a);
         }
         // the title's row
         let a = (smooth((age - 0.15) / 0.5) * alpha) as f32;
-        canvas.fill_faded(&tx.title.path(28.0, TITLE_BASE, 1.0, scale), INK, a);
+        tx.title.draw(canvas, 28.0, TITLE_BASE, 1.0, scale, INK, a);
         if !self.cards.is_empty() {
             let n = Label::new(tx.count.clone(), 16.0, &self.cards.len().to_string());
-            canvas.fill_faded(&n.path(28.0 + tx.title.wide + 10.0, TITLE_BASE, 1.0, scale), FAINT, a);
+            n.draw(canvas, 28.0 + tx.title.wide + 10.0, TITLE_BASE, 1.0, scale, FAINT, a);
         }
         let shown = (age - 0.4) / 0.6;
         if shown > 0.0 {
@@ -1465,7 +1465,7 @@ impl Workspace {
                     None => format!("Rendering {}%", (k * 100.0).floor()),
                 };
                 let words = Label::new(tx.pill.clone(), 13.0, &said);
-                canvas.fill_faded(&words.path(x + 18.0, y + h / 2.0 + words.drop(1.0) - 3.0, 1.0, scale), PAPER, af);
+                words.draw(canvas, x + 18.0, y + h / 2.0 + words.drop(1.0) - 3.0, 1.0, scale, PAPER, af);
                 // the cross that stops it, lighter under the pointer
                 let (sx, sy, sw, sh) = self.stop_rect();
                 let near = self.pointer.is_some_and(|p| button::inside((sx, sy, sw, sh), p));
@@ -1511,7 +1511,7 @@ impl Workspace {
             canvas.shadow(px(tx0), px(ty + 2.0), px(tw), px(th), px(8.0), px(10.0), INK, a * 0.14);
             canvas.fill_faded(&Path::rounded(px(tx0), px(ty), px(tw), px(th), px(8.0)), PAPER, a);
             canvas.stroke(&Path::rounded_points(px(tx0), px(ty), px(tw), px(th), px(8.0)), true, iso::STROKE * scale, CREASE, a);
-            canvas.fill_faded(&l.path(tx0 + 10.0, ty + 16.0, 1.0, scale), INK, a);
+            l.draw(canvas, tx0 + 10.0, ty + 16.0, 1.0, scale, INK, a);
         }
     }
 
@@ -1530,7 +1530,7 @@ impl Workspace {
         canvas.fill_faded(&Path::rounded(px(x), px(y), px(w), px(h), px(h / 2.0)), PAPER, alpha);
         canvas.stroke(&Path::rounded_points(px(x), px(y), px(w), px(h), px(h / 2.0)), true, iso::STROKE * scale, EDGE, alpha);
         pen_dot(canvas, scale, t, (x + 16.0, cy), 7.0, alpha);
-        canvas.fill_faded(&words.path(x + 26.0, cy + 4.0, 1.0, scale), INK, alpha);
+        words.draw(canvas, x + 26.0, cy + 4.0, 1.0, scale, INK, alpha);
         x
     }
 
@@ -1559,10 +1559,10 @@ impl Workspace {
         let words = smooth((age - 0.35) / 0.4) * alpha;
         if words > 0.0 {
             let rise = (1.0 - settle((age - 0.35) / 0.6)) * 10.0;
-            canvas.fill_faded(&tx.words.path((size.0 - tx.words.wide) / 2.0, at.words_baseline + rise, 1.0, scale), GREY, words as f32);
+            tx.words.draw(canvas, (size.0 - tx.words.wide) / 2.0, at.words_baseline + rise, 1.0, scale, GREY, words as f32);
             if !self.lying() {
                 let hint = Label::new(tx.small.clone(), 12.0, "Make one with New project, or ask the AI to.");
-                canvas.fill_faded(&hint.path((size.0 - hint.wide) / 2.0, at.words_baseline + 24.0 + rise, 1.0, scale), FAINT, words as f32);
+                hint.draw(canvas, (size.0 - hint.wide) / 2.0, at.words_baseline + 24.0 + rise, 1.0, scale, FAINT, words as f32);
             }
         }
         // no AI yet: connecting one is the first thing to do
@@ -1587,7 +1587,7 @@ impl Workspace {
             let z = lift * CARD_LIFT + (1.0 - settle(p)) * 20.0;
             iso::ghost(canvas, scale, (x + w / 2.0, y + 78.0), z, &CARD_PLATE, PAPER, EDGE.mix(LIT, lift.min(1.0)), 4.0, 14.0, a);
             let ink = FAINT.mix(INK, lift.min(1.0));
-            canvas.fill_faded(&tx.ghost.path(x + (w - tx.ghost.wide) / 2.0, y + h - 46.0, 1.0, scale), ink, a);
+            tx.ghost.draw(canvas, x + (w - tx.ghost.wide) / 2.0, y + h - 46.0, 1.0, scale, ink, a);
         }
         for (i, c) in self.cards.iter().enumerate() {
             let (x, y, w, h) = card_rect(at, i);
@@ -1612,22 +1612,22 @@ impl Workspace {
                 iso::picture(canvas, scale, origin, z, &CARD_PLATE, 7.0, th.w as f64 / th.h.max(1) as f64, &|x, y| th.at(x, y), EDGE, a * k);
             }
             let name = fit(&tx.name, 14.0, &c.entry.name, w - 16.0);
-            canvas.fill_faded(&name.path(x + (w - name.wide) / 2.0, y + h - 46.0, 1.0, scale), INK, a);
+            name.draw(canvas, x + (w - name.wide) / 2.0, y + h - 46.0, 1.0, scale, INK, a);
             if let Some(r) = rendering {
                 // a render: a pen going round the plate, as far as it has come
                 iso::trace(canvas, scale, origin, z, &CARD_PLATE, r.fraction(), INK, 1.4, PEN, 6.0, a);
                 let words = Label::new(tx.small.clone(), 12.0, &render_words(r));
-                canvas.fill_faded(&words.path(x + (w - words.wide) / 2.0, y + h - 25.0, 1.0, scale), INK, a);
+                words.draw(canvas, x + (w - words.wide) / 2.0, y + h - 25.0, 1.0, scale, INK, a);
             } else if working(&c.entry.file) {
                 let words = Label::new(tx.small.clone(), 12.0, "AI is working");
                 let x0 = x + (w - words.wide - 12.0) / 2.0;
                 pen_dot(canvas, scale, t, (x0 + 3.5, y + h - 29.0), 7.0, a);
-                canvas.fill_faded(&words.path(x0 + 12.0, y + h - 25.0, 1.0, scale), GREY, a);
+                words.draw(canvas, x0 + 12.0, y + h - 25.0, 1.0, scale, GREY, a);
             } else {
                 // when it last changed, and how long it is
                 let long = thumb.as_ref().filter(|th| th.duration > 0.0).map(|th| format!("  ·  {}", length(th.duration))).unwrap_or_default();
                 let when = Label::new(tx.small.clone(), 12.0, &format!("{}{long}", ago(c.entry.modified)));
-                canvas.fill_faded(&when.path(x + (w - when.wide) / 2.0, y + h - 25.0, 1.0, scale), FAINT, a);
+                when.draw(canvas, x + (w - when.wide) / 2.0, y + h - 25.0, 1.0, scale, FAINT, a);
             }
             // the bin, at the corner of the plate under the pointer
             if lift > 0.05 {

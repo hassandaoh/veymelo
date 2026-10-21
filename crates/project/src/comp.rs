@@ -31,6 +31,24 @@ impl Default for MotionBlur {
     }
 }
 
+/// How light bounces in its 3D scenes (global illumination): what falls on a surface lights
+/// what is round it, `amount` of it (0: none, 1: all), going on from surface to surface
+/// `bounces` times.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bounce {
+    pub amount: f64,
+    pub bounces: u32,
+}
+
+impl Default for Bounce {
+    fn default() -> Bounce {
+        Bounce { amount: 0.0, bounces: 2 }
+    }
+}
+
+/// The most times light bounces.
+pub const MOST_BOUNCES: u32 = 4;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comp {
     pub width: u32,
@@ -56,6 +74,8 @@ pub struct Comp {
     pub enable_motion_blur: bool,
     pub enable_frame_blending: bool,
     pub draft_3d: bool,
+    /// How light bounces in its 3D scenes.
+    pub bounce: Bounce,
     /// What it opens to the layers that show it.
     pub essentials: crate::essential::Essentials,
 }
@@ -145,6 +165,7 @@ impl Comp {
             enable_motion_blur: true,
             enable_frame_blending: true,
             draft_3d: false,
+            bounce: Bounce::default(),
         }
     }
 
@@ -191,6 +212,9 @@ impl Comp {
             let m = &self.motion_blur;
             o.insert("motionBlur", Json::object([("angle", m.angle), ("phase", m.phase), ("samples", m.samples as f64), ("adaptiveLimit", m.adaptive_limit as f64)]));
         }
+        if self.bounce != Bounce::default() {
+            o.insert("lightBounce", Json::object([("amount", self.bounce.amount), ("bounces", self.bounce.bounces as f64)]));
+        }
         for (key, on, default) in [("hideShy", self.hide_shy, false), ("enableMotionBlur", self.enable_motion_blur, true), ("enableFrameBlending", self.enable_frame_blending, true), ("draft3d", self.draft_3d, false)] {
             if on != default {
                 o.insert(key, on);
@@ -205,8 +229,8 @@ impl Comp {
         o.insert("layers", Json::array(self.layers.iter().map(Layer::to_json)));
     }
 
-    pub(crate) const FIELDS: [&'static str; 16] =
-        ["width", "height", "pixelAspect", "fps", "duration", "start", "background", "workArea", "posterTime", "motionBlur", "hideShy", "enableMotionBlur", "enableFrameBlending", "draft3d", "essentials", "layers"];
+    pub(crate) const FIELDS: [&'static str; 17] =
+        ["width", "height", "pixelAspect", "fps", "duration", "start", "background", "workArea", "posterTime", "motionBlur", "lightBounce", "hideShy", "enableMotionBlur", "enableFrameBlending", "draft3d", "essentials", "layers"];
 
     /// A composition from the object of its item (whose other fields are the item's).
     pub(crate) fn read(o: &Obj, catalog: &Catalog) -> Result<Comp, LoadError> {
@@ -253,6 +277,16 @@ impl Comp {
             };
             if !(0.0..=720.0).contains(&c.motion_blur.angle) || !(-360.0..=360.0).contains(&c.motion_blur.phase) {
                 return fail(&at, "the shutter angle is 0 to 720 degrees and its phase -360 to 360");
+            }
+        }
+        if let Some(b) = o.get("lightBounce") {
+            let at = o.at("lightBounce");
+            let b = Obj::new(b, &at, "light bounce")?;
+            b.only(&["amount", "bounces"])?;
+            let d = Bounce::default();
+            c.bounce = Bounce { amount: b.num_or("amount", d.amount)?, bounces: b.whole("bounces", 1, MOST_BOUNCES as u64)?.map_or(d.bounces, |v| v as u32) };
+            if !(0.0..=4.0).contains(&c.bounce.amount) {
+                return fail(&at, "how much light bounces is 0 to 4 (1: all of it)");
             }
         }
         c.hide_shy = o.flag("hideShy", false)?;

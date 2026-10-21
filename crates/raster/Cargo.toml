@@ -8,3 +8,4 @@ edition.workspace = true
 veymelo-path.workspace = true
 veymelo-color.workspace = true
 veymelo-geom.workspace = true
+veymelo-os.workspace = true

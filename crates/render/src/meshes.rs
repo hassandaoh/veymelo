@@ -69,7 +69,7 @@ impl Shot {
 }
 
 /// A vertex as placed: in the camera's space, in the world, its normal and tangent in the
-/// world, its texture points and colour.
+/// world, its texture points and colour, and the light bouncing onto it.
 #[derive(Clone, Copy, Debug)]
 struct Vertex {
     cam: Vec3,
@@ -78,6 +78,7 @@ struct Vertex {
     tangent: [f64; 4],
     uv: [[f64; 2]; 2],
     color: [f32; 4],
+    bounce: [f32; 3],
 }
 
 impl Vertex {
@@ -91,6 +92,7 @@ impl Vertex {
             tangent: std::array::from_fn(|i| l(a.tangent[i], b.tangent[i])),
             uv: std::array::from_fn(|s| [l(a.uv[s][0], b.uv[s][0]), l(a.uv[s][1], b.uv[s][1])]),
             color: std::array::from_fn(|i| a.color[i] + (b.color[i] - a.color[i]) * t as f32),
+            bounce: std::array::from_fn(|i| a.bounce[i] + (b.bounce[i] - a.bounce[i]) * t as f32),
         }
     }
 }
@@ -103,10 +105,35 @@ struct Tri {
     material: Option<usize>,
 }
 
+/// A model's triangles to fill: the corners placed (each on the canvas too, and 1 / its depth),
+/// and each triangle's three, and its material.
+struct Placed {
+    verts: Vec<Vertex>,
+    screen: Vec<[f64; 2]>,
+    inv_z: Vec<f64>,
+    tris: Vec<([u32; 3], Option<usize>)>,
+}
+
+impl Placed {
+    fn tri(&self, i: usize) -> Tri {
+        let (c, material) = self.tris[i];
+        let c = c.map(|k| k as usize);
+        Tri { v: c.map(|k| self.verts[k]), screen: c.map(|k| self.screen[k]), inv_z: c.map(|k| self.inv_z[k]), material }
+    }
+}
+
+/// What a surface at world point `q` facing `n` mirrors seen from `viewer`, as sharply as it
+/// says (`Look::mirror`).
+pub(crate) type Mirror<'a> = &'a (dyn Fn(Vec3, Vec3, Vec3, f32, [f32; 3]) -> [f32; 3] + Sync);
+
+/// What is seen through glass at world point `q` on a surface facing `n` from `viewer`
+/// (`Look::through`).
+pub(crate) type Through<'a> = &'a (dyn Fn(Vec3, Vec3, Vec3, f32) -> Option<[f32; 3]> + Sync);
+
 /// What a model is drawn with.
 pub(crate) struct Look<'a> {
-    pub model: &'a Model,
-    pub pose: Pose,
+    pub model: &'a Arc<Model>,
+    pub pose: &'a Pose,
     /// From the model's units to the world.
     pub place: Mat4,
     pub cam: &'a Camera,
@@ -123,6 +150,29 @@ pub(crate) struct Look<'a> {
     pub linear: bool,
     /// The environment lighting the scene, if one does.
     pub env: Option<&'a crate::scene::Environment>,
+    /// Whether a shadow can fall on it (else `unshadowed` lets every light through).
+    pub shadowed: bool,
+    /// What casts shadows, as the GPU reads it.
+    pub shadows: Option<&'a crate::gpu::Shadows>,
+    /// How much of the sky round world point `q` (on a surface facing `n`) is open, as far as
+    /// the ambient occlusion looks (none: no light occludes), and how far that is.
+    pub open: Option<&'a (dyn Fn(Vec3, Vec3) -> f32 + Sync)>,
+    pub reach: Option<f64>,
+    /// What a surface at world point `q` facing `n` mirrors seen from `viewer`, as sharply as
+    /// it says, `none` where it meets nothing (none: nothing mirrors).
+    pub mirror: Option<Mirror<'a>>,
+    /// The light bouncing onto each of its vertices (in `probes`' order), and how much of it
+    /// is taken (none: light does not bounce).
+    pub bounce: Option<(&'a [[f32; 3]], f32)>,
+    /// The light bouncing onto every point it was gathered at in the scene, and how much of it
+    /// surfaces take (for what is seen in mirrors and through glass).
+    pub scene_light: (&'a [[f32; 3]], f32),
+    /// What is seen through it at world point `q` on a surface facing `n` from `viewer`, light
+    /// bending by index of refraction `ior` going into it and out again: none where nothing is
+    /// met past it (and there is no environment), or nothing can be seen through.
+    pub through: Option<Through<'a>>,
+    /// Drawn on the GPU where it can be.
+    pub gpu: bool,
 }
 
 /// A 3D model layer's model posed at composition time `when` (its animation by its settings),
@@ -283,6 +333,7 @@ fn parts(model: &Model, pose: &Pose, place: &Mat4, view: &Mat4) -> Vec<Part> {
                         tangent: [tangent.x, tangent.y, tangent.z, tan[3] as f64 * if flip { -1.0 } else { 1.0 }],
                         uv: std::array::from_fn(|s| prim.uvs[s].get(i).map_or([0.0; 2], |u| [u[0] as f64, u[1] as f64])),
                         color: prim.colors.get(i).copied().unwrap_or([1.0; 4]),
+                        bounce: [0.0; 3],
                     }
                 })
                 .collect();
@@ -295,7 +346,7 @@ fn parts(model: &Model, pose: &Pose, place: &Mat4, view: &Mat4) -> Vec<Part> {
 }
 
 /// The model's vertices posed and placed, as triangles to fill on the canvas.
-fn triangles(look: &Look) -> Vec<Tri> {
+fn triangles(look: &Look) -> Placed {
     let lens = &look.onto.0;
     let project = |c: Vec3| -> [f64; 2] {
         let x = lens[0][0] * c.x + lens[0][1] * c.y + lens[0][2] * c.z;
@@ -303,30 +354,44 @@ fn triangles(look: &Look) -> Vec<Tri> {
         let w = lens[2][0] * c.x + lens[2][1] * c.y + lens[2][2] * c.z;
         [x / w, y / w]
     };
-    let mut out = Vec::new();
-    for part in parts(look.model, &look.pose, &look.place, &look.cam.view) {
+    let mut out = Placed { verts: Vec::new(), screen: Vec::new(), inv_z: Vec::new(), tris: Vec::new() };
+    let add = |out: &mut Placed, v: Vertex| -> u32 {
+        out.screen.push(project(v.cam));
+        out.inv_z.push(1.0 / v.cam.z);
+        out.verts.push(v);
+        (out.verts.len() - 1) as u32
+    };
+    let mut probe = 0;
+    for part in parts(look.model, look.pose, &look.place, &look.cam.view) {
+        let first = out.verts.len() as u32;
+        for v in &part.verts {
+            let bounce = look.bounce.and_then(|(light, _)| light.get(probe).copied()).unwrap_or([0.0; 3]);
+            add(&mut out, Vertex { bounce, ..*v });
+            probe += 1;
+        }
         for t in &part.corners {
-            let corners = [part.verts[t[0] as usize], part.verts[t[1] as usize], part.verts[t[2] as usize]];
+            let t = t.map(|k| first + k);
+            let corners = t.map(|k| out.verts[k as usize]);
             // facing away (seen from behind): left out unless shown from both sides
             let (a, b, c) = (corners[0].cam, corners[1].cam, corners[2].cam);
             if !part.both && (b - a).cross(c - a).dot(a) >= 0.0 {
                 continue;
             }
             // cut where it comes nearer than the camera sees
-            let mut poly: Vec<Vertex> = Vec::with_capacity(4);
+            let mut poly: Vec<u32> = Vec::with_capacity(4);
             for k in 0..3 {
                 let (p, q) = (&corners[k], &corners[(k + 1) % 3]);
                 let (pin, qin) = (p.cam.z >= NEAR, q.cam.z >= NEAR);
                 if pin {
-                    poly.push(*p);
+                    poly.push(t[k]);
                 }
                 if pin != qin {
-                    poly.push(Vertex::mix(p, q, (NEAR - p.cam.z) / (q.cam.z - p.cam.z)));
+                    let cut = add(&mut out, Vertex::mix(p, q, (NEAR - p.cam.z) / (q.cam.z - p.cam.z)));
+                    poly.push(cut);
                 }
             }
             for k in 1..poly.len().saturating_sub(1) {
-                let v = [poly[0], poly[k], poly[k + 1]];
-                out.push(Tri { screen: v.map(|x| project(x.cam)), inv_z: v.map(|x| 1.0 / x.cam.z), v, material: part.material });
+                out.tris.push(([poly[0], poly[k], poly[k + 1]], part.material));
             }
         }
     }
@@ -336,17 +401,18 @@ fn triangles(look: &Look) -> Vec<Tri> {
 /// A model's triangles in the world, arranged in a tree of boxes so a ray finds those it may
 /// meet quickly: what a model's shadow is found from.
 pub(crate) struct Caster {
-    tris: Vec<[Vec3; 3]>,
+    /// Each triangle, and which it is in the model's order (`corners`, `faces`).
+    tris: Vec<([Vec3; 3], u32)>,
     /// Boxes: lowest and highest corners, and either the two below (`count` 0) or the run of
     /// triangles from `first`.
     nodes: Vec<(Vec3, Vec3, u32, u32, u32)>,
 }
 
 /// The box round triangles `ts`.
-fn boxed(ts: &[[Vec3; 3]]) -> (Vec3, Vec3) {
+fn boxed(ts: &[([Vec3; 3], u32)]) -> (Vec3, Vec3) {
     let mut lo = vec3(f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let mut hi = vec3(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for t in ts {
+    for (t, _) in ts {
         for p in t {
             lo = vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
             hi = vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
@@ -355,10 +421,72 @@ fn boxed(ts: &[[Vec3; 3]]) -> (Vec3, Vec3) {
     (lo, hi)
 }
 
+/// The model posed (`pose`) and placed by `place`: its triangles in the world, three corners
+/// each (both sides of every triangle cast, as a `Caster`'s).
+pub(crate) fn corners(model: &Model, pose: &Pose, place: &Mat4) -> Vec<[f32; 3]> {
+    let f = |v: Vec3| [v.x as f32, v.y as f32, v.z as f32];
+    parts(model, pose, place, &Mat4::IDENTITY).iter().flat_map(|p| p.corners.iter().flat_map(|t| t.map(|k| f(p.verts[k as usize].world)))).collect()
+}
+
+/// A triangle of a model as a reflection sees it: its corners' normals (in the world; and the
+/// layer's ambient, diffuse and whether it takes light, in their w) and colours (in the working
+/// space, its picture's at each corner; and how much its layer mirrors and how much less face
+/// on, in the first two's w), the light it gives off, and the points the light bouncing onto
+/// its corners was gathered at (`u32::MAX`: none).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Face {
+    pub normals: [[f32; 4]; 3],
+    pub colours: [[f32; 4]; 3],
+    pub glow: [f32; 4],
+    pub probes: [u32; 4],
+}
+
+/// The model posed (`pose`) and placed by `place`: each of its vertices (in `parts`' order, as
+/// `triangles` takes them), where it is and which way it faces in the world.
+pub(crate) fn probes(model: &Model, pose: &Pose, place: &Mat4) -> Vec<(Vec3, Vec3)> {
+    parts(model, pose, place, &Mat4::IDENTITY).iter().flat_map(|p| p.verts.iter().map(|v| (v.world, v.normal)).collect::<Vec<_>>()).collect()
+}
+
+/// The model posed (`pose`) and placed by `place`, as a reflection sees each of its triangles (in
+/// `corners`' order), its layer taking light as `m` says, colours worked in linear light (else
+/// as they are seen); its vertices' light gathered at the points from `first_probe` (`probes`'
+/// order), if it was.
+pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, linear: bool, first_probe: Option<usize>) -> Vec<Face> {
+    let to_work = |c: f32| if linear { c } else { linear_to_srgb(c.max(0.0) as f64) as f32 };
+    let pic_to_work = |c: f32| if linear { srgb_to_linear(c.max(0.0) as f64) as f32 } else { c };
+    let fallback = veymelo_model::Material::default();
+    let mut out = Vec::new();
+    let mut part_first = 0;
+    for p in parts(model, pose, place, &Mat4::IDENTITY) {
+        let mat = p.material.and_then(|i| model.materials.get(i)).unwrap_or(&fallback);
+        for t in &p.corners {
+            let corner = |k: u32| p.verts[k as usize];
+            let normals = [0, 1, 2].map(|i| {
+                let n = corner(t[i]).normal;
+                [n.x as f32, n.y as f32, n.z as f32, [m.ambient, m.diffuse, m.lit as u32 as f32][i]]
+            });
+            let colours = [0, 1, 2].map(|i| {
+                let v = corner(t[i]);
+                let pic = sample(model, mat.base_map, &v.uv).unwrap_or([1.0; 4]);
+                let c: [f32; 3] = std::array::from_fn(|k| to_work(mat.base[k] * v.color[k]) * pic_to_work(pic[k]));
+                [c[0], c[1], c[2], [m.reflection, m.rolloff, 0.0][i]]
+            });
+            let probes = [0, 1, 2, 3].map(|i| match first_probe {
+                Some(f) if i < 3 => (f + part_first + t[i] as usize) as u32,
+                _ => u32::MAX,
+            });
+            out.push(Face { normals, colours, glow: [to_work(mat.emissive[0]), to_work(mat.emissive[1]), to_work(mat.emissive[2]), 0.0], probes });
+        }
+        part_first += p.verts.len();
+    }
+    out
+}
+
 impl Caster {
     /// The model posed and placed so (both sides of every triangle cast).
     pub fn new(model: &Model, pose: &Pose, place: &Mat4) -> Caster {
-        let mut tris: Vec<[Vec3; 3]> = parts(model, pose, place, &Mat4::IDENTITY).iter().flat_map(|p| p.corners.iter().map(|t| [p.verts[t[0] as usize].world, p.verts[t[1] as usize].world, p.verts[t[2] as usize].world]).collect::<Vec<_>>()).collect();
+        let mut tris: Vec<([Vec3; 3], u32)> = parts(model, pose, place, &Mat4::IDENTITY).iter().flat_map(|p| p.corners.iter().map(|t| [p.verts[t[0] as usize].world, p.verts[t[1] as usize].world, p.verts[t[2] as usize].world]).collect::<Vec<_>>()).enumerate().map(|(i, t)| (t, i as u32)).collect();
         let mut nodes = Vec::new();
         let n = tris.len();
         Caster::split(&mut tris, 0, n, &mut nodes);
@@ -366,7 +494,7 @@ impl Caster {
     }
 
     /// Boxes for triangles `first..first + count` (sorted in place), returning the top one's index.
-    fn split(tris: &mut [[Vec3; 3]], first: usize, count: usize, nodes: &mut Vec<(Vec3, Vec3, u32, u32, u32)>) -> u32 {
+    fn split(tris: &mut [([Vec3; 3], u32)], first: usize, count: usize, nodes: &mut Vec<(Vec3, Vec3, u32, u32, u32)>) -> u32 {
         let (lo, hi) = boxed(&tris[first..first + count]);
         let at = nodes.len() as u32;
         if count <= 4 {
@@ -377,7 +505,7 @@ impl Caster {
         // halved along the box's longest side, by the triangles' middles
         let size = hi - lo;
         let axis = if size.x >= size.y && size.x >= size.z { 0 } else if size.y >= size.z { 1 } else { 2 };
-        let key = |t: &[Vec3; 3]| {
+        let key = |(t, _): &([Vec3; 3], u32)| {
             let c = t[0] + t[1] + t[2];
             [c.x, c.y, c.z][axis]
         };
@@ -391,9 +519,22 @@ impl Caster {
 
     /// Whether the ray from `from` along unit `dir` meets a triangle between `near` and `far`.
     pub fn blocks(&self, from: Vec3, dir: Vec3, near: f64, far: f64) -> bool {
+        self.walk(from, dir, near, far, true).is_some()
+    }
+
+    /// The nearest triangle the ray from `from` along unit `dir` meets between `near` and
+    /// `far`: how far, which (in the model's order), and where on it (its second and third
+    /// corners' weights).
+    pub fn nearest(&self, from: Vec3, dir: Vec3, near: f64, far: f64) -> Option<(f64, u32, f64, f64)> {
+        self.walk(from, dir, near, far, false)
+    }
+
+    /// The triangles the ray meets: the first found (`any`), else the nearest.
+    fn walk(&self, from: Vec3, dir: Vec3, near: f64, mut far: f64, any: bool) -> Option<(f64, u32, f64, f64)> {
         if self.nodes.is_empty() {
-            return false;
+            return None;
         }
+        let mut best = None;
         let inv = vec3(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
         let mut stack = vec![0u32];
         while let Some(i) = stack.pop() {
@@ -415,7 +556,7 @@ impl Caster {
                 stack.extend([a, b]);
                 continue;
             }
-            for t in &self.tris[b as usize..(b + count) as usize] {
+            for (t, which) in &self.tris[b as usize..(b + count) as usize] {
                 // Möller–Trumbore
                 let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
                 let p = dir.cross(e2);
@@ -435,11 +576,15 @@ impl Caster {
                 }
                 let d = e2.dot(q) / det;
                 if d > near && d < far {
-                    return true;
+                    best = Some((d, *which, u, v));
+                    if any {
+                        return best;
+                    }
+                    far = d;
                 }
             }
         }
-        false
+        best
     }
 }
 
@@ -506,13 +651,48 @@ fn shade(look: &Look, tri: &Tri, b: [f64; 3]) -> Px {
     mat.shininess = (1.0 - rough).clamp(0.0, 1.0);
     mat.metal = metal;
     let viewer = (look.cam.eye - world).normalize();
-    let (mut lit, _) = if look.lights.is_empty() && look.env.is_some() { ([0.0; 3], 0.0) } else { crate::scene::shade(rgb, world, n, viewer, &mat, look.lights, look.unshadowed) };
+    // how open the sky round it is (on the side it is seen from)
+    let open = match look.open {
+        Some(f) if look.material.lit && look.material.accepts != 0 => f(world, if n.dot(viewer) < 0.0 { -n } else { n }),
+        _ => 1.0,
+    };
+    // (lit by an environment alone: none but its light; one that takes no light is as it is)
+    let (mut lit, _) = if look.lights.is_empty() && look.env.is_some() && look.material.lit { ([0.0; 3], 0.0) } else { crate::scene::shade(rgb, world, n, viewer, &mat, look.lights, look.unshadowed, open) };
     // the environment's light, as its metal and roughness take it
     if let Some(env) = look.env.filter(|_| look.material.lit) {
-        let add = env.light(rgb, n, viewer, metal, rough, look.material.diffuse * 2.0, look.material.specular * 2.0, occlusion);
+        let kept = 1.0 - env.occlusion * (1.0 - open);
+        let add = env.light(rgb, n, viewer, metal, rough, look.material.diffuse * 2.0, look.material.specular * 2.0, occlusion * kept);
         (0..3).for_each(|k| lit[k] += add[k]);
     }
-    let c = [lit[0] + emissive[0], lit[1] + emissive[1], lit[2] + emissive[2]];
+    // the light bouncing onto it from the surfaces round it
+    if let Some((_, amount)) = look.bounce.filter(|_| look.material.lit) {
+        let e: [f32; 3] = std::array::from_fn(|c| tri.v.iter().zip(b).map(|(v, w)| v.bounce[c] * w as f32).sum());
+        let k = mat.diffuse * 2.0 * amount;
+        (0..3).for_each(|c| lit[c] += rgb[c] * k * e[c]);
+    }
+    let mut c = [lit[0] + emissive[0], lit[1] + emissive[1], lit[2] + emissive[2]];
+    // what it mirrors, mixed in
+    if let Some(mirror) = look.mirror.filter(|_| look.material.reflection > 0.0) {
+        let facing = if n.dot(viewer) < 0.0 { -n } else { n };
+        let r = look.material.mirrors(facing, viewer);
+        if r > 0.0 {
+            let seen = mirror(world, facing, viewer, look.material.sharpness, c);
+            c = std::array::from_fn(|k| c[k] * (1.0 - r) + seen[k] * r);
+        }
+    }
+    // seen through, as glass: what is behind it bent and tinted by it (nothing met past it: what
+    // is under it shows through)
+    let mut alpha = alpha;
+    if let Some(through) = look.through.filter(|_| look.material.transparency > 0.0) {
+        let facing = if n.dot(viewer) < 0.0 { -n } else { n };
+        let t = look.material.clear(facing, viewer);
+        if t > 0.0 {
+            match through(world, facing, viewer, look.material.ior) {
+                Some(seen) => c = std::array::from_fn(|k| c[k] * (1.0 - t) + seen[k] * rgb[k] * t),
+                None => alpha *= 1.0 - t,
+            }
+        }
+    }
     [c[0] * alpha, c[1] * alpha, c[2] * alpha, alpha]
 }
 
@@ -521,14 +701,15 @@ const BAND: usize = 32;
 
 /// The model drawn as `look` says.
 pub(crate) fn shoot(look: &Look) -> Option<Shot> {
-    let tris = triangles(look);
-    if tris.is_empty() {
+    let placed = triangles(look);
+    if placed.tris.is_empty() {
         return None;
     }
     // the canvas pixels the triangles reach
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for t in &tris {
-        for p in &t.screen {
+    for (c, _) in &placed.tris {
+        for &k in c {
+            let p = placed.screen[k as usize];
             (x0, y0, x1, y1) = (x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1]));
         }
     }
@@ -537,6 +718,21 @@ pub(crate) fn shoot(look: &Look) -> Option<Shot> {
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
+    // on the GPU when it can (when it can find the shadows falling on it)
+    if look.gpu && ((!look.shadowed && look.reach.is_none() && look.material.reflection <= 0.0 && look.bounce.is_none() && look.material.transparency <= 0.0) || look.shadows.is_some()) && !crate::gpu::given_up() {
+        match fill_gpu(look, &placed, [x0, y0, x1, y1]) {
+            Ok(Some(shot)) => return Some(shot),
+            Ok(None) => {}
+            Err(e) => crate::gpu::failed(&e),
+        }
+    }
+    let tris: Vec<Tri> = (0..placed.tris.len()).map(|i| placed.tri(i)).collect();
+    fill(look, tris, [x0, y0, x1, y1])
+}
+
+/// Triangles `tris` filled on the processor, on canvas pixels `area` (x0, y0, x1, y1).
+fn fill(look: &Look, tris: Vec<Tri>, area: [usize; 4]) -> Option<Shot> {
+    let [x0, y0, x1, y1] = area;
     let (w, h) = (x1 - x0, y1 - y0);
     // each band of rows: the triangles that reach it
     let bands = h.div_ceil(BAND);
@@ -645,6 +841,232 @@ pub(crate) fn shoot(look: &Look) -> Option<Shot> {
     Some(Shot { x0, y0, w, h, px, facts })
 }
 
+/// A model's pictures as the GPU reads them: their texels one after another, and where each is.
+struct Pictures {
+    texels: veymelo_os::gpu::Buffer,
+    pics: Vec<crate::gpu::Pic>,
+}
+
+/// The models whose pictures are on the GPU (each put there once), the most recently used last.
+static PICTURES: std::sync::Mutex<Vec<(Arc<Model>, Arc<Pictures>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The most bytes of pictures, and the most models' pictures, kept on the GPU.
+const MOST_PICTURES: (usize, usize) = (1 << 30, 64);
+
+/// Model `model`'s pictures on the GPU: none when they are too many to put there.
+fn pictures(model: &Arc<Model>) -> Result<Option<Arc<Pictures>>, String> {
+    let total: usize = model.textures.iter().map(|t| t.px.len()).sum();
+    if total * 16 > 1 << 31 {
+        return Ok(None);
+    }
+    let mut kept = PICTURES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = kept.iter().position(|(m, _)| Arc::ptr_eq(m, model)) {
+        let entry = kept.remove(i);
+        let p = entry.1.clone();
+        kept.push(entry);
+        return Ok(Some(p));
+    }
+    let mut texels = veymelo_os::gpu::Buffer::new(total * 16)?;
+    let mut pics = Vec::with_capacity(model.textures.len());
+    {
+        let out = texels.slice_mut::<[f32; 4]>();
+        let wrap = |w: veymelo_model::Wrap| match w {
+            veymelo_model::Wrap::Repeat => 0u32,
+            veymelo_model::Wrap::Clamp => 1,
+            veymelo_model::Wrap::Mirror => 2,
+        };
+        let mut at = 0;
+        for t in &model.textures {
+            let n = t.px.len();
+            out[at..at + n].copy_from_slice(&t.px);
+            // a picture with no pixels (or not as many as it says) reads as white
+            let (w, h) = if n > 0 && n == t.width * t.height { (t.width, t.height) } else { (0, 0) };
+            pics.push(crate::gpu::Pic { a: [at as u32, w as u32, h as u32, t.smooth as u32 | wrap(t.wrap[0]) << 1 | wrap(t.wrap[1]) << 3] });
+            at += n;
+        }
+    }
+    let p = Arc::new(Pictures { texels, pics });
+    // a model without pictures has nothing worth keeping
+    if total == 0 {
+        return Ok(Some(p));
+    }
+    kept.push((model.clone(), p.clone()));
+    // the least recently used let go, past the most
+    let mut bytes: usize = kept.iter().map(|(_, p)| p.texels.len()).sum();
+    while kept.len() > 1 && (bytes > MOST_PICTURES.0 || kept.len() > MOST_PICTURES.1) {
+        bytes -= kept[0].1.texels.len();
+        kept.remove(0);
+    }
+    Ok(Some(p))
+}
+
+/// The triangles `placed` filled on the GPU, as `fill` fills them, on canvas pixels `area`: none
+/// when it cannot (then the processor does).
+fn fill_gpu(look: &Look, placed: &Placed, area: [usize; 4]) -> Result<Option<Shot>, String> {
+    use crate::gpu::{self, Mat, MeshParams, NONE, TILE};
+    use veymelo_os::gpu::{Arg, bytes_of, run};
+    let [x0, y0, x1, y1] = area;
+    let (w, h) = (x1 - x0, y1 - y0);
+    let model = look.model;
+    if placed.verts.len() >= u32::MAX as usize || placed.verts.len() * 96 > 1 << 31 {
+        return Ok(None);
+    }
+    let Some(pictures) = pictures(model)? else { return Ok(None) };
+    let f = |v: f64| v as f32;
+    let (fx, fy) = (x0 as f64, y0 as f64);
+    // the corners, on the canvas from the shot's corner
+    let verts: Vec<gpu::Vert> = placed
+        .verts
+        .iter()
+        .zip(&placed.screen)
+        .zip(&placed.inv_z)
+        .map(|((v, s), iz)| gpu::Vert {
+            screen: [f(s[0] - fx), f(s[1] - fy), f(*iz), 0.0],
+            world: [f(v.world.x), f(v.world.y), f(v.world.z), 0.0],
+            normal: [f(v.normal.x), f(v.normal.y), f(v.normal.z), 0.0],
+            tangent: v.tangent.map(f),
+            uv: [f(v.uv[0][0]), f(v.uv[0][1]), f(v.uv[1][0]), f(v.uv[1][1])],
+            color: v.color,
+            bounce: [v.bounce[0], v.bounce[1], v.bounce[2], 0.0],
+        })
+        .collect();
+    // the materials, and the standard one after them (for triangles with none)
+    let pictured = |m: Option<Map>| m.filter(|m| m.texture < model.textures.len()).map_or(NONE, |m| m.texture as u32);
+    let set = |m: Option<Map>| m.map_or(0, |m| m.set.min(1));
+    let fallback = veymelo_model::Material::default();
+    let mats: Vec<Mat> = model
+        .materials
+        .iter()
+        .chain([&fallback])
+        .map(|m| Mat {
+            base: m.base,
+            emissive: [m.emissive[0], m.emissive[1], m.emissive[2], m.normal_scale],
+            pbr: [m.metallic, m.roughness, m.occlusion, if let AlphaMode::Mask(c) = m.alpha { c } else { 0.0 }],
+            maps: [pictured(m.base_map), pictured(m.metal_rough_map), pictured(m.normal_map), pictured(m.occlusion_map)],
+            more: [
+                pictured(m.emissive_map),
+                set(m.base_map) | set(m.metal_rough_map) << 1 | set(m.normal_map) << 2 | set(m.occlusion_map) << 3 | set(m.emissive_map) << 4,
+                match m.alpha {
+                    AlphaMode::Opaque => 0,
+                    AlphaMode::Mask(_) => 1,
+                    AlphaMode::Blend => 2,
+                },
+                m.unlit as u32,
+            ],
+        })
+        .collect();
+    let standard = model.materials.len() as u32;
+    // each triangle, and the tiles of pixels it may cover (its samples are a quarter of a pixel in)
+    let tiles = [w.div_ceil(TILE[0]), h.div_ceil(TILE[1])];
+    let mut tris = Vec::with_capacity(placed.tris.len());
+    let mut spans: Vec<Option<[usize; 4]>> = Vec::with_capacity(placed.tris.len());
+    let mut starts = vec![0u32; tiles[0] * tiles[1] + 1];
+    for (c, material) in &placed.tris {
+        let s = c.map(|k| placed.screen[k as usize]);
+        let (lo_x, hi_x) = (s[0][0].min(s[1][0]).min(s[2][0]) - fx, s[0][0].max(s[1][0]).max(s[2][0]) - fx);
+        let (lo_y, hi_y) = (s[0][1].min(s[1][1]).min(s[2][1]) - fy, s[0][1].max(s[1][1]).max(s[2][1]) - fy);
+        tris.push(gpu::Tri { v: [c[0], c[1], c[2], material.filter(|&m| m < model.materials.len()).map_or(standard, |m| m as u32)], reach: [f(lo_x), f(lo_y), f(hi_x), f(hi_y)] });
+        let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+        let span = (area.abs() >= 1e-12 && hi_x >= -1.0 && hi_y >= -1.0 && lo_x <= w as f64 && lo_y <= h as f64).then(|| {
+            let tile = |v: f64, n: usize, size: usize| ((v.max(0.0) as usize) / size).min(n - 1);
+            [tile(lo_x - 1.0, tiles[0], TILE[0]), tile(lo_y - 1.0, tiles[1], TILE[1]), tile(hi_x + 1.0, tiles[0], TILE[0]), tile(hi_y + 1.0, tiles[1], TILE[1])]
+        });
+        if let Some([a, b, c, d]) = span {
+            for ty in b..=d {
+                for tx in a..=c {
+                    starts[ty * tiles[0] + tx + 1] += 1;
+                }
+            }
+        }
+        spans.push(span);
+    }
+    for i in 1..starts.len() {
+        starts[i] += starts[i - 1];
+    }
+    let listed_len = *starts.last().unwrap_or(&0) as usize;
+    if listed_len > (1 << 28) {
+        return Ok(None);
+    }
+    // each tile's triangles, in the model's order
+    let mut listed = vec![0u32; listed_len.max(1)];
+    let mut next: Vec<u32> = starts[..starts.len() - 1].to_vec();
+    for (i, span) in spans.iter().enumerate() {
+        if let Some([a, b, c, d]) = *span {
+            for ty in b..=d {
+                for tx in a..=c {
+                    let k = &mut next[ty * tiles[0] + tx];
+                    listed[*k as usize] = i as u32;
+                    *k += 1;
+                }
+            }
+        }
+    }
+    let lights: Vec<gpu::Light> = look.lights.iter().map(gpu::Light::of).collect();
+    let (env, env_levels, turn, shining) = gpu::environment(look.env)?;
+    let scene_light = veymelo_os::gpu::Buffer::of(&look.scene_light.0.iter().map(|c| [c[0], c[1], c[2], 0.0]).collect::<Vec<[f32; 4]>>())?;
+    // none falling on it and no occlusion: nothing rays meet
+    let none;
+    let shadows = match look.shadows {
+        Some(s) if look.shadowed || look.reach.is_some() || look.material.reflection > 0.0 || look.bounce.is_some() || look.material.transparency > 0.0 => s,
+        _ => {
+            none = gpu::Shadows::none()?;
+            &none
+        }
+    };
+    let m = &look.material;
+    let params = MeshParams {
+        a: [w as u32, h as u32, tiles[0] as u32, lights.len() as u32],
+        b: [look.linear as u32, m.lit as u32, shining, (m.accepts != 0) as u32],
+        eye: [f(look.cam.eye.x), f(look.cam.eye.y), f(look.cam.eye.z), turn],
+        layer: [m.ambient, m.diffuse, m.specular, m.transmission],
+        c: [shadows.count, 0, 0, 0],
+        d: [look.env.map_or(0.0, |e| e.occlusion), look.reach.map_or(0.0, |r| r as f32), look.bounce.map_or(0.0, |b| b.1), look.scene_light.1],
+        e: [if look.mirror.is_some() { m.reflection } else { 0.0 }, m.sharpness, m.rolloff, 0.0],
+        f: [if look.through.is_some() { m.transparency } else { 0.0 }, m.clear_rolloff, m.ior, 0.0],
+    };
+    let (verts, tris, starts, listed) = (gpu::take_with(gpu::VERTS, &verts)?, gpu::take_with(gpu::TRIS, &tris)?, gpu::take_with(gpu::STARTS, &starts)?, gpu::take_with(gpu::LISTED, &listed)?);
+    let (mats, pics, lights) = (gpu::take_with(gpu::MATS, &mats)?, gpu::take_with(gpu::PICS, &pictures.pics)?, gpu::take_with(gpu::LIGHTS, &lights)?);
+    let (mut color, mut nearest, mut surface) = (gpu::take(gpu::COLOR, w * h * 16)?, gpu::take(gpu::NEAREST, w * h * 16)?, gpu::take(gpu::SURFACE, w * h * 16)?);
+    let mut args = vec![
+        Arg::Write(&mut color),
+        Arg::Write(&mut nearest),
+        Arg::Write(&mut surface),
+        Arg::Read(&verts),
+        Arg::Read(&tris),
+        Arg::Read(&starts),
+        Arg::Read(&listed),
+        Arg::Read(&mats),
+        Arg::Read(&pics),
+        Arg::Read(&pictures.texels),
+        Arg::Read(&lights),
+        Arg::Bytes(bytes_of(&params)),
+        Arg::Read(&env),
+        Arg::Read(&env_levels),
+        Arg::Read(&shadows.casters),
+        Arg::Read(&shadows.texels),
+        Arg::Read(&shadows.faces),
+        Arg::Read(&scene_light),
+    ];
+    let (kernel, traced) = shadows.kernel(gpu::MESH, gpu::MESH_RAYS)?;
+    args.extend(traced);
+    run(&kernel, &args, [w, h])?;
+    drop(args);
+    let (c, n, s) = (&color.slice::<[f32; 4]>()[..w * h], &nearest.slice::<[f32; 4]>()[..w * h], &surface.slice::<[f32; 4]>()[..w * h]);
+    let px = c.iter().zip(n).map(|(c, n)| (n[0] as f64, *c)).collect();
+    let facts = n
+        .iter()
+        .zip(s)
+        .map(|(n, s)| {
+            let material = s[2].to_bits();
+            Facts { normal: [n[1], n[2], n[3]], uv: [s[0], s[1]], material: if material >= standard { u32::MAX } else { material } }
+        })
+        .collect();
+    for (slot, b) in [(gpu::VERTS, verts), (gpu::TRIS, tris), (gpu::STARTS, starts), (gpu::LISTED, listed), (gpu::MATS, mats), (gpu::PICS, pics), (gpu::LIGHTS, lights), (gpu::COLOR, color), (gpu::NEAREST, nearest), (gpu::SURFACE, surface), (gpu::ENV, env), (gpu::ENV_LEVELS, env_levels)] {
+        gpu::keep(slot, b);
+    }
+    Ok(Some(Shot { x0, y0, w, h, px, facts }))
+}
+
 /// A triangle's weights at canvas point (x, y), held inside it, as perspective has them.
 fn inside(t: &Tri, x: f64, y: f64) -> [f64; 3] {
     let s = &t.screen;
@@ -684,6 +1106,8 @@ pub(crate) fn standard_lights(cam: &Camera) -> Vec<Light> {
         shadows: false,
         darkness: 0.0,
         diffusion: 0.0,
+        occlusion: 0.0,
+        occlusion_distance: 0.0,
     };
     vec![light(veymelo_project::LightKind::Parallel, key, 1.0), light(veymelo_project::LightKind::Ambient, key, 0.45)]
 }
@@ -753,4 +1177,148 @@ pub(crate) fn defocus(shot: Shot, focus: &crate::scene::Focus, k: f64, width: us
         })
         .collect();
     Shot { x0, y0, w, h, px, facts }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use veymelo_model::shapes::{Shape, Sizes};
+    use veymelo_model::{Texture, Wrap};
+
+    /// A picture `w` × `h` of stripes over a ramp, its alpha falling across it.
+    fn picture(w: usize, h: usize, wrap: [Wrap; 2], smooth: bool) -> Texture {
+        let px = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+                let stripe = if (i % w) / 3 % 2 == 0 { 0.9 } else { 0.2 };
+                [stripe, x, y, 1.0 - 0.8 * x]
+            })
+            .collect();
+        Texture { width: w, height: h, px, wrap, smooth }
+    }
+
+    /// A sphere with every kind of picture its material can take, both sets of texture points
+    /// (the second past the edges, so the pictures repeat, clamp and mirror) and vertex colours.
+    fn textured(alpha: AlphaMode) -> Arc<Model> {
+        let map = |texture, set| Some(Map { texture, set });
+        let material = veymelo_model::Material {
+            base: [0.9, 0.8, 0.7, 1.0],
+            base_map: map(0, 0),
+            metal_rough_map: map(1, 1),
+            normal_map: map(2, 0),
+            normal_scale: 0.8,
+            occlusion_map: map(1, 0),
+            occlusion: 0.7,
+            emissive: [0.1, 0.0, 0.05],
+            emissive_map: map(0, 1),
+            alpha,
+            metallic: 0.7,
+            roughness: 0.6,
+            ..veymelo_model::Material::default()
+        };
+        let mut m = veymelo_model::shapes::model(Shape::Sphere, &Sizes { radius: 1.0, segments: 40, rings: 20, ..Sizes::default() }, material);
+        let p = &mut m.meshes[0].primitives[0];
+        p.uvs[1] = p.uvs[0].iter().map(|u| [u[0] * 3.0 - 1.0, u[1] * 2.5 - 0.7]).collect();
+        p.colors = p.positions.iter().map(|q| [0.6 + 0.4 * q[0], 0.8, 0.7 + 0.3 * q[1], 1.0]).collect();
+        m.textures = vec![picture(37, 23, [Wrap::Repeat, Wrap::Mirror], true), picture(16, 9, [Wrap::Mirror, Wrap::Clamp], false), picture(20, 20, [Wrap::Clamp, Wrap::Repeat], true)];
+        Arc::new(m)
+    }
+
+    fn light(kind: veymelo_project::LightKind, at: Vec3, dir: Vec3, color: f32) -> Light {
+        Light { kind, at, dir, color: [color, color * 0.9, color * 0.8], cone: 0.6, feather: 0.4, falloff: 2, radius: 300.0, falloff_distance: 400.0, shadows: false, darkness: 1.0, diffusion: 0.0, occlusion: 0.0, occlusion_distance: 0.0 }
+    }
+
+    /// A sky for an environment light: blue above, warm below, a bright sun.
+    fn sky() -> crate::scene::Environment {
+        let (w, h) = (64, 32);
+        let px = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let sun = if (x as i32 - 20).abs() < 3 && (y as i32 - 8).abs() < 3 { 6.0 } else { 0.0 };
+                let v = y as f32 / h as f32;
+                [0.3 + 0.6 * v + sun, 0.5 + 0.2 * v + sun, 0.9 - 0.5 * v + sun]
+            })
+            .collect();
+        crate::scene::Environment::new(w, h, px, 0.4).expect("a sky")
+    }
+
+    /// The sphere drawn on the GPU and by the processor (lit by `lights` lights of three, and by
+    /// a sky with `env`; taking light, with `lit`): how far apart their colours are at most, and
+    /// how many pixels differ by more than 2/255 (of how many either covers).
+    fn both(alpha: AlphaMode, linear: bool, lights_on: usize, env: bool, lit: bool) -> Option<(f32, usize, usize)> {
+        let model = textured(alpha);
+        let sky = sky();
+        let cam = Camera { view: Mat4::translate(vec3(0.0, 0.0, 600.0)), eye: vec3(0.0, 0.0, -600.0), zoom: 700.0, focus: None };
+        let lights = [
+            light(veymelo_project::LightKind::Point, vec3(-300.0, -250.0, -300.0), vec3(0.0, 0.0, 1.0), 0.9),
+            light(veymelo_project::LightKind::Spot, vec3(250.0, -100.0, -400.0), vec3(-0.4, 0.15, 1.0).normalize(), 0.7),
+            light(veymelo_project::LightKind::Ambient, Vec3::default(), vec3(0.0, 0.0, 1.0), 0.3),
+        ];
+        let material = Material { casts: 0, transmission: 0.2, accepts: 1, lit, ambient: 1.0, diffuse: 0.6, specular: 0.5, shininess: 0.5, metal: 1.0, reflection: 0.0, sharpness: 1.0, rolloff: 0.0, transparency: 0.0, clear_rolloff: 0.0, ior: 1.0 };
+        let unshadowed = |_: usize, _: Vec3| [1.0; 3];
+        let pose = model.pose(None, 0.0);
+        let (w, h) = (320, 240);
+        let look = |gpu| Look {
+            model: &model,
+            pose: &pose,
+            place: Mat4::rotate_y(0.6) * Mat4::rotate_x(-0.3) * Mat4::scale(vec3(90.0, -90.0, -90.0)),
+            cam: &cam,
+            onto: Mat3([[cam.zoom, 0.0, w as f64 / 2.0], [0.0, cam.zoom, h as f64 / 2.0], [0.0, 0.0, 1.0]]),
+            width: w,
+            height: h,
+            material,
+            lights: &lights[..lights_on],
+            unshadowed: &unshadowed,
+            linear,
+            env: env.then_some(&sky),
+            shadowed: false,
+            shadows: None,
+            open: None,
+            reach: None,
+            mirror: None,
+            bounce: None,
+            through: None,
+            scene_light: (&[], 0.0),
+            gpu,
+        };
+        let cpu = shoot(&look(false)).expect("the processor draws it");
+        let gpu = shoot(&look(true))?;
+        assert_eq!((cpu.x0, cpu.y0, cpu.w, cpu.h), (gpu.x0, gpu.y0, gpu.w, gpu.h));
+        let (mut most, mut many, mut covered) = (0f32, 0, 0);
+        for (i, (a, b)) in cpu.px.iter().zip(&gpu.px).enumerate() {
+            if a.0.is_finite() || b.0.is_finite() {
+                covered += 1;
+            }
+            if a.0.is_finite() && b.0.is_finite() {
+                assert!((a.0 - b.0).abs() < a.0 * 1e-4, "depth at {i}: {} and {}", a.0, b.0);
+                assert_eq!(cpu.facts[i].material, gpu.facts[i].material);
+            }
+            let d = (0..4).map(|c| (a.1[c] - b.1[c]).abs()).fold(0.0, f32::max);
+            most = most.max(d);
+            if d > 2.0 / 255.0 {
+                many += 1;
+            }
+        }
+        Some((most, many, covered))
+    }
+
+    #[test]
+    fn a_model_is_drawn_alike_on_the_gpu_and_by_the_processor() {
+        if !veymelo_os::gpu::available() {
+            return;
+        }
+        let ways = [AlphaMode::Opaque, AlphaMode::Mask(0.5), AlphaMode::Blend].into_iter().flat_map(|a| [(a, false, 3, false, true), (a, true, 3, false, true)]);
+        // lit by an environment too, by it alone, and taking no light
+        let more = [(AlphaMode::Opaque, true, 3, true, true), (AlphaMode::Opaque, false, 0, true, true), (AlphaMode::Opaque, true, 0, true, false), (AlphaMode::Blend, true, 3, true, false)];
+        for (alpha, linear, lights, env, lit) in ways.chain(more) {
+            {
+                let (most, many, covered) = both(alpha, linear, lights, env, lit).expect("the GPU draws it");
+                assert!(covered > 10_000, "{covered}");
+                // the same, but for a few pixels on the edge of a mask (where single precision
+                // tips a sample the other way), and where the sun's sharp edge shines
+                let edge = if matches!(alpha, AlphaMode::Mask(_)) { covered / 200 } else if env { covered / 2000 } else { 0 };
+                assert!(many <= edge, "{alpha:?} linear {linear} lights {lights} env {env} lit {lit}: {many} of {covered} pixels differ (most {most})");
+            }
+        }
+    }
 }

@@ -749,9 +749,9 @@ impl Timeline {
         }
         // the time: where, and of how long
         let now = Label::new(s.strong.clone(), 14.0, &crate::watch::timecode(s.time, s.fps));
-        canvas.fill_faded(&now.path(bx + 24.0, by + 5.0, 1.0, scale), INK, alpha);
+        now.draw(canvas, bx + 24.0, by + 5.0, 1.0, scale, INK, alpha);
         let all = Label::new(s.body.clone(), 12.0, &format!("/  {}", crate::watch::timecode(s.length, s.fps)));
-        canvas.fill_faded(&all.path(bx + 24.0 + now.wide + 8.0, by + 5.0, 1.0, scale), FAINT, alpha);
+        all.draw(canvas, bx + 24.0 + now.wide + 8.0, by + 5.0, 1.0, scale, FAINT, alpha);
         // the ruler: ticks and seconds, and the composition's markers
         let span = (self.to - self.from).max(1e-9);
         let step = tick_step(span, x1 - x0, 70.0);
@@ -769,7 +769,7 @@ impl Timeline {
                 let l = Label::new(s.small.clone(), 10.0, &words);
                 // faint under the playhead's knob, which covers it
                 let under = head > tx - 8.0 && head < tx + 3.0 + l.wide + 6.0;
-                canvas.fill_faded(&l.path(tx + 3.0, p.ruler.0 + 11.0, 1.0, scale), FAINT, if under { alpha * 0.2 } else { alpha });
+                l.draw(canvas, tx + 3.0, p.ruler.0 + 11.0, 1.0, scale, FAINT, if under { alpha * 0.2 } else { alpha });
             }
             k += 1;
         }
@@ -806,9 +806,9 @@ impl Timeline {
                     k => k.name(),
                 };
                 let name = fit_label(s.strong, 12.0, said, NAMES - 66.0);
-                canvas.fill_faded(&name.path(x + 38.0, head_y, 1.0, scale), INK, alpha);
+                name.draw(canvas, x + 38.0, head_y, 1.0, scale, INK, alpha);
                 let count = Label::new(s.small.clone(), 11.0, &band.count.to_string());
-                canvas.fill_faded(&count.path(x + 44.0 + name.wide, head_y, 1.0, scale), FAINT, alpha);
+                count.draw(canvas, x + 44.0 + name.wide, head_y, 1.0, scale, FAINT, alpha);
                 let fresh = s.lanes.iter().filter(|l| l.kind == band.kind).filter_map(|l| fresh_of(&l.name)).fold(0.0f32, f32::max);
                 if fresh > 0.0 {
                     canvas.fill_faded(&round(x + 51.0 + name.wide + count.wide, head_y - 7.0, 6.0, 6.0, 3.0), PEN, alpha * fresh);
@@ -884,7 +884,7 @@ impl Timeline {
             canvas.shadow(px(tx), px(ty + 2.0), px(tw), px(th), px(6.0), px(8.0), INK, alpha * 0.14);
             canvas.fill_faded(&round(tx, ty, tw, th, 6.0), PAPER, alpha);
             canvas.stroke(&Path::rounded_points(px(tx), px(ty), px(tw), px(th), px(6.0)), true, 0.8 * scale, RULE.mix(INK, 0.15), alpha);
-            canvas.fill_faded(&l.path(tx + 9.0, ty + 15.0, 1.0, scale), INK, alpha);
+            l.draw(canvas, tx + 9.0, ty + 15.0, 1.0, scale, INK, alpha);
         }
     }
 
@@ -908,7 +908,7 @@ impl Timeline {
                     canvas.fill_faded(&round(bx + 3.0, by + bh / 2.0 + 2.5, (bw - 6.0).max(1.0), 1.0, 0.5), mark, alpha * 0.4);
                     if bw > 46.0 {
                         let l = Label::new(s.small.clone(), 9.5, "silent");
-                        canvas.fill_faded(&l.path(bx + bw - l.wide - 5.0, by + 10.0, 1.0, scale), GREY, alpha);
+                        l.draw(canvas, bx + bw - l.wide - 5.0, by + 10.0, 1.0, scale, GREY, alpha);
                     }
                 } else if let Some(a) = art.as_ref().filter(|a| !a.peaks.is_empty()) {
                     let mid = by + bh / 2.0 + 3.0;
@@ -933,7 +933,7 @@ impl Timeline {
                 }
                 edge(canvas);
                 if bw > 40.0 {
-                    canvas.fill_faded(&fit_label(s.small, 9.5, &lane.name, bw - 10.0).path(bx + 5.0, by + 10.0, 1.0, scale), ink, alpha);
+                    fit_label(s.small, 9.5, &lane.name, bw - 10.0).draw(canvas, bx + 5.0, by + 10.0, 1.0, scale, ink, alpha);
                 }
             }
             Kind::Text => {
@@ -941,7 +941,7 @@ impl Timeline {
                 edge(canvas);
                 let said = lane.words.as_deref().map_or_else(|| lane.name.clone(), |w| format!("“{w}”"));
                 if bw > 18.0 {
-                    canvas.fill_faded(&fit_label(s.small, 10.5, &said, bw - 10.0).path(bx + 5.0, by + bh / 2.0 + 3.8, 1.0, scale), ink, alpha);
+                    fit_label(s.small, 10.5, &said, bw - 10.0).draw(canvas, bx + 5.0, by + bh / 2.0 + 3.8, 1.0, scale, ink, alpha);
                 }
             }
             Kind::Footage | Kind::Graphics => {
@@ -964,7 +964,7 @@ impl Timeline {
                         if bw > 50.0 {
                             let l = fit_label(s.small, 9.5, &lane.name, (bw - 16.0).min(160.0));
                             canvas.fill_faded(&round(bx + 4.0, by + bh - 15.0, l.wide + 10.0, 12.0, 3.0), PAPER, alpha * 0.92);
-                            canvas.fill_faded(&l.path(bx + 9.0, by + bh - 6.0, 1.0, scale), ink, alpha);
+                            l.draw(canvas, bx + 9.0, by + bh - 6.0, 1.0, scale, ink, alpha);
                         }
                         text_from = f64::MAX;
                     }
@@ -978,7 +978,7 @@ impl Timeline {
                 }
                 edge(canvas);
                 if text_from < bx + bw - 14.0 {
-                    canvas.fill_faded(&fit_label(s.small, 10.5, &lane.name, bx + bw - 5.0 - text_from).path(text_from, by + bh / 2.0 + 3.8, 1.0, scale), ink, alpha);
+                    fit_label(s.small, 10.5, &lane.name, bx + bw - 5.0 - text_from).draw(canvas, text_from, by + bh / 2.0 + 3.8, 1.0, scale, ink, alpha);
                 }
             }
             Kind::Camera | Kind::Helpers => {
@@ -989,7 +989,7 @@ impl Timeline {
                     // a line where it is, its name at its start
                     canvas.fill_faded(&round(bx, mid - 0.6, bw, 1.2, 0.6), mark, alpha * 0.6);
                     if bw > 40.0 {
-                        canvas.fill_faded(&fit_label(s.small, 9.5, &lane.name, bw.min(120.0)).path(bx, mid - 5.0, 1.0, scale), ink, alpha * 0.8);
+                        fit_label(s.small, 9.5, &lane.name, bw.min(120.0)).draw(canvas, bx, mid - 5.0, 1.0, scale, ink, alpha * 0.8);
                     }
                 }
                 // how it moves: an arc over each move, what it does under it (where there is
@@ -1010,7 +1010,7 @@ impl Timeline {
                     let l = Label::new(s.small.clone(), 9.5, &m.what);
                     let lx = ((a + b) / 2.0 - l.wide / 2.0).max(bx);
                     if lx > said_to + 6.0 && lx + l.wide < p.track.1 + 4.0 {
-                        canvas.fill_faded(&l.path(lx, mid + 13.0, 1.0, scale), ink, alpha);
+                        l.draw(canvas, lx, mid + 13.0, 1.0, scale, ink, alpha);
                         said_to = lx + l.wide;
                     }
                 }

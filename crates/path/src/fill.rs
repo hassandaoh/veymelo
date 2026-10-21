@@ -2,6 +2,12 @@
 //! each, the outlines' crossings give the stretches that are inside (by how many times the
 //! outlines wind round them), and those stretches are added in exactly, to the fraction of a
 //! pixel. Outlines may cross themselves and each other: the rule decides what is inside.
+//!
+//! What a fill makes is kept a while: the same outlines filled again (a still letter or shape,
+//! frame after frame) are found by a fingerprint of their points and given back as they were.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::{Mask, Path};
 
@@ -31,6 +37,77 @@ struct Edge {
 /// How much of each pixel `path` (its outlines taken as closed) covers by `rule`, in the box it
 /// touches of a picture `width` × `height`.
 pub fn fill(path: &Path, rule: Rule, width: usize, height: usize) -> Option<Mask> {
+    let key = fingerprint(path, rule, width, height);
+    if let Some(kept) = Kept::find(key) {
+        return kept.as_deref().cloned();
+    }
+    let mask = fill_now(path, rule, width, height);
+    Kept::put(key, mask.clone().map(Arc::new));
+    mask
+}
+
+/// Two hashes of everything a fill depends on, mixed differently (the chance of two fills
+/// sharing both is too small to count).
+fn fingerprint(path: &Path, rule: Rule, width: usize, height: usize) -> (u64, u64) {
+    let (mut a, mut b) = (0x9E37_79B9_7F4A_7C15u64 ^ width as u64, 0xC2B2_AE3D_27D4_EB4Fu64 ^ ((height as u64) << 1 | rule as u64));
+    let mut eat = |v: u64| {
+        a = (a ^ v).wrapping_mul(0x100_0000_01B3).rotate_left(29);
+        b = (b.rotate_left(17) ^ v).wrapping_mul(0xFF51_AFD7_ED55_8CCD) ^ (b >> 31);
+    };
+    for c in path.contours() {
+        eat(c.len() as u64 ^ 0xA5A5_A5A5);
+        for &(x, y) in c {
+            eat(x.to_bits());
+            eat(y.to_bits());
+        }
+    }
+    (a, b)
+}
+
+/// Fills kept: those made lately and those made before them (when the newer ones grow past
+/// half of what is kept, they become the older ones, and the older ones go). A fill found among
+/// the older ones is made newer again.
+struct Kept {
+    new: HashMap<(u64, u64), Option<Arc<Mask>>>,
+    old: HashMap<(u64, u64), Option<Arc<Mask>>>,
+    bytes: usize,
+}
+
+/// The most bytes of fills kept.
+const MOST_KEPT: usize = 192 << 20;
+
+static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+
+impl Kept {
+    fn find(key: (u64, u64)) -> Option<Option<Arc<Mask>>> {
+        let mut k = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        let k = k.as_mut()?;
+        if let Some(m) = k.new.get(&key) {
+            return Some(m.clone());
+        }
+        let m = k.old.remove(&key)?;
+        k.bytes += size_of(&m);
+        k.new.insert(key, m.clone());
+        Some(m)
+    }
+
+    fn put(key: (u64, u64), mask: Option<Arc<Mask>>) {
+        let mut k = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        let k = k.get_or_insert_with(|| Kept { new: HashMap::new(), old: HashMap::new(), bytes: 0 });
+        if k.bytes > MOST_KEPT / 2 {
+            k.old = std::mem::take(&mut k.new);
+            k.bytes = 0;
+        }
+        k.bytes += size_of(&mask);
+        k.new.insert(key, mask);
+    }
+}
+
+fn size_of(m: &Option<Arc<Mask>>) -> usize {
+    64 + m.as_ref().map_or(0, |m| m.cover.len() * 4)
+}
+
+fn fill_now(path: &Path, rule: Rule, width: usize, height: usize) -> Option<Mask> {
     let (x0, y0, x1, y1) = path.extent()?;
     let left = x0.floor().max(0.0) as usize;
     let top = y0.floor().max(0.0) as usize;

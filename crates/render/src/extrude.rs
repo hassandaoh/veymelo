@@ -62,9 +62,18 @@ fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<[f64; 
 }
 
 /// A ring moved in so far it crosses itself (the little loops an inward offset makes round a
-/// hollow curve) made simple again: each smaller loop's corners gathered onto where it crosses,
-/// so the ring keeps its corners (one to one with the rings beside it in a bevel).
-fn untangle(mut r: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+/// hollow curve or a notch, turned the wrong way round) made simple again: at each crossing, the
+/// loop on one side of it turned against the ring's way `way` (the sign of the area it was
+/// moved in from; else the smaller one) has its corners gathered onto where it crosses, so the
+/// ring keeps its corners (one to one with the rings beside it in a bevel).
+fn untangle(r: Vec<[f64; 2]>, way: f64) -> Vec<[f64; 2]> {
+    unpinch(r, way).0
+}
+
+/// `untangle`, and whether a loop turned the ring's way had to go (the ring pinched through a
+/// neck thinner than it was moved in by on both sides: it would be two).
+fn unpinch(mut r: Vec<[f64; 2]>, way: f64) -> (Vec<[f64; 2]>, bool) {
+    let mut pinched = false;
     let n = r.len();
     for _ in 0..n {
         let mut found = None;
@@ -80,14 +89,120 @@ fn untangle(mut r: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
             }
         }
         let Some((i, j, x)) = found else { break };
-        // the loop between them (i + 1 ..= j) or the rest, whichever has fewer corners
+        // the loop between them (i + 1 ..= j) and the rest, each closed through the crossing
         let inner: Vec<usize> = (i + 1..=j).collect();
         let outer: Vec<usize> = (j + 1..n).chain(0..=i).collect();
-        for k in if inner.len() <= outer.len() { inner } else { outer } {
+        let loop_area = |ks: &[usize]| area(&std::iter::once(x).chain(ks.iter().map(|&k| r[k])).collect::<Vec<_>>());
+        let (a_in, a_out) = (loop_area(&inner), loop_area(&outer));
+        let against = |a: f64| a * way < 0.0;
+        let gone = match (against(a_in), against(a_out)) {
+            (true, false) => inner,
+            (false, true) => outer,
+            _ => {
+                pinched |= a_in.abs().min(a_out.abs()) > 1e-6;
+                if a_in.abs() <= a_out.abs() {
+                    inner
+                } else {
+                    outer
+                }
+            }
+        };
+        for k in gone {
             r[k] = x;
         }
     }
-    r
+    (r, pinched)
+}
+
+/// Whether point `p` is in the solid `shape` makes (an outline and its holes: inside an odd
+/// number of its rings).
+fn in_solid(p: [f64; 2], shape: &[Vec<[f64; 2]>]) -> bool {
+    let mut odd = false;
+    for poly in shape {
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// How far point `p` is from segment a–b.
+fn distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l = dx * dx + dy * dy;
+    let t = if l < 1e-18 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
+    (p[0] - a[0] - dx * t).hypot(p[1] - a[1] - dy * t)
+}
+
+/// Whether `shape`'s rings moved in by `d` (its holes' by `hole` of it) still make a solid:
+/// none pinched in two, every corner within the solid it was and as far in as it moved from
+/// every edge but its own two (a stroke thinner than twice `d` turns its sides past each other),
+/// and no ring crossing another (a hole's coming through the outline's).
+fn fits(shape: &[Vec<[f64; 2]>], d: f64, hole: f64) -> bool {
+    let mut moved = Vec::with_capacity(shape.len());
+    for (k, r) in shape.iter().enumerate() {
+        let (ring, pinched) = unpinch(inset(r, d * if k == 0 { 1.0 } else { hole }), area(r));
+        if pinched {
+            return false;
+        }
+        moved.push(ring);
+    }
+    for (k, ring) in moved.iter().enumerate() {
+        // still turned its way round, and something left of it
+        if area(ring) * area(&shape[k]) <= 0.0 {
+            return false;
+        }
+        let far = 0.9 * d * if k == 0 { 1.0 } else { hole };
+        for (i, p) in ring.iter().enumerate() {
+            if !in_solid(*p, shape) {
+                return false;
+            }
+            for (m, r) in shape.iter().enumerate() {
+                let n = r.len();
+                for e in 0..n {
+                    // the corner's own edges (into it and out of it) bend away at a sharp corner
+                    if m == k && (e == i || (e + 1) % n == i) {
+                        continue;
+                    }
+                    if distance(*p, r[e], r[(e + 1) % n]) < far {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    for a in 0..moved.len() {
+        for b in a + 1..moved.len() {
+            let (ra, rb) = (&moved[a], &moved[b]);
+            for i in 0..ra.len() {
+                for j in 0..rb.len() {
+                    if crossing(ra[i], ra[(i + 1) % ra.len()], rb[j], rb[(j + 1) % rb.len()]).is_some() {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The deepest bevel up to `most` that `shape` takes with room to spare (`fits` half as deep
+/// again: its face keeps a bevel's width at its thinnest), its strokes setting how far in its
+/// edges may go.
+fn bevel_for(shape: &[Vec<[f64; 2]>], most: f64, hole: f64) -> f64 {
+    const ROOM: f64 = 1.5;
+    if most <= 0.0 || fits(shape, most * ROOM, hole) {
+        return most;
+    }
+    let (mut lo, mut hi) = (0.0, most);
+    for _ in 0..12 {
+        let mid = (lo + hi) / 2.0;
+        if fits(shape, mid * ROOM, hole) { lo = mid } else { hi = mid }
+    }
+    lo
 }
 
 /// Along a bevel at step `t` (0: the face's edge, 1: the full outline): how far in and how deep.
@@ -167,9 +282,11 @@ pub(crate) fn solid(buf: &Buf, g: &Geometry, linear: bool) -> Option<Model> {
         p.normals.push(n.map(|v| v as f32));
         (p.positions.len() - 1) as u32
     };
+    // the bevel, as deep as every shape's strokes let it be (one for all, so they look alike)
+    let bevel = shapes.iter().map(|shape| bevel_for(shape, bevel, g.hole_bevel)).fold(bevel, f64::min);
     for shape in &shapes {
         // how far in each ring is at the face (holes by their own bevel)
-        let at_face: Vec<Vec<[f64; 2]>> = shape.iter().enumerate().map(|(k, r)| untangle(inset(r, bevel * if k == 0 { 1.0 } else { g.hole_bevel }))).collect();
+        let at_face: Vec<Vec<[f64; 2]>> = shape.iter().enumerate().map(|(k, r)| untangle(inset(r, bevel * if k == 0 { 1.0 } else { g.hole_bevel }), area(r))).collect();
         // the front face at depth 0 facing the viewer, the back one at the depth facing away
         let tris = triangulate(&at_face);
         let flat: Vec<[f64; 2]> = at_face.iter().flatten().copied().collect();
@@ -189,7 +306,7 @@ pub(crate) fn solid(buf: &Buf, g: &Geometry, linear: bool) -> Option<Model> {
             let mut profile_rings: Vec<(Vec<[f64; 2]>, f64)> = Vec::new();
             for s in 0..=steps {
                 let (i, z) = profile(g.style, s as f64 / steps.max(1) as f64);
-                profile_rings.push((untangle(inset(r, b * i)), b * z));
+                profile_rings.push((untangle(inset(r, b * i), area(r)), b * z));
             }
             if steps == 0 {
                 profile_rings = vec![(r.clone(), 0.0)];
@@ -319,6 +436,70 @@ mod tests {
             }
         }
         Buf { img, origin: vec2(0.0, 0.0), scale: 1.0 }
+    }
+
+    /// A thick ring: a hole in it.
+    fn ring(w: usize) -> Buf {
+        let mut img = Image::new(w, w);
+        let c = w as f64 / 2.0;
+        for y in 0..w {
+            for x in 0..w {
+                let r = (x as f64 + 0.5 - c).hypot(y as f64 + 0.5 - c);
+                if (0.2 * w as f64..0.42 * w as f64).contains(&r) {
+                    img.px[y * w + x] = [0.2, 0.6, 0.9, 1.0];
+                }
+            }
+        }
+        Buf { img, origin: vec2(0.0, 0.0), scale: 1.0 }
+    }
+
+    #[test]
+    fn a_holes_sides_are_coloured_as_its_edge() {
+        for style in [0, 1, 3] {
+            let m = solid(&ring(160), &Geometry { style, bevel: 5.0, hole_bevel: 1.0, depth: 30.0 }, true).unwrap();
+            let sides = &m.meshes[0].primitives[1];
+            let dark = sides.colors.iter().filter(|c| c[2] < 0.5).count();
+            assert_eq!(dark, 0, "style {style}: {dark} of {} side corners coloured from outside the ring", sides.colors.len());
+        }
+    }
+
+    #[test]
+    fn a_holes_face_leaves_the_hole_open() {
+        let b = ring(160);
+        let inked = b.img.px.iter().filter(|p| p[3] > 0.5).count() as f64;
+        for style in [0, 1, 3] {
+            let m = solid(&b, &Geometry { style, bevel: 5.0, hole_bevel: 1.0, depth: 30.0 }, true).unwrap();
+            let faces = face_area(&m);
+            assert!(faces <= inked * 1.02, "style {style}: the face covers {faces} of {inked}");
+        }
+    }
+
+    /// Two discs joined by a neck `neck` wide (as an m's arches meet, or a thin stroke).
+    fn dumbbell(w: usize, neck: f64) -> Buf {
+        let mut img = Image::new(w, w);
+        let (c, r) = (w as f64 / 2.0, w as f64 * 0.2);
+        for y in 0..w {
+            for x in 0..w {
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                let disc = |cx: f64| (px - cx).hypot(py - c) < r;
+                if disc(c - r * 1.1) || disc(c + r * 1.1) || ((py - c).abs() < neck / 2.0 && (px - c).abs() < r) {
+                    img.px[y * w + x] = [0.8, 0.3, 0.3, 1.0];
+                }
+            }
+        }
+        Buf { img, origin: vec2(0.0, 0.0), scale: 1.0 }
+    }
+
+    #[test]
+    fn a_bevel_deeper_than_a_neck_is_made_shallower() {
+        let b = dumbbell(200, 8.0);
+        let inked = b.img.px.iter().filter(|p| p[3] > 0.5).count() as f64;
+        for style in [1, 3] {
+            let m = solid(&b, &Geometry { style, bevel: 12.0, hole_bevel: 1.0, depth: 40.0 }, true).unwrap();
+            let faces = face_area(&m);
+            // the face whole (the bevel no deeper than the neck lets it be), not two lobes or one
+            assert!(faces > inked * 0.5 && faces <= inked * 1.01, "style {style}: {faces} of {inked}");
+        }
     }
 
     #[test]

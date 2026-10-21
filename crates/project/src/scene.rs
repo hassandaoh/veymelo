@@ -101,6 +101,8 @@ pub static LIGHT_OPTIONS: GroupDef = GroupDef {
         p(px("shadowDiffusion", "Shadow Diffusion", 0.0).doc("how soft its shadows are, softer the farther they fall")),
         p(PropDef::new("source", "Source", Kind::Layer, Value::Layer(None)).doc("an environment light's picture: the layer whose picture is the panorama all round (none: the composition's environment layer)")),
         p(deg("rotation", "Environment Rotation", 0.0).doc("an environment light's panorama turned about the vertical")),
+        p(pct("ambientOcclusion", "Ambient Occlusion", 0.0).doc("an ambient or environment light kept out of nooks and corners and from under what stands close (traced past every 3D layer and model), as much as this")),
+        p(px("occlusionDistance", "Occlusion Distance", 60.0).doc("how far round a point the ambient occlusion looks for what hides it")),
     ]),
     doc: "what light it gives",
 };
@@ -120,6 +122,12 @@ macro_rules! material_body {
             p(pct("specularIntensity", "Specular Intensity", 50.0).three_d().doc("how bright its shine is")),
             p(pct("specularShininess", "Specular Shininess", 5.0).three_d().doc("how small and sharp its shine is")),
             p(pct("metal", "Metal", 100.0).three_d().doc("its shine coloured by it (0: by the light)")),
+            p(pct("reflectionIntensity", "Reflection Intensity", 0.0).three_d().doc("how much it mirrors what is round it (traced to the nearest 3D layer or model each way, else the environment)")),
+            p(pct("reflectionSharpness", "Reflection Sharpness", 100.0).three_d().doc("how sharp what it mirrors is (lower: blurred, as a rougher surface's)")),
+            p(pct("reflectionRolloff", "Reflection Rolloff", 0.0).three_d().doc("how much less it mirrors where it faces the viewer than where it is seen edge on")),
+            p(pct("transparency", "Transparency", 0.0).three_d().doc("a model seen through, as glass: what is behind it bent by its index of refraction and tinted by its colour")),
+            p(pct("transparencyRolloff", "Transparency Rolloff", 0.0).three_d().doc("how much less clear it is seen edge on than face on")),
+            p(num("indexOfRefraction", "Index of Refraction", 1.0).range(1.0, 3.0).three_d().doc("how much light bends going into it: 1 not at all, 1.33 water, 1.5 glass, 2.4 diamond")),
             $($more,)*
         ])
     };

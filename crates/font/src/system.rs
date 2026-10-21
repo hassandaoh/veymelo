@@ -1,8 +1,9 @@
 //! The fonts installed on the computer, found by family and style. Only each file's names are
 //! read when looking; a font is opened when it is used.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// One installed font.
 #[derive(Clone, Debug, PartialEq)]
@@ -160,16 +161,112 @@ pub fn find(family: &str, weight: u16, italic: bool) -> Option<&'static Face> {
     of_family.into_iter().min_by_key(|f| (u16::from(f.italic != italic), (f.weight as i32 - weight as i32).unsigned_abs(), u16::from(!usual(f)), f.index))
 }
 
-/// A font that has `c`, for text whose own font lacks it: the usual one of its script first.
+/// A font that has `c`, for text whose own font lacks it: the usual one of its script first,
+/// then the system's fonts that cover many scripts, then any of its Noto fonts that has it.
+/// What is found for each character is kept.
 pub fn fallback_for(c: char) -> Option<&'static Face> {
-    let preferred: &[&str] = match c as u32 {
+    static FOUND: OnceLock<Mutex<HashMap<char, Option<&'static Face>>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&c) {
+        return *f;
+    }
+    let has = |f: &&'static Face| open(f).is_some_and(|font| font.glyph(c) != 0);
+    let named = |names: &[&str]| names.iter().filter_map(|n| find(n, 400, false)).find(has);
+    let face = named(preferred(c))
+        .or_else(|| named(&["Arial Unicode MS", "Apple Symbols", "STIX Two Math", "Apple Color Emoji", "PingFang SC", "Hiragino Sans"]))
+        .or_else(|| {
+            // any other installed font whose map has it, the usual style before others (the
+            // fonts that only stand in with a sign for every letter left out)
+            let mut any: Vec<&'static Face> = faces().iter().filter(|f| f.family != "LastResort" && covers(f, c)).collect();
+            any.sort_by_key(|f| (u16::from(f.italic), (f.weight as i32 - 400).unsigned_abs(), u16::from(f.family.starts_with('.'))));
+            any.into_iter().find(has)
+        });
+    found.lock().unwrap_or_else(|e| e.into_inner()).insert(c, face);
+    face
+}
+
+/// Whether `face`'s character map has `c` (only its map read, from the file, once).
+fn covers(face: &Face, c: char) -> bool {
+    type Maps = Mutex<HashMap<(String, usize), Vec<(u32, u32)>>>;
+    static MAPS: OnceLock<Maps> = OnceLock::new();
+    let maps = MAPS.get_or_init(Default::default);
+    let key = (face.path.clone(), face.index);
+    let mut kept = maps.lock().unwrap_or_else(|e| e.into_inner());
+    let ranges = kept.entry(key).or_insert_with(|| ranges_of(face).unwrap_or_default());
+    let c = c as u32;
+    let i = ranges.partition_point(|r| r.1 < c);
+    ranges.get(i).is_some_and(|r| r.0 <= c)
+}
+
+/// The ranges of characters `face`'s Unicode map has (its full map, format 12, else its basic
+/// one, format 4; the basic one's ranges as wide as its segments), in order.
+fn ranges_of(face: &Face) -> Option<Vec<(u32, u32)>> {
+    let mut file = std::fs::File::open(&face.path).ok()?;
+    let head = read_at(&mut file, 0, 12)?;
+    let start = if &head[..4] == b"ttcf" { be32(&read_at(&mut file, 12 + 4 * face.index as u64, 4)?, 0) as u64 } else { 0 };
+    let n = be16(&read_at(&mut file, start, 12)?, 4) as usize;
+    let records = read_at(&mut file, start + 12, 16 * n)?;
+    let r = (0..n).map(|i| &records[16 * i..16 * i + 16]).find(|r| &r[..4] == b"cmap")?;
+    let t = read_at(&mut file, be32(r, 8) as u64, be32(r, 12) as usize)?;
+    let mut pick: Option<(usize, u16)> = None;
+    for i in 0..be16(&t, 2) as usize {
+        let r = 4 + 8 * i;
+        let (platform, encoding, at) = (be16(&t, r), be16(&t, r + 2), be32(&t, r + 4) as usize);
+        let format = be16(&t, at);
+        let unicode = platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10));
+        if unicode && matches!((format, pick.map(|p| p.1)), (12, _) | (4, None)) {
+            pick = Some((at, format));
+        }
+    }
+    let (at, format) = pick?;
+    let mut out = Vec::new();
+    if format == 12 {
+        for g in 0..be32(&t, at + 12) as usize {
+            let r = at + 16 + 12 * g;
+            out.push((be32(&t, r), be32(&t, r + 4)));
+        }
+    } else {
+        let segs = be16(&t, at + 6) as usize / 2;
+        for k in 0..segs {
+            let (first, last) = (be16(&t, at + 16 + 2 * segs + 2 * k) as u32, be16(&t, at + 14 + 2 * k) as u32);
+            if first != 0xFFFF {
+                out.push((first, last));
+            }
+        }
+    }
+    out.sort_unstable();
+    Some(out)
+}
+
+/// An installed font opened (each once).
+pub fn open(face: &Face) -> Option<crate::Font> {
+    type Opened = Mutex<HashMap<(String, usize), Option<crate::Font>>>;
+    static OPENED: OnceLock<Opened> = OnceLock::new();
+    let opened = OPENED.get_or_init(Default::default);
+    if let Some(f) = opened.lock().unwrap_or_else(|e| e.into_inner()).get(&(face.path.clone(), face.index)) {
+        return f.clone();
+    }
+    let font = crate::Font::open_face(&face.path, face.index).ok();
+    opened.lock().unwrap_or_else(|e| e.into_inner()).insert((face.path.clone(), face.index), font.clone());
+    font
+}
+
+/// The fonts usual for `c`'s script, in the order they are tried.
+fn preferred(c: char) -> &'static [&'static str] {
+    match c as u32 {
         0x0E00..=0x0E7F => &[".ThonburiUI", "Thonburi", "Tahoma"],
-        // kana, CJK ideographs and their punctuation, full-width forms
-        0x3000..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF => &["Hiragino Sans", "Hiragino Kaku Gothic ProN", "PingFang SC", "Noto Sans CJK JP", "Arial Unicode MS"],
-        0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => &["Apple SD Gothic Neo", "AppleGothic", "Noto Sans CJK KR", "Arial Unicode MS"],
+        // kana, CJK ideographs and their punctuation, full-width forms, bopomofo
+        0x3000..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x3100..=0x312F | 0x31A0..=0x31BF => {
+            &["Hiragino Sans", "Hiragino Kaku Gothic ProN", "PingFang SC", "Noto Sans CJK JP", "Arial Unicode MS"]
+        }
+        0x20000..=0x3FFFF => &["PingFang SC", "STHeiti", "Hiragino Sans", "Arial Unicode MS"],
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF | 0xA960..=0xA97F | 0xD7B0..=0xD7FF => &["Apple SD Gothic Neo", "AppleGothic", "Noto Sans CJK KR", "Arial Unicode MS"],
         // fonts with OpenType forms first (Geeza Pro's joining is in Apple's own tables)
-        0x0600..=0x06FF | 0x0750..=0x077F | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => &[".SF Arabic", "SF Arabic", "Arial", "Damascus", "Geeza Pro", "Arial Unicode MS"],
-        0x0590..=0x05FF => &["Arial Hebrew", "Arial", "Arial Unicode MS"],
+        0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => &[".SF Arabic", "SF Arabic", "Arial", "Damascus", "Geeza Pro", "Arial Unicode MS"],
+        0x0590..=0x05FF | 0xFB1D..=0xFB4F => &["Arial Hebrew", "Arial", "Arial Unicode MS"],
+        0x0700..=0x074F => &["Noto Sans Syriac"],
+        0x0780..=0x07BF => &["Noto Sans Thaana"],
+        0x07C0..=0x07FF => &["Noto Sans NKo"],
         0x0900..=0x097F | 0xA8E0..=0xA8FF | 0x1CD0..=0x1CFF => &["Kohinoor Devanagari", "Devanagari Sangam MN", "Arial Unicode MS"],
         0x0980..=0x09FF => &["Kohinoor Bangla", "Bangla Sangam MN", "Bangla MN"],
         0x0A00..=0x0A7F => &["Gurmukhi Sangam MN", "Gurmukhi MN", "Mukta Mahee"],
@@ -181,14 +278,24 @@ pub fn fallback_for(c: char) -> Option<&'static Face> {
         0x0D00..=0x0D7F => &["Malayalam Sangam MN", "Malayalam MN"],
         0x0D80..=0x0DFF => &["Sinhala Sangam MN", "Sinhala MN"],
         0x0E80..=0x0EFF => &["Lao Sangam MN", "Arial Unicode MS"],
-        0x1780..=0x17FF => &["Khmer Sangam MN", "Arial Unicode MS"],
-        0x1000..=0x109F => &["Myanmar Sangam MN", "Noto Sans Myanmar", "Arial Unicode MS"],
+        0x0F00..=0x0FFF => &["Kokonor", "Kailasa", "Noto Serif Tibetan"],
+        0x1000..=0x109F | 0xA9E0..=0xA9FF | 0xAA60..=0xAA7F => &["Myanmar Sangam MN", "Noto Sans Myanmar", "Arial Unicode MS"],
+        0x10A0..=0x10FF | 0x2D00..=0x2D2F | 0x1C90..=0x1CBF => &[".SF Georgian", "SF Georgian", "Arial Unicode MS"],
+        0x0530..=0x058F | 0xFB13..=0xFB17 => &[".SF Armenian", "SF Armenian", "Noto Sans Armenian", "Arial Unicode MS"],
+        0x1200..=0x139F | 0x2D80..=0x2DDF | 0xAB00..=0xAB2F => &["Kefa III", "Kefa", "Noto Sans Ethiopic"],
+        0x13A0..=0x13FF | 0xAB70..=0xABBF => &["Plantagenet Cherokee", "Noto Sans Cherokee"],
+        0x1400..=0x167F | 0x18B0..=0x18FF => &["Euphemia UCAS", "Noto Sans Canadian Aboriginal"],
+        0x1780..=0x17FF | 0x19E0..=0x19FF => &["Khmer Sangam MN", "Arial Unicode MS"],
+        0x1800..=0x18AF => &["Noto Sans Mongolian"],
+        0xA000..=0xA4CF => &["Noto Sans Yi"],
+        0x2800..=0x28FF => &["Apple Braille"],
         0x0370..=0x04FF => &["System Font", "Helvetica", "Arial"],
         // emoji, and what joins and dresses them (joiners, variation selectors, keycaps, tags)
         0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x200D | 0xFE0F | 0x20E3 | 0xE0020..=0xE007F | 0x2300..=0x23FF => &["Apple Color Emoji", "Noto Color Emoji", "Apple Symbols"],
+        // mathematics
+        0x2200..=0x22FF | 0x27C0..=0x27EF | 0x2980..=0x2AFF | 0x1D400..=0x1D7FF => &["STIX Two Math", "Apple Symbols"],
         _ => &["System Font", "Helvetica", "Arial Unicode MS", "Apple Symbols"],
-    };
-    preferred.iter().find_map(|f| find(f, 400, false))
+    }
 }
 
 #[cfg(test)]
@@ -216,5 +323,19 @@ mod tests {
         if std::path::Path::new("/System/Library/Fonts/GeezaPro.ttc").exists() {
             assert_eq!(find("Geeza Pro", 400, false).map(|f| f.family.as_str()), Some("Geeza Pro"));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_face_is_found_for_every_script_the_computer_has() {
+        // Thai, Arabic, Hebrew, kana, han, hangul, Devanagari, Bengali, Tamil, Khmer, Myanmar, Lao,
+        // Georgian, Armenian, Ethiopic, Sinhala, Tibetan, Cherokee, emoji, a sign of mathematics
+        for c in "กعשあ世한नবதកမລაԲሰආཀᎣ😀∮".chars() {
+            let face = fallback_for(c).unwrap_or_else(|| panic!("no face for {c}"));
+            assert_ne!(open(face).unwrap().glyph(c), 0, "{c}: {}", face.family);
+        }
+        // the map read from the file says the same as the font opened
+        let geeza = faces().iter().find(|f| f.family == "Geeza Pro").unwrap();
+        assert!(covers(geeza, 'ع') && !covers(geeza, 'ก'));
     }
 }

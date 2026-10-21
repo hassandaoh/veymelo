@@ -550,14 +550,14 @@ impl Settings {
         canvas.shadow(px(x), px(y + 8.0), px(w), px(h), px(14.0), px(26.0), INK, come * 0.16);
         canvas.fill_faded(&round((x, y, w, h), 14.0), PAPER, come);
         canvas.stroke(&Path::rounded_points(px(x), px(y), px(w), px(h), px(14.0)), true, 0.9 * scale, EDGE, come);
-        canvas.fill_faded(&Label::new(f.title.clone(), 14.0, "Composition").path(x + 20.0, y + 31.0, 1.0, scale), INK, come);
+        Label::new(f.title.clone(), 14.0, "Composition").draw(canvas, x + 20.0, y + 31.0, 1.0, scale, INK, come);
         let lift = |r: Rect| (r.0, r.1 + rise, r.2, r.3);
         // each field: its label, its well, its words, the caret where it types, what is wrong
         let labels = ["Name", "Size", "", "Frame rate", "Length", "Background"];
         for (i, which) in ORDER.iter().enumerate() {
             let r = lift(self.field_rect(i));
             if !labels[i].is_empty() {
-                canvas.fill_faded(&Label::new(f.small.clone(), 11.5, labels[i]).path(x + 20.0, r.1 + 18.0, 1.0, scale), GREY, come);
+                Label::new(f.small.clone(), 11.5, labels[i]).draw(canvas, x + 20.0, r.1 + 18.0, 1.0, scale, GREY, come);
             }
             let focused = i == self.focus;
             canvas.fill_faded(&round(r, 7.0), WELL, come);
@@ -576,7 +576,7 @@ impl Settings {
             if focused && field.all && !field.text.is_empty() {
                 canvas.fill_faded(&round((text_x - 2.0, r.1 + 5.0, words.wide + 4.0, r.3 - 10.0), 3.0), Rgb(205, 222, 250), come);
             }
-            canvas.fill_faded(&words.path(text_x, r.1 + 19.0, 1.0, scale), INK, come);
+            words.draw(canvas, text_x, r.1 + 19.0, 1.0, scale, INK, come);
             if focused && !field.all && ((t - self.since) / 0.53).floor() as i64 % 2 == 0 {
                 let before: String = field.text.chars().take(field.caret).collect();
                 let cx = text_x + Label::new(f.body.clone(), 13.0, &before).wide;
@@ -588,20 +588,20 @@ impl Settings {
                     _ => (r.0 + r.2 + 12.0, r.1 + 18.0),
                 };
                 if !(*which == Which::Width && problem(Which::Height, &self.fields[2].text).is_some()) {
-                    canvas.fill_faded(&Label::new(f.small.clone(), 11.5, why).path(ex, ey, 1.0, scale), RED, come);
+                    Label::new(f.small.clone(), 11.5, why).draw(canvas, ex, ey, 1.0, scale, RED, come);
                 }
             }
         }
         // what goes after the fields: ×, px, fps, how lengths are typed
         let (_, wy, ww, _) = lift(self.field_rect(1));
-        canvas.fill_faded(&Label::new(f.body.clone(), 13.0, "×").path(x + FIELDS + ww + 6.0, wy + 19.0, 1.0, scale), FAINT, come);
+        Label::new(f.body.clone(), 13.0, "×").draw(canvas, x + FIELDS + ww + 6.0, wy + 19.0, 1.0, scale, FAINT, come);
         let (hx, _, hw, _) = self.field_rect(2);
-        canvas.fill_faded(&Label::new(f.small.clone(), 11.5, "px").path(hx + hw + 8.0, wy + 18.0, 1.0, scale), FAINT, come);
+        Label::new(f.small.clone(), 11.5, "px").draw(canvas, hx + hw + 8.0, wy + 18.0, 1.0, scale, FAINT, come);
         let (rx, ry, rw, _) = lift(self.field_rect(3));
-        canvas.fill_faded(&Label::new(f.small.clone(), 11.5, "fps").path(rx + rw + 8.0, ry + 18.0, 1.0, scale), FAINT, come);
+        Label::new(f.small.clone(), 11.5, "fps").draw(canvas, rx + rw + 8.0, ry + 18.0, 1.0, scale, FAINT, come);
         let (lx, ly, lw, _) = lift(self.field_rect(4));
         if problem(Which::Length, &self.fields[4].text).is_none() {
-            canvas.fill_faded(&Label::new(f.small.clone(), 11.5, "min:sec, or seconds").path(lx + lw + 8.0, ly + 18.0, 1.0, scale), FAINT, come);
+            Label::new(f.small.clone(), 11.5, "min:sec, or seconds").draw(canvas, lx + lw + 8.0, ly + 18.0, 1.0, scale, FAINT, come);
         }
         // the swap of width and height
         let s = lift(self.swap_rect());
@@ -634,7 +634,7 @@ impl Settings {
                     canvas.stroke(&Path::rounded_points(px(rr.0), px(rr.1), px(rr.2), px(rr.3), px(rr.3 / 2.0)), true, 0.9 * scale, EDGE, come);
                 }
                 let l = Label::new(f.small.clone(), 11.5, &words[i]);
-                canvas.fill_faded(&l.path(rr.0 + (rr.2 - l.wide) / 2.0, rr.1 + 16.0, 1.0, scale), if on { PAPER } else { INK }, come);
+                l.draw(canvas, rr.0 + (rr.2 - l.wide) / 2.0, rr.1 + 16.0, 1.0, scale, if on { PAPER } else { INK }, come);
             }
         }
         // the colours: a ring round the one typed
@@ -657,16 +657,16 @@ impl Settings {
             Some(why) => (why.as_str(), RED),
             None => ("Tab: next  ·  Return: apply  ·  Esc: close", FAINT),
         };
-        canvas.fill_faded(&fit(&f.small, 11.0, foot.0, cancel.0 - x - 30.0).path(x + 20.0, cancel.1 + 19.0, 1.0, scale), foot.1, come);
+        fit(&f.small, 11.0, foot.0, cancel.0 - x - 30.0).draw(canvas, x + 20.0, cancel.1 + 19.0, 1.0, scale, foot.1, come);
         if near(self.buttons().0) {
             canvas.fill_faded(&round(cancel, cancel.3 / 2.0), WELL, come);
         }
         canvas.stroke(&Path::rounded_points(px(cancel.0), px(cancel.1), px(cancel.2), px(cancel.3), px(cancel.3 / 2.0)), true, 0.9 * scale, EDGE, come);
         let l = Label::new(f.strong.clone(), 12.0, "Cancel");
-        canvas.fill_faded(&l.path(cancel.0 + (cancel.2 - l.wide) / 2.0, cancel.1 + 19.5, 1.0, scale), INK, come);
+        l.draw(canvas, cancel.0 + (cancel.2 - l.wide) / 2.0, cancel.1 + 19.5, 1.0, scale, INK, come);
         canvas.fill_faded(&round(apply, apply.3 / 2.0), if near(self.buttons().1) { Rgb(48, 48, 54) } else { INK }, come);
         let l = Label::new(f.strong.clone(), 12.0, if self.waiting.is_some() { "Waiting…" } else { "Apply" });
-        canvas.fill_faded(&l.path(apply.0 + (apply.2 - l.wide) / 2.0, apply.1 + 19.5, 1.0, scale), PAPER, come);
+        l.draw(canvas, apply.0 + (apply.2 - l.wide) / 2.0, apply.1 + 19.5, 1.0, scale, PAPER, come);
     }
 }
 
@@ -725,7 +725,7 @@ mod tests {
     }
 
     fn about() -> About {
-        About { comp: 7, name: "Teaser".into(), width: 1080, height: 1920, fps: 30.0, duration: 99.0, background: [1.0; 3], last_end: 98.5 }
+        About { comp: 7, name: "Teaser".into(), width: 1080, height: 1920, fps: 30.0, duration: 99.0, background: [1.0; 3], last_end: 98.5, three_d: false }
     }
 
     #[test]

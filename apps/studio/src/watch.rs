@@ -3,7 +3,10 @@
 //! On the left, the composition it works on, drawn by our own renderer at the size it shows
 //! (on a thread of its own, again whenever the project changes, so the window never waits),
 //! lying as a sheet with a soft shadow on dotted paper, as on the opening; what it is (its size,
-//! rate and length) goes after the project's name at the top. Under it the timeline
+//! rate and length) goes after the project's name at the top. One with 3D layers can be looked
+//! round (the project unchanged): drag over it to turn round what its camera sees, scroll to go
+//! nearer or farther; it is drawn at half the detail while it moves, whole once it stops, and
+//! "Reset view" goes back to its camera. Under it the timeline
 //! (`timeline`: the ruler, the sound, the layers; drag along it to look, Space or the round
 //! button to play, the arrows to step a frame). Playing, its sound plays too, and the time the
 //! sound has reached is the picture's.
@@ -73,6 +76,32 @@ pub struct About {
     /// Its background colour (0 to 1), and when its last layer ends (seconds).
     pub background: [f64; 3],
     pub last_end: f64,
+    /// Whether it has 3D layers (and can be looked round).
+    pub three_d: bool,
+}
+
+/// How the preview is looked round: as its camera sees it turned `turn` degrees about the
+/// vertical and `tilt` up and down, `dolly` times as far from what it looks at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub turn: f64,
+    pub tilt: f64,
+    pub dolly: f64,
+}
+
+impl Look {
+    /// As the composition's camera sees it.
+    pub const AS_IS: Look = Look { turn: 0.0, tilt: 0.0, dolly: 1.0 };
+}
+
+/// What the page asks the drawing thread for: the time, the room (pixels), how it is looked
+/// round, and whether a quick draft does (while the look moves).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ask {
+    time: f64,
+    room: (usize, usize),
+    look: Look,
+    draft: bool,
 }
 
 /// A frame drawn: its pixels (RGBA, over the checkerboard) and size.
@@ -90,12 +119,14 @@ struct Key {
     comp: u64,
     time: f64,
     room: (usize, usize),
+    look: Look,
+    draft: bool,
 }
 
 /// What the page asks of the drawing thread, and what it gives back.
 struct Worker {
-    /// The time asked for and the room (pixels).
-    ask: Mutex<(f64, (usize, usize))>,
+    /// What the page asks for.
+    ask: Mutex<Ask>,
     frame: Mutex<Option<Arc<Frame>>>,
     about: Mutex<Option<About>>,
     /// The time the AI last set its view to.
@@ -109,7 +140,7 @@ struct Worker {
 fn worker() -> &'static Worker {
     static WORKER: OnceLock<Worker> = OnceLock::new();
     WORKER.get_or_init(|| {
-        let w = Worker { ask: Mutex::new((0.0, (0, 0))), frame: Mutex::new(None), about: Mutex::new(None), view_time: Mutex::new(None), lanes: Mutex::new((u64::MAX, 0, Arc::new(Vec::new()), Arc::new(Vec::new()))), drawn: AtomicU64::new(0) };
+        let w = Worker { ask: Mutex::new(Ask { time: 0.0, room: (0, 0), look: Look::AS_IS, draft: false }), frame: Mutex::new(None), about: Mutex::new(None), view_time: Mutex::new(None), lanes: Mutex::new((u64::MAX, 0, Arc::new(Vec::new()), Arc::new(Vec::new()))), drawn: AtomicU64::new(0) };
         std::thread::spawn(draw_loop);
         w
     })
@@ -163,20 +194,26 @@ fn draw_loop() {
             duration: c.duration.seconds(),
             background: [c.background.r, c.background.g, c.background.b],
             last_end: c.layers.iter().map(|l| l.out_point.seconds()).fold(0.0, f64::max),
+            three_d: c.layers.iter().any(|l| l.is_3d()),
         };
         *lock(&w.about) = Some(about.clone());
-        let (time, room) = *lock(&w.ask);
+        let ask = *lock(&w.ask);
+        let room = ask.room;
         // held to a frame of the composition, inside its length
         let fps = about.fps.max(1.0);
-        let time = ((time * fps + 1e-6).floor() / fps).clamp(0.0, (about.duration - 1.0 / fps).max(0.0));
-        let key = Key { revision, comp, time, room };
+        let time = ((ask.time * fps + 1e-6).floor() / fps).clamp(0.0, (about.duration - 1.0 / fps).max(0.0));
+        // looked round only when it is 3D
+        let look = if about.three_d { ask.look } else { Look::AS_IS };
+        let key = Key { revision, comp, time, room, look, draft: ask.draft };
         if last.as_ref() == Some(&key) || room.0 < 8 || room.1 < 8 {
             continue;
         }
         let scale = (room.0 as f64 / about.width.max(1) as f64).min(room.1 as f64 / about.height.max(1) as f64).min(4.0);
-        let options = veymelo_engine::render::Options { scale, ..Default::default() };
+        let orbit = (look != Look::AS_IS).then_some(veymelo_engine::render::Orbit { comp, turn: look.turn, tilt: look.tilt, dolly: look.dolly });
+        // a draft: half the detail, no motion blur, made as big again after
+        let options = if ask.draft { veymelo_engine::render::Options { scale: scale / 2.0, motion_blur: false, orbit, ..Default::default() } } else { veymelo_engine::render::Options { scale, orbit, ..Default::default() } };
         let Ok(r) = veymelo_engine::render::render(&project, comp, veymelo_time::Tick::from_seconds(time), &options) else { continue };
-        let img = r.image;
+        let img = if ask.draft { grown(&r.image, ((about.width as f64 * scale).round() as usize).max(1), ((about.height as f64 * scale).round() as usize).max(1)) } else { r.image };
         let mut px = Vec::with_capacity(img.width * img.height * 4);
         for (i, p) in img.px.iter().enumerate() {
             let (x, y) = (i % img.width, i / img.width);
@@ -191,6 +228,20 @@ fn draw_loop() {
         w.drawn.fetch_add(1, Ordering::Relaxed);
         last = Some(key);
     }
+}
+
+/// Picture `img` made `w` × `h` pixels big, between its pixels.
+fn grown(img: &veymelo_raster::Image, w: usize, h: usize) -> veymelo_raster::Image {
+    let mut out = veymelo_raster::Image::new(w, h);
+    let (kx, ky) = (img.width as f64 / w as f64, img.height as f64 / h as f64);
+    let (iw, ih) = (img.width as f64, img.height as f64);
+    veymelo_raster::par::rows(&mut out.px, w, |y, row| {
+        for (x, p) in row.iter_mut().enumerate() {
+            let (sx, sy) = (((x as f64 + 0.5) * kx).clamp(0.5, iw - 0.5), ((y as f64 + 0.5) * ky).clamp(0.5, ih - 0.5));
+            *p = img.sample(veymelo_raster::Sampling::Bilinear, sx, sy);
+        }
+    });
+    out
 }
 
 /// Words in a face at a size, cut to fit `wide` points (with an ellipsis).
@@ -236,7 +287,7 @@ fn line_with_colours(canvas: &mut Canvas, font: &Font, size: f64, text: &str, (x
         if let Some(colour) = colour_code(rest) {
             if !piece.is_empty() {
                 let l = Label::new(font.clone(), size, &piece);
-                canvas.fill_faded(&l.path(pen, baseline, 1.0, scale), ink, alpha);
+                l.draw(canvas, pen, baseline, 1.0, scale, ink, alpha);
                 pen += l.wide;
                 piece.clear();
             }
@@ -253,7 +304,7 @@ fn line_with_colours(canvas: &mut Canvas, font: &Font, size: f64, text: &str, (x
         rest = chars.as_str();
     }
     if !piece.is_empty() {
-        canvas.fill_faded(&Label::new(font.clone(), size, &piece).path(pen, baseline, 1.0, scale), ink, alpha);
+        Label::new(font.clone(), size, &piece).draw(canvas, pen, baseline, 1.0, scale, ink, alpha);
     }
 }
 
@@ -412,11 +463,18 @@ pub struct Watch {
     files: crate::files::Files,
     pub open_file: Option<std::path::PathBuf>,
     pub add: Option<(std::path::PathBuf, f64)>,
+    /// How the preview is looked round, of which composition; where the drag turning it last
+    /// was (none: not turning); when it last moved; whether a draft shows while it moves.
+    look: Look,
+    look_comp: Option<u64>,
+    turning: Option<(f64, f64)>,
+    moved: f64,
+    draft: bool,
 }
 
 impl Watch {
     pub const fn new() -> Watch {
-        Watch { time: 0.0, playing: None, dragging: false, tall: None, sizing: false, timeline: Timeline::new(), pointer: None, born: None, last: None, followed: None, size: (0.0, 0.0), seen: (0, 0, None, 0), copy: None, set_up: None, connect: crate::connect::Connect::new(), open: true, panel: crate::motion::Spring { x: 1.0, v: 0.0 }, files_open: true, files_panel: crate::motion::Spring { x: 1.0, v: 0.0 }, kept: false, files: crate::files::Files::new(), open_file: None, add: None }
+        Watch { time: 0.0, playing: None, dragging: false, tall: None, sizing: false, timeline: Timeline::new(), pointer: None, born: None, last: None, followed: None, size: (0.0, 0.0), seen: (0, 0, None, 0), copy: None, set_up: None, connect: crate::connect::Connect::new(), open: true, panel: crate::motion::Spring { x: 1.0, v: 0.0 }, files_open: true, files_panel: crate::motion::Spring { x: 1.0, v: 0.0 }, kept: false, files: crate::files::Files::new(), open_file: None, add: None, look: Look::AS_IS, look_comp: None, turning: None, moved: f64::NEG_INFINITY, draft: false }
     }
 
     fn layout(&self) -> Layout {
@@ -432,6 +490,21 @@ impl Watch {
     /// The time looked at (seconds).
     pub fn now(&self) -> f64 {
         self.time
+    }
+
+    /// Whether `p` is over the preview of a composition that can be looked round.
+    fn over_3d(&self, p: (f64, f64)) -> bool {
+        self.about().is_some_and(|a| a.three_d) && crate::button::inside(self.layout().room, p)
+    }
+
+    /// The button that goes back to the composition's camera (while it is looked round).
+    fn reset_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        if self.look == Look::AS_IS || !self.about().is_some_and(|a| a.three_d) {
+            return None;
+        }
+        let (x, y, _, _) = self.layout().room;
+        let wide = faces().map_or(90.0, |f| crate::button::line_wide(&Label::new(f.small.clone(), 11.0, "Reset view"), crate::button::Icon::None));
+        Some((x + 10.0, y + 8.0, wide, 26.0))
     }
 
     /// Whether `p` is over the preview or the timeline (where a file can be let go).
@@ -500,7 +573,7 @@ impl Watch {
     /// Whether the window has to draw again: something new to show, a step running, playing.
     pub fn wants(&self) -> bool {
         let now = Self::now_seen();
-        now != self.seen || now.2 == Some(State::Running) || self.playing.is_some() || self.dragging || self.sizing || self.files.busy() || self.files.stale()
+        now != self.seen || now.2 == Some(State::Running) || self.playing.is_some() || self.dragging || self.sizing || self.files.busy() || self.files.stale() || self.draft || self.turning.is_some()
     }
 
     pub fn about(&self) -> Option<About> {
@@ -546,7 +619,14 @@ impl Watch {
         }
         let at = self.layout();
         let room = ((((at.room.2 - 24.0).max(1.0)) * scale) as usize, ((at.room.3 - 24.0).max(1.0) * scale) as usize);
-        *lock(&w.ask) = (self.time, room);
+        // another composition: seen through its own camera again
+        let comp = about.as_ref().map(|a| a.comp);
+        if comp != self.look_comp {
+            (self.look, self.look_comp) = (Look::AS_IS, comp);
+        }
+        // a draft while the look moves, and a moment after
+        self.draft = self.turning.is_some() || t - self.moved < 0.3;
+        *lock(&w.ask) = Ask { time: self.time, room, look: self.look, draft: self.draft };
         // the timeline: inside the composition's length, following where the AI works
         if let Some(a) = &about {
             self.timeline.fit(a.duration);
@@ -572,6 +652,12 @@ impl Watch {
         let rail = |x0: f64| p.0 >= x0 && p.0 <= x0 + RAIL && p.1 > BAR;
         if self.on_edge(p) {
             self.sizing = true;
+        } else if self.reset_rect().is_some_and(|r| crate::button::inside(r, p)) {
+            self.look = Look::AS_IS;
+            self.moved = t;
+        } else if self.over_3d(p) {
+            self.turning = Some(p);
+            self.moved = t;
         } else if crate::button::inside(fold_files(&at, self.files_panel.x), p) || (!self.files_open && rail(0.0)) {
             self.toggle_files();
         } else if crate::button::inside(fold_steps(&at, self.panel.x), p) || (!self.open && rail(self.size.0 - RAIL)) {
@@ -626,6 +712,12 @@ impl Watch {
             self.files.scroll(self.files_rect(), d.1);
             return;
         }
+        // over a 3D preview: nearer (scrolled up) or farther
+        if self.over_3d(p) {
+            self.look.dolly = (self.look.dolly * (d.1 * 0.004).exp()).clamp(0.15, 8.0);
+            self.moved = t;
+            return;
+        }
         let at = self.layout();
         let length = self.about().map_or(0.0, |a| a.duration);
         let all = self.timeline.height(&Self::lanes().0);
@@ -657,6 +749,7 @@ impl Watch {
     pub fn up(&mut self, p: (f64, f64)) {
         self.dragging = false;
         self.sizing = false;
+        self.turning = None;
         match self.files.up(self.files_rect(), p) {
             Some(crate::files::Act::Open(path)) => self.open_file = Some(path),
             Some(crate::files::Act::Drop(path, q)) if self.over_middle(q) => self.add = Some((path, self.time)),
@@ -690,6 +783,15 @@ impl Watch {
     /// The pointer moved to `p` (held on the time bar: the time follows it).
     pub fn drag(&mut self, p: (f64, f64)) {
         self.files.drag(p);
+        // turning round what the camera sees, as if turning it by hand: across turns it about the
+        // vertical, down tips its top toward the viewer
+        if let Some(q) = self.turning {
+            self.look.turn += (p.0 - q.0) * 0.35;
+            self.look.tilt = (self.look.tilt + (p.1 - q.1) * 0.35).clamp(-85.0, 85.0);
+            self.turning = Some(p);
+            self.moved = self.last.unwrap_or(0.0);
+            return;
+        }
         if self.sizing {
             // the timeline's top follows the pointer (its bottom stays at the page's)
             self.tall = Some(timeline_tall(self.size, Some(self.size.1 - 4.0 - p.1 - 6.0)));
@@ -723,6 +825,7 @@ impl Watch {
         let lanes = Self::lanes().0;
         let rail = |x0: f64| p.0 >= x0 && p.0 <= x0 + RAIL && p.1 > BAR;
         ((p.0 - play.0).abs() < 16.0 && (p.1 - play.1).abs() < 16.0)
+            || self.reset_rect().is_some_and(|r| crate::button::inside(r, p))
             || crate::button::inside(fold_files(&at, self.files_panel.x), p)
             || crate::button::inside(fold_steps(&at, self.panel.x), p)
             || (!self.files_open && rail(0.0))
@@ -758,7 +861,15 @@ impl Watch {
         }
         if about.is_none() {
             let words = Label::new(f.body.clone(), 12.0, "No composition yet: it shows here when the AI makes one");
-            canvas.fill_faded(&words.path(rx + (rw - words.wide) / 2.0, ry + rh / 2.0, 1.0, scale), FAINT, stage_a);
+            words.draw(canvas, rx + (rw - words.wide) / 2.0, ry + rh / 2.0, 1.0, scale, FAINT, stage_a);
+        }
+        // looked round: the way back to its camera; else, over a 3D one, how to look round
+        if let Some(r) = self.reset_rect() {
+            let near = if self.pointer.is_some_and(|q| crate::button::inside(r, q)) { 1.0 } else { 0.0 };
+            crate::button::line_button(canvas, scale, (r.0, r.1 + stage_rise, r.2, r.3), &Label::new(f.small.clone(), 11.0, "Reset view"), crate::button::Icon::None, near, false, stage_a);
+        } else if self.turning.is_none() && self.pointer.is_some_and(|q| self.over_3d(q)) {
+            let words = Label::new(f.small.clone(), 11.0, "Drag to look around · scroll to move in");
+            words.draw(canvas, rx + (rw - words.wide) / 2.0, ry + rh - 4.0, 1.0, scale, FAINT, stage_a);
         }
         // the edge to drag the timeline taller: a small grip, darker under the pointer
         {
@@ -820,7 +931,7 @@ impl Watch {
         let x = at.panel;
         let (lx, lw) = (x + 24.0, PANEL - 48.0);
         let tx = x + 16.0 + FOLD + 12.0;
-        canvas.fill_faded(&Label::new(f.head.clone(), 15.0, "What the AI does").path(tx, BAR + 26.0, 1.0, scale), INK, alpha);
+        Label::new(f.head.clone(), 15.0, "What the AI does").draw(canvas, tx, BAR + 26.0, 1.0, scale, INK, alpha);
         // how the AI is: working (the pen's dot), there, or not connected (an empty ring)
         let sy = BAR + 40.0;
         let (status, ink) = if working {
@@ -833,7 +944,7 @@ impl Watch {
             canvas.stroke(&Path::rounded_points(px(tx + 0.5), px(sy + 0.5), px(6.0), px(6.0), px(3.0)), true, 1.1 * scale, FAINT, alpha);
             ("AI not connected", GREY)
         };
-        canvas.fill_faded(&fit(&f.small, 11.0, status, lw - 14.0).path(tx + 13.0, sy + 7.0, 1.0, scale), ink, alpha);
+        fit(&f.small, 11.0, status, lw - 14.0).draw(canvas, tx + 13.0, sy + 7.0, 1.0, scale, ink, alpha);
         canvas.fill_faded(&rect(lx, BAR + 64.0, lw, 1.0), RULE, alpha);
         // with none connected: the card that connects one
         let mut list_top = LIST_TOP;
@@ -852,7 +963,7 @@ impl Watch {
         if steps.is_empty() {
             let lines = if here { ["Nothing yet.", "Ask the AI to work in this project: what it does", "shows here, step by step."] } else { ["Nothing yet.", "Once an AI is connected, what it does in this", "project shows here, step by step."] };
             for (k, line) in lines.iter().enumerate() {
-                canvas.fill_faded(&Label::new(f.body.clone(), 12.0, line).path(lx, list_top + 10.0 + 18.0 * k as f64, 1.0, scale), if k == 0 { GREY } else { FAINT }, alpha);
+                Label::new(f.body.clone(), 12.0, line).draw(canvas, lx, list_top + 10.0 + 18.0 * k as f64, 1.0, scale, if k == 0 { GREY } else { FAINT }, alpha);
             }
             self.files.paint_drag(canvas, scale, over, alpha);
             return;
@@ -900,14 +1011,14 @@ fn row(canvas: &mut Canvas, f: &Faces, s: &Step, (x, top, w): (f64, f64, f64), s
     let room = w - 14.0;
     // the command, or who made it when it was the person
     let id = Label::new(if s.person { f.strong.clone() } else { f.small.clone() }, 10.5, if s.person { "You" } else { &s.title });
-    canvas.fill_faded(&id.path(x + w - id.wide, top + 16.0, 1.0, scale), if s.person { INK } else { FAINT }, alpha);
+    id.draw(canvas, x + w - id.wide, top + 16.0, 1.0, scale, if s.person { INK } else { FAINT }, alpha);
     let (what, rest) = subject(&s.detail);
     let said = sentence(if s.label.is_empty() { &s.title } else { &s.label });
     let first = room - id.wide - 12.0;
     let l = fit(&f.title, 13.0, &said, first);
-    canvas.fill_faded(&l.path(x0, top + 16.0, 1.0, scale), if looks { GREY } else { INK }, alpha);
+    l.draw(canvas, x0, top + 16.0, 1.0, scale, if looks { GREY } else { INK }, alpha);
     if !what.is_empty() && first - l.wide - 6.0 > 24.0 {
-        canvas.fill_faded(&fit(&f.body, 13.0, what, first - l.wide - 6.0).path(x0 + l.wide + 5.0, top + 16.0, 1.0, scale), if looks { GREY } else { INK }, alpha);
+        fit(&f.body, 13.0, what, first - l.wide - 6.0).draw(canvas, x0 + l.wide + 5.0, top + 16.0, 1.0, scale, if looks { GREY } else { INK }, alpha);
     }
     // under it: why it failed, or what it was given and how long it took
     let took = s.took.filter(|d| d.as_secs_f64() >= 0.05).map(|d| {

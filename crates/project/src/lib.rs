@@ -26,7 +26,7 @@ use std::sync::Arc;
 use veymelo_json::{Map, Value as Json};
 use veymelo_time::{FrameRate, Tick};
 
-pub use comp::{Comp, MAX_SECONDS, MAX_SIZE, MotionBlur, fps_from_json, fps_json};
+pub use comp::{Bounce, Comp, MAX_SECONDS, MAX_SIZE, MOST_BOUNCES, MotionBlur, fps_from_json, fps_json};
 pub use defs::{AUDIO, Applies, Body, Catalog, DefNode, EFFECTS, GroupDef, MASK, MASK_MODES, MASKS, NULL_LAYER, PropDef, SHAPE_LAYER, TEXT_LAYER, TIMED_LAYER, TRANSFORM, Unit, VISUAL_LAYER};
 pub use layer::{AutoOrient, CuePoint, FrameBlend, Label, Layer, LightKind, Marker, Matte, MatteKind, Primitive, Quality, Sampling, Source, Switches};
 pub use props::{Expression, Group, Node, Own, Property};

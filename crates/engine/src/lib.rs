@@ -273,4 +273,6 @@ fn unknown(id: &str) -> Error {
 }
 
 #[cfg(test)]
+mod goldens3d;
+#[cfg(test)]
 mod tests;
