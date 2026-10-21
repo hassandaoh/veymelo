@@ -58,7 +58,7 @@ pub const SHUTTER: Spec = Spec::new(&SHUTTER_DEF, CATEGORY, rolling_shutter);
 pub const ALL: [Spec; 2] = [WARP, SHUTTER];
 
 /// The ids of the effects that need effect.analyze.
-pub const ANALYSED: &[&str] = &["warpStabilizer", "rollingShutterRepair"];
+pub const ANALYSED: &[&str] = &["warpStabilizer", "rollingShutterRepair", "camera3dTracker"];
 
 fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01B3))

@@ -49,6 +49,7 @@ pub mod strokes;
 mod stepper;
 pub mod sphere;
 pub mod steady;
+pub mod tracker3d;
 pub mod stylize;
 pub mod time;
 pub mod transition;
@@ -442,7 +443,7 @@ impl Spec {
 }
 
 /// Every effect, by family.
-static FAMILIES: &[&[Spec]] = &[&[puppet::SPEC], &blur::ALL, &color::ALL, &grade::ALL, &look::ALL, &generate::ALL, &forms::ALL, &paint::ALL, &distort::ALL, &warp::ALL, &bends::ALL, &liquid::ALL, &stylize::ALL, &crafts::ALL, &grain::ALL, &film::ALL, &channel::ALL, &matte::ALL, &keys::ALL, &screen::ALL, &perspective::ALL, &transition::ALL, &time::ALL, &words::ALL, &utility::ALL, &ocio::ALL, &weather::ALL, &particles::ALL, &[hair::HAIR, playground::PLAYGROUND, cards::DANCE, cards::WIPE, shatter::SHATTER, foam::FOAM], &breakup::ALL, &water::ALL, &sphere::ALL, &passes::ALL, &obsolete::ALL, &controls::ALL, &audio::ALL, &strokes::ALL, &steady::ALL];
+static FAMILIES: &[&[Spec]] = &[&[puppet::SPEC], &blur::ALL, &color::ALL, &grade::ALL, &look::ALL, &generate::ALL, &forms::ALL, &paint::ALL, &distort::ALL, &warp::ALL, &bends::ALL, &liquid::ALL, &stylize::ALL, &crafts::ALL, &grain::ALL, &film::ALL, &channel::ALL, &matte::ALL, &keys::ALL, &screen::ALL, &perspective::ALL, &transition::ALL, &time::ALL, &words::ALL, &utility::ALL, &ocio::ALL, &weather::ALL, &particles::ALL, &[hair::HAIR, playground::PLAYGROUND, cards::DANCE, cards::WIPE, shatter::SHATTER, foam::FOAM], &breakup::ALL, &water::ALL, &sphere::ALL, &passes::ALL, &obsolete::ALL, &controls::ALL, &audio::ALL, &strokes::ALL, &steady::ALL, &tracker3d::ALL];
 
 /// Every effect.
 pub fn all() -> impl Iterator<Item = &'static Spec> {

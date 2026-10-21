@@ -82,6 +82,25 @@ pub fn commands() -> Vec<Command> {
             run: Run::Edit(apply),
         },
         Command {
+            id: "camera.fromTracker",
+            label: "Create Camera from 3D Tracker",
+            summary: "Make a 3D camera that moves as a footage layer's camera did, from its 3D Camera Tracker's solution (effect.analyze first): a key a solved frame on its position and orientation, its zoom the lens's. With `make`, a null, solid or text stands on the solved points nearest `at` (the layer's pixels at `time`): on the plane through three or more, else facing the camera; 3D, so it stays on the footage as the camera moves. The footage layer should fill the composition, centred and unturned.",
+            params: const {
+                &[
+                    COMP,
+                    LAYER,
+                    Param::opt("effect", Ty::Text, "the 3D Camera Tracker (default: the layer's first)"),
+                    Param::opt("make", Ty::Choice(MAKES), "what to stand on the points (default none)"),
+                    Param::opt("at", Ty::List, "[[x, y], …] in the layer's pixels at `time`: the solved points nearest them (default: the one nearest the middle)"),
+                    Param::opt("time", Ty::Time, "when `at` is looked at (default: the view's time)"),
+                    Param::opt("text", Ty::Text, "the words, when making text"),
+                    Param::opt("name", Ty::Text, "what to call the camera (default: 3D Tracker Camera)"),
+                ]
+            },
+            returns: "{camera, zoom, keys, layers, notes?}",
+            run: Run::Edit(from_tracker),
+        },
+        Command {
             id: "effect.analyze",
             label: "Analyze",
             summary: "Work out what an effect needs from all of a layer's frames before it can draw: how the camera moved, for Warp Stabilizer and Rolling Shutter Repair. It looks at the frames the effect works on (the layer's, cut by its masks and changed by the effects above it) from the layer's first frame to its last (or `from` to `to`), and keeps what it found in the effect's Analysis; changing the effect's other settings afterwards needs no new analysis.",
@@ -232,6 +251,9 @@ fn analyze_effect(cx: &mut Ctx, a: &Args) -> Result<Json> {
     }
     let times: Vec<Tick> = (rate.frame_at(from)..=rate.frame_at(to)).map(|f| rate.tick_of(f)).collect();
     let step = if times.len() > 1 { (layer.layer_time(times[1]) - layer.layer_time(times[0])).seconds() } else { frame.seconds() };
+    if fx.def.id == "camera3dTracker" {
+        return solve_camera(cx, cid, lid, index, &name, &times, step);
+    }
     let mut analyzer = None;
     for &t in &times {
         let (buf, _) = veymelo_render::effect_input(cx.project, cid, lid, index, t).ok_or_else(|| Error::refused(format!("\"{}\" shows nothing at {} s to analyse", layer.name, t.seconds())))?;
@@ -252,6 +274,218 @@ fn analyze_effect(cx: &mut Ctx, a: &Args) -> Result<Json> {
         ("followed", Json::Number(followed.round())),
         ("agreed", Json::Number((agreed * 1000.0).round() / 10.0)),
     ]))
+}
+
+/// The 3D Camera Tracker's analysis: its layer's features followed through `times` (as they
+/// reach effect `index`, `step` seconds apart in the layer), the camera solved, kept in its
+/// Solution.
+fn solve_camera(cx: &mut Ctx, cid: u64, lid: u64, index: usize, name: &str, times: &[Tick], step: f64) -> Result<Json> {
+    use veymelo_track::scene3d::{Follower, Settings, Solve, solve, to_text};
+    let comp = cx.project.comp(cid).expect("found");
+    let layer = comp.layer(lid).expect("found");
+    let mut follower = Follower::default();
+    let mut rect = None;
+    for &t in times {
+        let (buf, _) = veymelo_render::effect_input(cx.project, cid, lid, index, t).ok_or_else(|| Error::refused(format!("\"{}\" shows nothing at {} s to analyse", layer.name, t.seconds())))?;
+        let (o, s) = (buf.origin, buf.scale);
+        rect.get_or_insert([o.x, o.y, o.x + buf.img.width as f64 / s, o.y + buf.img.height as f64 / s]);
+        follower.add(&buf.img, [-o.x * s, -o.y * s]);
+    }
+    let tracks = follower.finish();
+    let fx = layer.props.group(&format!("effects/{name}")).map_err(Error::not_found)?;
+    let at = |p: &str| fx.prop(p).map(|q| q.value_at(layer.layer_time(times[0]))).ok();
+    let angle = (at("shotType").map_or(0, |v| v.as_choice()) == 1).then(|| at("horizontalAngleOfView").map_or(40.0, |v| v.as_f64()));
+    let how = match at("solveMethod").map_or(0, |v| v.as_choice()) {
+        1 => Some(Solve::Typical),
+        2 => Some(Solve::Tripod),
+        _ => None,
+    };
+    let rect = rect.expect("a frame at least");
+    let sol = solve(&tracks, times.len(), rect, &Settings { angle, how }).ok_or_else(|| Error::refused(format!("the camera could not be solved from {} features followed: the shot needs more detail to follow, or more change in view", tracks.len())))?;
+    let start = layer.layer_time(times[0]).seconds();
+    let solved = sol.cameras.iter().flatten().count();
+    let points = sol.points.iter().flatten().count();
+    let view = 2.0 * ((rect[2] - rect[0]) / 2.0 / sol.focal).atan().to_degrees();
+    let layer = cx.project.comp_mut(cid).expect("found").layer_mut(lid).expect("found");
+    layer.props.prop_mut(&format!("effects/{name}/solution")).map_err(Error::refused)?.set_value(Value::Text(to_text(&sol, start, step))).map_err(Error::refused)?;
+    cx.label = Some(format!("Analyze {name}"));
+    let r = |v: f64| (v * 100.0).round() / 100.0;
+    Ok(Json::object([
+        ("effect", Json::from(format!("effects/{name}"))),
+        ("frames", Json::Number(times.len() as f64)),
+        ("solved", Json::Number(solved as f64)),
+        ("points", Json::Number(points as f64)),
+        ("error", Json::Number(r(sol.error))),
+        ("method", Json::from(if sol.how == Solve::Tripod { "tripodPan" } else { "typical" })),
+        ("angleOfView", Json::Number(r(view))),
+    ]))
+}
+
+/// What camera.fromTracker makes on the points.
+const MAKES: &[&str] = &["none", "null", "solid", "text"];
+
+fn from_tracker(cx: &mut Ctx, a: &Args) -> Result<Json> {
+    use veymelo_geom::{Mat4, Vec3, vec3};
+    let (cid, lid) = layer_ids(cx.project, cx.view, a)?;
+    let comp = cx.project.comp(cid).expect("found");
+    let (w, h) = (comp.width as f64, comp.height as f64);
+    let layer = comp.layer(lid).expect("found");
+    let list: Vec<&Group> = layer.props.group("effects").map(|l| l.children.iter().filter_map(Node::as_group).collect()).unwrap_or_default();
+    let fx = match a.text("effect") {
+        Some(n) => list.iter().find(|g| g.name() == n.trim_start_matches("effects/")),
+        None => list.iter().find(|g| g.def.id == "camera3dTracker"),
+    }
+    .ok_or_else(|| Error::not_found(format!("\"{}\" has no 3D Camera Tracker (effect.add camera3dTracker, then effect.analyze)", layer.name)))?;
+    let text = fx.prop("solution").map(|p| p.value.as_text().to_string()).unwrap_or_default();
+    let solved = veymelo_effects::tracker3d::solution(&text).ok_or_else(|| Error::refused(format!("{} has not solved the camera yet: effect.analyze does", fx.name())))?;
+    let (sol, start, step) = (&solved.0, solved.1, solved.2);
+    let k0 = sol.cameras.iter().position(Option::is_some).ok_or_else(|| Error::refused("its solution has no cameras"))?;
+    let c0 = sol.cameras[k0].expect("placed");
+    // from the layer's pixels to the composition's, where the shot starts
+    let e = veymelo_expr::Eval::new(cx.project);
+    let first = layer.comp_time(Tick::from_seconds(start + k0 as f64 * step));
+    let m = e.matrix(e.place(comp, layer), first);
+    let scale = m.apply_vec(vec2(1.0, 0.0)).length();
+    let middle = m.apply(vec2(sol.center[0], sol.center[1]));
+    let mut notes = Vec::new();
+    if (middle.x - w / 2.0).hypot(middle.y - h / 2.0) > 1.0 {
+        notes.push(format!("the footage's middle is at [{:.1}, {:.1}], not the composition's: a camera sees about the composition's middle, so the layer should fill the composition, centred and unturned", middle.x, middle.y));
+    }
+    let zoom = sol.focal * scale;
+    // the world as the first frame's camera sees it, the points' middle depth at the zoom, the
+    // camera where a composition's own stands
+    let depths = {
+        let mut d: Vec<f64> = sol.points.iter().flatten().map(|x| c0.to_camera(*x)[2]).filter(|z| *z > 0.0).collect();
+        d.sort_by(f64::total_cmp);
+        d
+    };
+    let k = if depths.is_empty() { 1.0 } else { zoom / depths[depths.len() / 2] };
+    let eye = vec3(w / 2.0, h / 2.0, -zoom);
+    let to_comp = |x: [f64; 3]| {
+        let q = c0.to_camera(x);
+        eye + vec3(q[0], q[1], q[2]) * k
+    };
+    let r0t = |r: &[[f64; 3]; 3]| -> [[f64; 3]; 3] { std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|n| r[i][n] * c0.r[j][n]).sum())) };
+    // each solved frame's camera: where it is, and its orientation (its turn from the world
+    // undone), each angle the nearest way round from the frame before
+    let mut keys_at: Vec<(Tick, Vec3, Vec3)> = Vec::new();
+    let mut last: Option<Vec3> = None;
+    for (j, cam) in sol.cameras.iter().enumerate() {
+        let Some(cam) = cam else { continue };
+        let rc = r0t(&cam.r);
+        let back = Mat4([[rc[0][0], rc[1][0], rc[2][0], 0.0], [rc[0][1], rc[1][1], rc[2][1], 0.0], [rc[0][2], rc[1][2], rc[2][2], 0.0], [0.0, 0.0, 0.0, 1.0]]);
+        let mut o = back.to_orientation();
+        if let Some(p) = last {
+            let near = |v: f64, was: f64| v + 360.0 * ((was - v) / 360.0).round();
+            o = vec3(near(o.x, p.x), near(o.y, p.y), near(o.z, p.z));
+        }
+        last = Some(o);
+        keys_at.push((layer.comp_time(Tick::from_seconds(start + j as f64 * step)), to_comp(cam.center()), o));
+    }
+    let base = a.text("name").unwrap_or("3D Tracker Camera").to_string();
+    let taken: Vec<String> = comp.layers.iter().map(|l| l.name.clone()).collect();
+    let name = super::fresh_name(&base, taken.iter().map(String::as_str));
+    // what to make on the points, and where
+    let make = a.text("make").unwrap_or("none");
+    if !MAKES.contains(&make) {
+        return Err(Error::params(format!("`make` is one of {}, not \"{make}\"", MAKES.join(", "))));
+    }
+    let t = a.time("time").unwrap_or(cx.view.time);
+    let kk = (((layer.layer_time(t).seconds() - start) / step).round().max(0.0) as usize).min(sol.cameras.len().saturating_sub(1));
+    let kk = (kk..sol.cameras.len()).chain((0..kk).rev()).find(|&i| sol.cameras[i].is_some()).unwrap_or(k0);
+    let chosen: Vec<[f64; 3]> = if make == "none" {
+        Vec::new()
+    } else {
+        let seen: Vec<([f64; 2], [f64; 3])> = sol.points.iter().flatten().filter_map(|x| Some((sol.seen(kk, *x)?, *x))).collect();
+        if seen.is_empty() {
+            return Err(Error::refused("no solved point is seen at that time"));
+        }
+        let wanted: Vec<[f64; 2]> = match a.json("at").and_then(Json::as_array) {
+            Some(list) => list.iter().enumerate().map(|(i, v)| pair(Some(v), &format!("at[{i}]")).map(|p| p.unwrap_or([0.0; 2]))).collect::<Result<_>>()?,
+            None => vec![sol.center],
+        };
+        let mut out = Vec::new();
+        for p in wanted {
+            let (q, x) = seen.iter().min_by(|a, b| (a.0[0] - p[0]).hypot(a.0[1] - p[1]).total_cmp(&(b.0[0] - p[0]).hypot(b.0[1] - p[1]))).expect("one at least");
+            if (q[0] - p[0]).hypot(q[1] - p[1]) > 40.0 && a.json("at").is_some() {
+                return Err(Error::refused(format!("no solved point is near [{}, {}] at that time (the nearest is at [{:.0}, {:.0}])", p[0], p[1], q[0], q[1])));
+            }
+            out.push(*x);
+        }
+        out
+    };
+    // the camera
+    let made = super::call(cx, "layer.add", Json::object([("comp", Json::Number(cid as f64)), ("type", Json::from("camera")), ("name", Json::from(name.as_str())), ("twoNode", Json::from(false))]))?;
+    let cam_id = made.get("layer").and_then(Json::as_u64).expect("made");
+    {
+        let l = cx.project.comp_mut(cid).expect("found").layer_mut(cam_id).expect("found");
+        for (path, v) in [("cameraOptions/zoom", zoom), ("cameraOptions/focusDistance", zoom)] {
+            l.props.prop_mut(path).map_err(Error::refused)?.set_value(Value::Number(v)).map_err(Error::params)?;
+        }
+        let pos: Vec<Keyframe> = keys_at.iter().map(|(t, p, _)| Keyframe::new(*t, Value::Vec3([p.x, p.y, p.z]))).collect();
+        let ori: Vec<Keyframe> = keys_at.iter().map(|(t, _, o)| Keyframe::new(*t, Value::Vec3([o.x, o.y, o.z]))).collect();
+        l.props.prop_mut("transform/position").map_err(Error::refused)?.set_keys(pos).map_err(Error::params)?;
+        l.props.prop_mut("transform/orientation").map_err(Error::refused)?.set_keys(ori).map_err(Error::params)?;
+    }
+    // what stands on the points: on the plane through three or more, else facing the camera
+    let mut layers = Vec::new();
+    if !chosen.is_empty() {
+        let pts: Vec<Vec3> = chosen.iter().map(|x| to_comp(*x)).collect();
+        let n = pts.len() as f64;
+        let mid = pts.iter().fold(vec3(0.0, 0.0, 0.0), |s, p| s + *p) * (1.0 / n);
+        let camk = sol.cameras[kk].expect("placed");
+        let rc = r0t(&camk.r);
+        let (right, ahead) = (vec3(rc[0][0], rc[0][1], rc[0][2]), vec3(rc[2][0], rc[2][1], rc[2][2]));
+        let facing = if pts.len() >= 3 {
+            let mut cov = vec![vec![0.0; 3]; 3];
+            for p in &pts {
+                let d = *p - mid;
+                let v = [d.x, d.y, d.z];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        cov[i][j] += v[i] * v[j];
+                    }
+                }
+            }
+            let (_, vecs) = veymelo_track::scene3d::eigen(&cov);
+            let nrm = vec3(vecs[0][0], vecs[0][1], vecs[0][2]).normalize();
+            // its back away from the camera
+            if nrm.dot(ahead) < 0.0 { -nrm } else { nrm }
+        } else {
+            ahead
+        };
+        let x = (right - facing * right.dot(facing)).normalize();
+        let y = facing.cross(x);
+        let orient = Mat4([[x.x, y.x, facing.x, 0.0], [x.y, y.y, facing.y, 0.0], [x.z, y.z, facing.z, 0.0], [0.0, 0.0, 0.0, 1.0]]).to_orientation();
+        let (kind, extra): (&str, Vec<(&str, Json)>) = match make {
+            "null" => ("null", vec![]),
+            "solid" => ("solid", vec![("color", Json::from("#c8c8c8")), ("width", Json::Number(100.0)), ("height", Json::Number(100.0))]),
+            _ => ("text", vec![("text", Json::from(a.text("text").unwrap_or("Text")))]),
+        };
+        let mut p = veymelo_json::Map::new();
+        p.insert("comp", cid as f64);
+        p.insert("type", kind);
+        for (key, v) in extra {
+            p.insert(key, v);
+        }
+        let made = super::call(cx, "layer.add", Json::Object(p))?;
+        let id = made.get("layer").and_then(Json::as_u64).expect("made");
+        super::call(cx, "layer.set", Json::object([("comp", Json::Number(cid as f64)), ("layer", Json::Number(id as f64)), ("switches", Json::object([("threeD", Json::from(true))]))]))?;
+        let l = cx.project.comp_mut(cid).expect("found").layer_mut(id).expect("found");
+        l.props.prop_mut("transform/position").map_err(Error::refused)?.set_value(Value::Vec3([mid.x, mid.y, mid.z])).map_err(Error::params)?;
+        l.props.prop_mut("transform/orientation").map_err(Error::refused)?.set_value(Value::Vec3([orient.x, orient.y, orient.z])).map_err(Error::params)?;
+        layers.push(id);
+    }
+    cx.label = Some("Create Camera from Tracker".into());
+    let mut o = veymelo_json::Map::new();
+    o.insert("camera", cam_id as f64);
+    o.insert("zoom", (zoom * 100.0).round() / 100.0);
+    o.insert("keys", keys_at.len() as f64);
+    o.insert("layers", Json::array(layers.into_iter().map(|i| Json::Number(i as f64))));
+    if !notes.is_empty() {
+        o.insert("notes", Json::array(notes.into_iter().map(Json::from)));
+    }
+    Ok(Json::Object(o))
 }
 
 fn pair(j: Option<&Json>, what: &str) -> Result<Option<[f64; 2]>> {

@@ -3952,3 +3952,79 @@ fn frames_take() {
         eprintln!("{t} s on: {:.1} ms a frame", started.elapsed().as_secs_f64() * 1000.0 / frames as f64);
     }
 }
+
+#[test]
+fn a_3d_scene_filmed_and_its_camera_found_again() {
+    let mut s = Session::new();
+    // a scene: a noisy floor and a noisy wall behind, filmed by a camera moving right and in,
+    // turning as it goes
+    run(&mut s, "comp.new", r#"{"name": "Scene", "width": 640, "height": 360, "fps": 25, "duration": 1.6}"#);
+    for (name, size, at, turn, seed) in [("Floor", [3000.0, 3000.0], [320.0, 330.0, 900.0], 90.0, 2), ("Wall", [3000.0, 1600.0], [320.0, -300.0, 2200.0], 0.0, 5)] {
+        let l = id(&run(&mut s, "layer.add", &format!(r##"{{"type": "solid", "color": "#808080", "name": "{name}", "width": {}, "height": {}}}"##, size[0], size[1])), "layer");
+        run(&mut s, "effect.add", &format!(r#"{{"layer": {l}, "type": "fractalNoise", "props": {{"scale": 60, "contrast": 220, "randomSeed": {seed}}}}}"#));
+        run(&mut s, "layer.set", &format!(r#"{{"layer": {l}, "switches": {{"threeD": true}}}}"#));
+        run(&mut s, "prop.set", &format!(r#"{{"layer": {l}, "path": "transform/position", "value": [{}, {}, {}]}}"#, at[0], at[1], at[2]));
+        run(&mut s, "prop.set", &format!(r#"{{"layer": {l}, "path": "transform/rotationX", "value": {turn}}}"#));
+    }
+    let cam = id(&run(&mut s, "layer.add", r#"{"type": "camera", "twoNode": false}"#), "layer");
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {cam}, "path": "cameraOptions/zoom", "value": 700}}"#));
+    run(&mut s, "prop.keys", &format!(r#"{{"layer": {cam}, "path": "transform/position", "keys": [{{"t": 0, "v": [200, 120, -500]}}, {{"t": 1.56, "v": [470, 150, -260]}}]}}"#));
+    run(&mut s, "prop.keys", &format!(r#"{{"layer": {cam}, "path": "transform/orientation", "keys": [{{"t": 0, "v": [-4, -6, 0]}}, {{"t": 1.56, "v": [-2, 9, 1]}}]}}"#));
+    let main = id(&run(&mut s, "comp.new", r#"{"name": "Main", "width": 640, "height": 360, "fps": 25, "duration": 1.6}"#), "comp");
+    let shot = id(&run(&mut s, "layer.add", r#"{"type": "comp", "item": "Scene"}"#), "layer");
+    run(&mut s, "effect.add", &format!(r#"{{"layer": {shot}, "type": "camera3dTracker"}}"#));
+    let r = run(&mut s, "effect.analyze", &format!(r#"{{"layer": {shot}}}"#));
+    assert_eq!(r.get("method").and_then(Json::as_str), Some("typical"), "{}", r.to_json());
+    assert!(r.get("error").and_then(Json::as_f64).unwrap() < 0.3, "{}", r.to_json());
+    assert_eq!(r.get("solved").and_then(Json::as_f64), Some(40.0), "{}", r.to_json());
+    // the lens: 640 across seen at a zoom of 700
+    let want = 2.0 * (320.0f64 / 700.0).atan().to_degrees();
+    let got = r.get("angleOfView").and_then(Json::as_f64).unwrap();
+    assert!((got - want).abs() < 0.01 * want, "{got} for {want}");
+    // the camera made: its path the true one's, but for where, how big and which way round
+    let made = run(&mut s, "camera.fromTracker", &format!(r#"{{"layer": {shot}, "make": "null", "time": 0.8}}"#));
+    assert!(made.get("notes").is_none(), "{}", made.to_json());
+    let new_cam = made.get("camera").and_then(Json::as_u64).unwrap();
+    let place = |s: &mut Session, comp: u64, layer: u64, t: f64| -> [f64; 3] {
+        let v = run(s, "prop.evaluate", &format!(r#"{{"comp": {comp}, "layer": {layer}, "path": "transform/position", "times": [{t}]}}"#));
+        let v = v.get("values").and_then(Json::as_array).unwrap()[0].get("value").and_then(Json::as_array).unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<_>>();
+        [v[0], v[1], v[2]]
+    };
+    let scene = s.project().items.iter().find(|i| i.name == "Scene").unwrap().id;
+    let times: Vec<f64> = (0..40).step_by(3).map(|k| k as f64 / 25.0).collect();
+    let (a, b): (Vec<[f64; 3]>, Vec<[f64; 3]>) = times.iter().map(|&t| (place(&mut s, main, new_cam, t), place(&mut s, scene, cam, t))).unzip();
+    let n = a.len() as f64;
+    let mean = |v: &[[f64; 3]]| [0, 1, 2].map(|i| v.iter().map(|p| p[i]).sum::<f64>() / n);
+    let (ma, mb) = (mean(&a), mean(&b));
+    let mut cov = [[0.0; 3]; 3];
+    let mut var = 0.0;
+    for (p, q) in a.iter().zip(&b) {
+        let (da, db) = ([0, 1, 2].map(|i| p[i] - ma[i]), [0, 1, 2].map(|i| q[i] - mb[i]));
+        var += da.iter().map(|x| x * x).sum::<f64>() / n;
+        for i in 0..3 {
+            for j in 0..3 {
+                cov[i][j] += db[i] * da[j] / n;
+            }
+        }
+    }
+    let (u, d, v) = veymelo_track::scene3d::svd3(&cov);
+    let r: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| u[i][k] * v[j][k]).sum()));
+    let k = (d[0] + d[1] + d[2]) / var;
+    let worst = a.iter().zip(&b).map(|(p, q)| {
+        let m: [f64; 3] = std::array::from_fn(|i| mb[i] + k * (0..3).map(|j| r[i][j] * (p[j] - ma[j])).sum::<f64>());
+        (0..3).map(|i| (m[i] - q[i]).powi(2)).sum::<f64>().sqrt()
+    }).fold(0.0, f64::max);
+    let length = (0..3).map(|i| (b[0][i] - b[b.len() - 1][i]).powi(2)).sum::<f64>().sqrt();
+    assert!(worst < 0.005 * length, "the path off by {worst} of {length}");
+    assert_eq!(made.get("layers").and_then(Json::as_array).map(Vec::len), Some(1));
+    // a card laid on the floor's points stays on the floor as the camera moves
+    let card = run(&mut s, "camera.fromTracker", &format!(r#"{{"layer": {shot}, "make": "solid", "time": 0.8, "at": [[250, 300], [390, 300], [320, 330]]}}"#));
+    let card = card.get("layers").and_then(Json::as_array).unwrap()[0].as_u64().unwrap();
+    run(&mut s, "prop.set", &format!(r##"{{"comp": {main}, "layer": {card}, "path": "transform/scale", "value": [40, 40, 40]}}"##));
+    if let Ok(dir) = std::env::var("VEYMELO_LOOK") {
+        for t in [0.0, 0.8, 1.56] {
+            let f = s.render(Some(&Json::Number(main as f64)), Some(veymelo_time::Tick::from_seconds(t)), &render::Options::default()).unwrap();
+            std::fs::write(format!("{dir}/tracked-{t}.png"), render::to_png(&f.image)).unwrap();
+        }
+    }
+}

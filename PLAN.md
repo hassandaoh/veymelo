@@ -671,6 +671,14 @@ prop.list/get/set/keys, render.frame
       perspective) เป็นตาราง 8×6 จุดต่อเฟรม (median ของ feature รอบจุด); เส้นทางของแต่ละจุดถูกทำให้นุ่ม/นิ่งแบบเดียวกับกล้อง
       แล้วงอเฟรมบนตาราง (Plan::source) — ส่วนที่อยู่ใกล้/ไกลหรือสั่นจาก rolling shutter นิ่งแยกกัน (เทสต์: ส่วนล่างสั่นเอง
       3.9 → 0.7 px); การวิเคราะห์เก่าที่ไม่มีตารางใช้ perspective พร้อมบอกใน notes
+- [x] 17.5 3D Camera Tracker (track/scene3d.rs + effects/tracker3d.rs): effect.analyze ตาม feature ทุกเฟรม (KLT + ตัดที่ไม่เข้า
+      fundamental matrix ด้วย RANSAC, หาใหม่ที่ว่าง) → สองเฟรมที่ห่างพอ (ไม่ใช่ภาพแบนเดียว: homography อธิบายแย่) ให้ essential
+      matrix (eight-point + RANSAC, SVD 3×3 + Jacobi ของเราเอง) → R,t ที่จุดอยู่หน้ากล้อง, triangulate → เฟรมอื่นจากเฟรมข้างๆ
+      (Gauss–Newton + Huber) → ปรับกล้อง/จุดสลับกันหลายรอบ; กล้องหมุนอย่างเดียว = tripod pan (จาก homography); ไม่ให้มุมมอง =
+      ลองหลายมุมแล้ว golden-section หาที่จุดตกใกล้ที่สุด; Solution เก็บเป็นข้อความ; Render Track Points วาดจุดบนภาพ;
+      camera.fromTracker สร้างกล้อง one-node คีย์ position/orientation ทุกเฟรม zoom ตามเลนส์ + null/solid/text บนจุดใกล้ `at`
+      (≥3 จุด = วางบนระนาบ) — เทสต์ฉาก 3D ที่เรนเดอร์เอง 40 เฟรม: error 0.06 px, มุมมอง 49.16° (จริง 49.13°), เส้นทางกล้อง
+      คลาด 0.25 px จาก 362 px; การ์ดที่วางบนพื้นติดพื้นตลอด
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -680,7 +688,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 2. ~~**3D ที่เหลือจากขั้น 14**~~ — เสร็จ 2026-10-21 (caustics, เงาแก้วให้แสงผ่าน, รูปบนโมเดลในเงาสะท้อนอ่านทุกพิกเซล: ดู 14.6–14.8)
 3. ~~**3D รายการเก่า (ขั้น 16)**~~ — เสร็จ 2026-10-21 (ดูขั้น 16)
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
-5. **ตัวติดตาม**: 3D Camera Tracker, planar, Subspace Warp, synthesize edges, pixel motion ของ Rolling Shutter
+5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
 6. **สีและตัวหนังสือ**: ACES output transforms (RRT+ODT), GradingPrimary/Tone/Curve; ฟอนต์ COLR v1 (ไล่สี) และ CBDT
 7. **ไฟล์**: PDF/AI แบบเวกเตอร์; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
