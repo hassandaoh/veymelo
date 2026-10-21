@@ -16,6 +16,9 @@
 
 mod cff;
 pub mod colr;
+pub mod names;
+pub mod program;
+mod type1;
 pub mod shape;
 pub mod system;
 
@@ -180,6 +183,16 @@ impl Font {
 
     /// The font `index` of a font file's bytes.
     pub fn from_data(data: Vec<u8>, index: usize) -> Result<Font, String> {
+        Font::read(data, index, true)
+    }
+
+    /// A font as a document embeds it (a PDF's TrueType or OpenType font program): it may have
+    /// no Unicode map, its glyphs then found by [`Font::glyph_in`] or [`Font::glyph_named`].
+    pub fn embedded(data: Vec<u8>) -> Result<Font, String> {
+        Font::read(data, 0, false)
+    }
+
+    fn read(data: Vec<u8>, index: usize, unicode: bool) -> Result<Font, String> {
         if index >= faces_in(&data) {
             return Err(format!("there is no font {index} in it"));
         }
@@ -221,7 +234,11 @@ impl Font {
                 pick = Some((at, format));
             }
         }
-        let (cmap, cmap_format) = pick.ok_or("it has no Unicode character map")?;
+        let (cmap, cmap_format) = match pick {
+            Some(p) => p,
+            None if !unicode => (0, 0),
+            None => return Err("it has no Unicode character map".into()),
+        };
         // the design axes of a variable font
         let mut axes = vec![];
         if let Some(fvar) = table(b"fvar") {
@@ -650,8 +667,69 @@ impl Font {
 
     /// The glyph for a character (0, the missing glyph, when there is none).
     pub fn glyph(&self, c: char) -> u16 {
-        let (d, at, c) = (&self.data[..], self.cmap, c as u32);
-        if self.cmap_format == 12 || self.cmap_format == 13 {
+        if self.cmap == 0 {
+            return 0;
+        }
+        self.mapped(self.cmap, self.cmap_format, c as u32)
+    }
+
+    /// The glyph the character map for `platform` and `encoding` (3 and 0: Windows symbols; 1
+    /// and 0: Macintosh Roman) gives `code`; none when it has no such map or it gives none.
+    pub fn glyph_in(&self, platform: u16, encoding: u16, code: u32) -> Option<u16> {
+        let d = &self.data[..];
+        let cmap = self.table(b"cmap")?;
+        let maps = u16_at(d, cmap + 2) as usize;
+        let at = (0..maps).map(|i| cmap + 4 + 8 * i).find(|&r| u16_at(d, r) == platform && u16_at(d, r + 2) == encoding).map(|r| cmap + u32_at(d, r + 4) as usize)?;
+        let g = self.mapped(at, u16_at(d, at), code);
+        (g != 0).then_some(g)
+    }
+
+    /// Where table `tag` is in the font's file.
+    fn table(&self, tag: &[u8; 4]) -> Option<usize> {
+        let d = &self.data[..];
+        let start = if d.starts_with(b"ttcf") { u32_at(d, 12 + 4 * self.face) as usize } else { 0 };
+        (0..u16_at(d, start + 4) as usize).map(|i| start + 12 + 16 * i).find(|&r| d.get(r..r + 4) == Some(tag)).map(|r| u32_at(d, r + 8) as usize)
+    }
+
+    /// The glyph named `name` in its `post` table (none when it names none so).
+    pub fn glyph_named(&self, name: &str) -> Option<u16> {
+        let d = &self.data[..];
+        if self.post == 0 {
+            return None;
+        }
+        match u32_at(d, self.post) {
+            0x0001_0000 => (0..258.min(self.glyphs as usize)).find(|&i| names::mac_name(i) == Some(name)).map(|i| i as u16),
+            0x0002_0000 => {
+                let n = u16_at(d, self.post + 32) as usize;
+                let indexes = self.post + 34;
+                // the font's own names, one after another, each its length first
+                let mut own = Vec::new();
+                let mut p = indexes + 2 * n;
+                while p < d.len() && own.len() < n {
+                    let len = byte_at(d, p) as usize;
+                    own.push(d.get(p + 1..p + 1 + len).unwrap_or(&[]));
+                    p += 1 + len;
+                }
+                (0..n).find(|&g| {
+                    let i = u16_at(d, indexes + 2 * g) as usize;
+                    if i < 258 { names::mac_name(i) == Some(name) } else { own.get(i - 258).is_some_and(|b| *b == name.as_bytes()) }
+                }).map(|g| g as u16)
+            }
+            _ => None,
+        }
+    }
+
+    /// The glyph a character map subtable of `format` at `at` gives `c`.
+    fn mapped(&self, at: usize, format: u16, c: u32) -> u16 {
+        let d = &self.data[..];
+        if format == 0 {
+            return if c < 256 { byte_at(d, at + 6 + c as usize) as u16 } else { 0 };
+        }
+        if format == 6 {
+            let (first, n) = (u16_at(d, at + 6) as u32, u16_at(d, at + 8) as u32);
+            return if c >= first && c < first + n { u16_at(d, at + 10 + 2 * (c - first) as usize) } else { 0 };
+        }
+        if format == 12 || format == 13 {
             // groups in order of their characters: found by halving
             let groups = u32_at(d, at + 12) as usize;
             let (mut lo, mut hi) = (0, groups);
@@ -664,12 +742,12 @@ impl Font {
                 } else if c > last {
                     lo = mid + 1;
                 } else {
-                    return if self.cmap_format == 12 { (glyph + c - first) as u16 } else { glyph as u16 };
+                    return if format == 12 { (glyph + c - first) as u16 } else { glyph as u16 };
                 }
             }
             return 0;
         }
-        if c > 0xFFFF {
+        if c > 0xFFFF || format != 4 {
             return 0;
         }
         let segs = u16_at(d, at + 6) as usize / 2;

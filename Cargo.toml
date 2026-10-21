@@ -14,6 +14,7 @@ veymelo-zip = { path = "crates/zip" }
 veymelo-exr = { path = "crates/exr" }
 veymelo-model = { path = "crates/model" }
 veymelo-svg = { path = "crates/svg" }
+veymelo-pdf = { path = "crates/pdf" }
 veymelo-psd = { path = "crates/psd" }
 veymelo-track = { path = "crates/track" }
 veymelo-interchange = { path = "crates/interchange" }

@@ -1,0 +1,16 @@
+[package]
+name = "veymelo-pdf"
+description = "PDF and Illustrator files read by our own code: a page's paths, paints, gradients, meshes, pictures and text as a vector picture"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+veymelo-color.workspace = true
+veymelo-font.workspace = true
+veymelo-geom.workspace = true
+veymelo-os.workspace = true
+veymelo-path.workspace = true
+veymelo-raster.workspace = true
+veymelo-svg.workspace = true
+veymelo-text.workspace = true
+veymelo-zip.workspace = true

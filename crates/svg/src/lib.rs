@@ -11,6 +11,10 @@
 //! `href`); styles as attributes, in the `style` attribute and in `<style>` sheets (type, class,
 //! id and universal selectors). Text, pictures, filters, clipping, masks, patterns and markers are
 //! passed over (and listed).
+//!
+//! What it draws holds more than SVG gives it, for pictures read from other files (PDF): groups
+//! cut to paths and seen through masks, blend modes, pictures, meshes of shaded triangles, and
+//! gradients between two circles that may paint nothing past their ends.
 
 mod color;
 mod draw;
@@ -18,12 +22,15 @@ mod pathdata;
 mod xml;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub use color::parse_color;
 pub use draw::draw;
 pub use pathdata::{numbers, parse as parse_path};
 use veymelo_geom::{Mat3, vec2};
+pub use veymelo_color::BlendMode;
 pub use veymelo_path::{Cap, Join, Sub, Vertex};
+pub use veymelo_raster::Image;
 
 /// How a gradient goes on past its ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,11 +45,14 @@ pub enum Spread {
 pub enum GradientKind {
     Linear { x1: f64, y1: f64, x2: f64, y2: f64 },
     Radial { cx: f64, cy: f64, r: f64, fx: f64, fy: f64 },
+    /// From the circle about (`x0`, `y0`) of radius `r0` to the one about (`x1`, `y1`) of `r1`,
+    /// each later circle painted over the earlier (a PDF's radial shading).
+    Circles { x0: f64, y0: f64, r0: f64, x1: f64, y1: f64, r1: f64 },
 }
 
 /// A gradient: its line or circles, its stops (place from 0 to 1, straight RGBA), whether its
 /// coordinates are parts of the shape's box (else the shape's own units), its own transform,
-/// and how it goes on past its ends.
+/// how it goes on past its ends, and whether it paints at all before its start and past its end.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     pub kind: GradientKind,
@@ -50,6 +60,7 @@ pub struct Gradient {
     pub box_units: bool,
     pub transform: Mat3,
     pub spread: Spread,
+    pub ends: [bool; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,7 +149,7 @@ impl Geom {
 }
 
 /// A shape: its name (its id, or what it is), outline, transform (its units to its parent's),
-/// fill (with its opacity and rule), stroke and opacity.
+/// fill (with its opacity and rule), stroke, opacity and how it mixes with what is under it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
     pub name: String,
@@ -149,20 +160,78 @@ pub struct Shape {
     pub even_odd: bool,
     pub stroke: Option<Stroke>,
     pub opacity: f64,
+    pub blend: BlendMode,
 }
 
+/// An outline what is in a group is cut to (in the group's own units), by its rule.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clip {
+    pub subs: Vec<Sub>,
+    pub even_odd: bool,
+}
+
+/// What a group is seen through: `content` (in the group's own units) drawn, and each point of
+/// the group shown as much as its alpha, or (`luminosity`) as bright as it is over `backdrop`
+/// (straight sRGB), through `transfer` (how much shows for each of 256 steps of it, when given).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mask {
+    pub content: Group,
+    pub luminosity: bool,
+    pub backdrop: [f64; 3],
+    pub transfer: Option<Vec<f64>>,
+}
+
+/// A group: its name, transform (its units to its parent's), opacity, children (drawn first
+/// first), the outlines it is cut to (all of them), its mask, and how it mixes with what is
+/// under it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub name: String,
     pub transform: Mat3,
     pub opacity: f64,
     pub children: Vec<Node>,
+    pub clip: Vec<Clip>,
+    pub mask: Option<Box<Mask>>,
+    pub blend: BlendMode,
+}
+
+impl Group {
+    /// A group of `children` that is not cut, masked or blended.
+    pub fn new(name: impl Into<String>, transform: Mat3, opacity: f64, children: Vec<Node>) -> Group {
+        Group { name: name.into(), transform, opacity, children, clip: Vec::new(), mask: None, blend: BlendMode::Normal }
+    }
+}
+
+/// A picture of pixels: its pixels (premultiplied sRGB), its transform (from its pixels, y down
+/// from its top left, to its parent's units), its opacity, whether it is smoothed between its
+/// pixels when drawn bigger, and how it mixes with what is under it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub name: String,
+    pub image: Arc<Image>,
+    pub transform: Mat3,
+    pub opacity: f64,
+    pub smooth: bool,
+    pub blend: BlendMode,
+}
+
+/// Triangles each shaded between its corners' colours (straight sRGB RGBA) (a PDF's gradient
+/// mesh), in its own units, with its transform, opacity and blend mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mesh {
+    pub name: String,
+    pub triangles: Vec<[([f64; 2], [f64; 4]); 3]>,
+    pub transform: Mat3,
+    pub opacity: f64,
+    pub blend: BlendMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Group(Group),
     Shape(Box<Shape>),
+    Picture(Box<Picture>),
+    Mesh(Box<Mesh>),
 }
 
 /// A picture: its size in pixels, what it draws (the root group's transform takes its
@@ -185,6 +254,7 @@ impl Doc {
                 match c {
                     Node::Group(sub) => walk(sub, m, o, out),
                     Node::Shape(s) => out.push((m * s.transform, o * s.opacity, &**s)),
+                    Node::Picture(_) | Node::Mesh(_) => {}
                 }
             }
         }
@@ -640,7 +710,7 @@ impl Reader<'_> {
                 stops.push((place, [c[0], c[1], c[2], c[3] * a]));
             }
         }
-        Some(Gradient { kind, stops, box_units, transform: attr("gradientTransform").map(transform).unwrap_or(Mat3::IDENTITY), spread })
+        Some(Gradient { kind, stops, box_units, transform: attr("gradientTransform").map(transform).unwrap_or(Mat3::IDENTITY), spread, ends: [true, true] })
     }
 
     fn name_of(&self, i: usize) -> String {
@@ -654,7 +724,7 @@ impl Reader<'_> {
         for c in self.el(i).children.clone() {
             self.node(c, st, &mut children, depth + 1);
         }
-        Group { name, transform, opacity, children }
+        Group::new(name, transform, opacity, children)
     }
 
     /// Element `i` (and what is inside it) made nodes onto `out`.
@@ -715,7 +785,7 @@ impl Reader<'_> {
                     self.node(target, &st, &mut children, depth + 1);
                 }
                 self.using.pop();
-                out.push(Node::Group(Group { name: self.name_of(i), transform: place, opacity, children }));
+                out.push(Node::Group(Group::new(self.name_of(i), place, opacity, children)));
             }
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => {
                 if !st.visible {
@@ -737,7 +807,7 @@ impl Reader<'_> {
                     dashes: st.dashes.clone(),
                     dash_offset: st.dash_offset,
                 });
-                out.push(Node::Shape(Box::new(Shape { name: self.name_of(i), geom, transform: place, fill, fill_opacity: st.fill_opacity * fill_alpha, even_odd: st.even_odd, stroke, opacity })));
+                out.push(Node::Shape(Box::new(Shape { name: self.name_of(i), geom, transform: place, fill, fill_opacity: st.fill_opacity * fill_alpha, even_odd: st.even_odd, stroke, opacity, blend: BlendMode::Normal })));
             }
             _ => {
                 // elements not known that hold others: their children drawn
@@ -890,7 +960,7 @@ pub fn parse(bytes: &[u8]) -> Result<Doc, String> {
     let mut skipped = r.skipped;
     skipped.sort();
     skipped.dedup();
-    Ok(Doc { width: w, height: h, root: Group { name: "svg".into(), transform: viewbox_fit(xml.root(), w, h), opacity, children }, skipped })
+    Ok(Doc { width: w, height: h, root: Group::new("svg", viewbox_fit(xml.root(), w, h), opacity, children), skipped })
 }
 
 #[cfg(test)]

@@ -1111,7 +1111,7 @@ impl<'a> Renderer<'a> {
             && let Some(ItemKind::Footage(f)) = self.project.item(item).map(|i| &i.kind)
             && veymelo_media::is_vector(&f.path)
         {
-            return self.vector(comp, layer, &f.path, t, view, canvas);
+            return self.vector(comp, layer, &f.path, veymelo_media::page_of(f), t, view, canvas);
         }
         if let Source::Footage(item) = layer.source {
             return self.footage(comp, layer, item, t);
@@ -1219,8 +1219,8 @@ impl Renderer<'_> {
     /// A vector picture footage layer shows, drawn at the detail it is seen with (only where
     /// it is seen).
     #[allow(clippy::too_many_arguments)]
-    fn vector(&self, comp: &Comp, layer: &Layer, path: &str, t: Tick, view: Mat3, canvas: &Image) -> Option<Buf> {
-        let doc = match veymelo_media::vector(path) {
+    fn vector(&self, comp: &Comp, layer: &Layer, path: &str, page: usize, t: Tick, view: Mat3, canvas: &Image) -> Option<Buf> {
+        let doc = match veymelo_media::vector_page(path, page) {
             Ok(d) => d,
             Err(e) => {
                 self.note(format!("\"{}\": {e}", layer.name));

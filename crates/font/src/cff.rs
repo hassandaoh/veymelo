@@ -8,30 +8,30 @@ use crate::Pen;
 
 /// An INDEX: where each piece of data starts and ends.
 #[derive(Clone, Debug, Default)]
-struct Index {
+pub(crate) struct Index {
     spans: Vec<(usize, usize)>,
 }
 
 impl Index {
-    fn get(&self, i: usize) -> Option<(usize, usize)> {
+    pub(crate) fn get(&self, i: usize) -> Option<(usize, usize)> {
         self.spans.get(i).copied()
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.spans.len()
     }
 }
 
-fn u8_at(d: &[u8], at: usize) -> usize {
+pub(crate) fn u8_at(d: &[u8], at: usize) -> usize {
     d.get(at).copied().unwrap_or(0) as usize
 }
 
-fn uint(d: &[u8], at: usize, size: usize) -> usize {
+pub(crate) fn uint(d: &[u8], at: usize, size: usize) -> usize {
     (0..size).fold(0, |v, k| (v << 8) | u8_at(d, at + k))
 }
 
 /// An INDEX at `at`; where it ends. CFF2's has a 32-bit count.
-fn read_index(d: &[u8], at: usize, long_count: bool) -> (Index, usize) {
+pub(crate) fn read_index(d: &[u8], at: usize, long_count: bool) -> (Index, usize) {
     let (count, mut p) = if long_count { (uint(d, at, 4), at + 4) } else { (uint(d, at, 2), at + 2) };
     if count == 0 {
         return (Index::default(), p);
@@ -45,7 +45,7 @@ fn read_index(d: &[u8], at: usize, long_count: bool) -> (Index, usize) {
 }
 
 /// A DICT's operators and their operands.
-fn read_dict(d: &[u8], from: usize, to: usize) -> Vec<(u16, Vec<f64>)> {
+pub(crate) fn read_dict(d: &[u8], from: usize, to: usize) -> Vec<(u16, Vec<f64>)> {
     let mut out = Vec::new();
     let mut operands = Vec::new();
     let mut p = from;
@@ -112,7 +112,7 @@ fn read_dict(d: &[u8], from: usize, to: usize) -> Vec<(u16, Vec<f64>)> {
     out
 }
 
-fn dict_get(dict: &[(u16, Vec<f64>)], op: u16) -> Option<&[f64]> {
+pub(crate) fn dict_get(dict: &[(u16, Vec<f64>)], op: u16) -> Option<&[f64]> {
     dict.iter().find(|(o, _)| *o == op).map(|(_, v)| v.as_slice())
 }
 
@@ -175,7 +175,7 @@ fn read_fd_select(d: &[u8], at: usize, glyphs: usize) -> Vec<u8> {
 impl Cff {
     /// The table at `at` (`v2`: a CFF2 table), for a font of `glyphs` glyphs.
     pub(crate) fn read(d: &[u8], at: usize, v2: bool, glyphs: usize) -> Option<Cff> {
-        if at == 0 || at >= d.len() {
+        if at >= d.len() {
             return None;
         }
         let header = u8_at(d, at + 2);

@@ -357,7 +357,7 @@ prop.list/get/set/keys, render.frame
       ชั้นบนอยู่หน้า แล้วรวมจากหน้า → Z, ObjectID (ลำดับชั้น), MaterialID (id ของ source), Coverage, N.X/Y/Z (หันหากล้อง),
       UV, CryptoObject (ชื่อชั้น) / CryptoMaterial (ชื่อ source หรือชื่อวัสดุของโมเดล) 4 อันดับ + manifest;
       ภายหลัง: ไฟล์ deep, HTJ2K]
-- [ ] ภายหลัง: PDF/AI แบบเวกเตอร์ (ตัวติดตาม: Warp Stabilizer และ Rolling Shutter Repair ทำแล้วในขั้น 11;
+- [x] PDF/AI แบบเวกเตอร์ — ดู 19.1 (ตัวติดตาม: Warp Stabilizer และ Rolling Shutter Repair ทำแล้วในขั้น 11;
       3D Camera Tracker, Object Matte, เอฟเฟกต์ใบหน้า ดู "งานที่เหลือ" ท้ายไฟล์)
 
 ### ขั้น 11: เติมคำสั่งให้ครบ (373 คำสั่ง; ส่วนที่เป็นหน้าต่าง/การเลือก/การเลื่อนดู ไม่ทำ)
@@ -698,6 +698,33 @@ prop.list/get/set/keys, render.frame
       ที่ตาเห็น (≤2048 px), จำไว้ตามฟอนต์/instance/ขนาด/สีข้อความ, วางผ่านการเปลี่ยนรูปของตัวอักษรเหมือน sbix;
       CBDT/CBLC: เลือก strike ใกล้สุด, index format 1–5, image format 17/18/19 (PNG), ฟอนต์ที่มีแต่ภาพ (ไม่มี glyf) เปิดได้
 
+### ขั้น 19: ไฟล์ (เริ่ม 2026-10-21)
+- [x] 19.1 PDF และ Illustrator (.ai) แบบเวกเตอร์ (crate ใหม่ veymelo-pdf): ไฟล์ — xref ตาราง/stream, update ต่อท้าย (/Prev,
+      XRefStm), object stream, xref ผิด = อ่านทั้งไฟล์หา `n g obj` ใหม่, ตัวกรอง Flate (เสียกลางทาง = ได้เท่าที่อ่านได้)/LZW/
+      ASCIIHex/ASCII85/RunLength + predictor PNG/TIFF, ไฟล์ล็อกไม่มีรหัสเปิด (RC4 R2–3, AES-128 R4, AES-256 R5–6; MD5/RC4/AES/
+      SHA-256/384/512 ของเราเอง ตรวจกับตัวอย่างของมาตรฐาน); หน้า — Pages tree สืบทอด Resources/MediaBox/CropBox/Rotate,
+      ขนาด crop box จุดละพิกเซล หมุนตาม /Rotate; content — q/Q, cm, path ทุกคำสั่ง, fill/stroke/even-odd, เส้นประ/cap/join,
+      clip (เป็นกลุ่มที่ใช้ร่วมกันตราบที่ยังเหมือนเดิม), ExtGState (CA/ca, BM 16 โหมด, SMask luminosity/alpha + BC + TR, LW/LC/LJ/
+      ML/D/Font), Form XObject (transparency group = กลุ่มที่มีความทึบ/blend ของตัวเอง, BBox ตัด), รูป (8/16/1–4 บิต, Decode,
+      ImageMask, SMask, Mask stencil/colour key, inline BI/ID/EI, JPEG/JPEG 2000 ให้ระบบถอด), shading `sh` และ pattern (แกน/
+      รัศมีเป็น gradient ใน svg; function-based/free-form/lattice/Coons/tensor เป็น mesh สามเหลี่ยมไล่สีตามมุม), tiling
+      pattern (มีสีและไม่มีสี, จำกัด 4000 ช่อง), optional content (layer ของ Illustrator เป็นกลุ่มตามชื่อ, OFF/BaseState/OCMD
+      ซ่อนที่ซ่อน); สี — Gray/RGB/CMYK (CMYK ผ่านโปรไฟล์ Generic CMYK ของระบบ), ICCBased ผ่านโปรไฟล์ (ตัวอ่าน ICC ใหม่ใน
+      veymelo-color: matrix/TRC, lut8/lut16/mAB ไป PCS XYZ/Lab แล้ว Bradford ไป sRGB), CalGray/CalRGB, Lab, Indexed,
+      Separation/DeviceN ผ่าน function (0 sampled, 2, 3 stitching, 4 PostScript calculator), None = ไม่วาด; ตัวหนังสือ — glyph
+      เป็น outline ของฟอนต์ที่ฝัง: TrueType/OpenType (cmap 3,1/1,0/3,0, ชื่อใน post, ไม่มี Unicode cmap ก็ได้), CFF/Type1C/
+      CIDFontType0C (โปรแกรมฟอนต์เปล่าใน veymelo-font: charset/encoding/ROS, 391 standard strings), Type 1 (.pfb/.pfa/
+      FontFile: eexec, Subrs, CharStrings, flex, seac, callothersubr), Type 3 (CharProcs, d0/d1); Type0 + CMap Identity-H/V
+      หรือของไฟล์เอง, CIDToGIDMap, W/DW/W2/DW2; encoding + Differences, ToUnicode (ตั้งชื่อ shape ตามข้อความ); ฟอนต์ที่ไม่ฝัง
+      หาในระบบตามชื่อ (standard 14 ด้วย) ไม่มีก็หาฟอนต์ที่มีตัวนั้น; Tc/Tw/Tz/TL/Ts/Tr ทุกโหมด (4–7 เป็น clip); svg ได้ของใหม่:
+      Group.clip/mask/blend, Node::Picture/Mesh, GradientKind::Circles + ends, Shape.blend (ทั้งวาดและแปลงเป็น shape layer
+      ได้ blend; ที่แปลงไม่ได้แจ้งใน skipped); footage.import `page` (เก็บเป็น source layer), footage.info page/pages,
+      layer.shapesFromVector ใช้หน้าที่เลือก; ตรวจ: PDF ที่ CoreGraphics สร้าง 6 ไฟล์ (รูปทรง สี CMYK เส้นประ clip blend
+      gradient สองแบบ transparency layer รูป ตัวหนังสือ TrueType/CID CFF ญี่ปุ่น/ไทย pattern mask เงา JPEG AES-128 RC4) วาด
+      ×2 เทียบกับที่ระบบวาด: ต่างเฉลี่ย 0.002–0.009, ขอบตัวหนังสือต่าง ≤1.5% ของพิกเซล; PDF ที่ประกอบเองในเทสต์: xref
+      stream + object stream + update, xref ผิด, LZW/inline/Indexed/Separation+Type 4, mesh type 4, pattern ไม่มีสี, layer
+      ที่ซ่อน, Type 3, soft mask, /Rotate 90, ข้อความ mode 7 เป็น clip, Helvetica จากระบบ
+
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
 (ปุ่ม แผงตั้งค่า การลากแก้ ฯลฯ) จนกว่าผู้ใช้จะสั่ง เรียงตามลำดับที่จะทำ
@@ -708,7 +735,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
 6. ~~**สีและตัวหนังสือ (ขั้น 18)**~~ — เสร็จ 2026-10-21 (ACES output, OCIO grading, ฟอนต์ COLR v1 และ CBDT: ดูขั้น 18)
-7. **ไฟล์**: PDF/AI แบบเวกเตอร์; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
+7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)
 

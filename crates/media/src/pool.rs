@@ -241,14 +241,14 @@ pub fn frame(f: &Footage, n: u64) -> Result<Arc<Image>, String> {
     let file = f.frame_path(own);
     p.note(&file);
     match f.kind {
-        FootageKind::Image if f.layer.is_some() => {
-            let img = Arc::new(crate::layer_frame(&file, f.layer.as_ref().expect("a layer"))?);
+        FootageKind::Image if crate::is_vector(&file) => {
+            let img = Arc::new(crate::vector_frame(&file, crate::page_of(f))?);
             p.decoded += 1;
             p.keep(key, img.clone());
             Ok(img)
         }
-        FootageKind::Image if crate::is_vector(&file) => {
-            let img = Arc::new(crate::vector_frame(&file)?);
+        FootageKind::Image if f.layer.is_some() => {
+            let img = Arc::new(crate::layer_frame(&file, f.layer.as_ref().expect("a layer"))?);
             p.decoded += 1;
             p.keep(key, img.clone());
             Ok(img)

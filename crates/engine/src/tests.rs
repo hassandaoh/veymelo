@@ -3778,6 +3778,68 @@ fn vector_pictures_drawn_sharp_and_made_shapes() {
 }
 
 #[test]
+fn pdf_pages_drawn_sharp_and_made_shapes() {
+    let dir = std::env::temp_dir().join(format!("veymelo-pdf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // two pages: a red square; then, in an Illustrator-like layer "Logo", a green square and a
+    // blue line
+    let stream = |data: &str| format!("<< /Length {} >>\nstream\n{data}\nendstream", data.len());
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [7 0 R] /D << /ON [7 0 R] >> >> >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 50] /Contents 4 0 R >>".to_string(),
+        stream("1 0 0 rg 10 10 30 30 re f"),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 80 40] /Resources << /Properties << /MC0 7 0 R >> >> /Contents 6 0 R >>".to_string(),
+        stream("/OC /MC0 BDC 0 0.6 0.2 rg 5 5 30 30 re f 0 0 1 RG 2 w 45 20 m 75 20 l S EMC"),
+        "<< /Type /OCG /Name (Logo) >>".to_string(),
+    ];
+    let mut pdf = b"%PDF-1.6\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for o in offsets {
+        pdf.extend(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+    let file = dir.join("logo.ai");
+    std::fs::write(&file, &pdf).unwrap();
+    let path = Json::from(file.to_string_lossy().as_ref()).to_json();
+    let mut s = Session::new();
+    let c = id(&run(&mut s, "comp.new", r#"{"name": "Main", "width": 400, "height": 200, "fps": 25, "duration": 2}"#), "comp");
+    let first = run(&mut s, "footage.import", &format!(r#"{{"path": {path}}}"#));
+    assert_eq!((first.get("width").and_then(Json::as_u64), first.get("page").and_then(Json::as_u64), first.get("pages").and_then(Json::as_u64)), (Some(100), Some(1), Some(2)));
+    let made = run(&mut s, "footage.import", &format!(r#"{{"path": {path}, "page": 2, "name": "Page 2"}}"#));
+    assert_eq!((made.get("width").and_then(Json::as_u64), made.get("height").and_then(Json::as_u64), made.get("page").and_then(Json::as_u64)), (Some(80), Some(40), Some(2)));
+    assert!(fails(&mut s, "footage.import", &format!(r#"{{"path": {path}, "page": 3}}"#)).contains("has 2 pages"));
+    let pic = id(&run(&mut s, "layer.add", &format!(r#"{{"type": "footage", "item": {}}}"#, id(&made, "item"))), "layer");
+    // five times its size, still sharp: the page's (0, 0) at the layer's corner
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {pic}, "path": "transform/scale", "value": [500, 500, 100]}}"#));
+    let frame = |s: &Session| s.render(Some(&Json::Number(c as f64)), None, &render::Options { background: false, ..render::Options::default() }).unwrap();
+    let vector = frame(&s);
+    // the layer is centred: its picture's top left at (0, 0) of the comp, 400 × 200
+    let green = px(&vector, 100, 100);
+    assert!(green[1] > 0.5 && green[0] < 0.1 && green[3] > 0.99, "{green:?}");
+    let soft = (0..200).filter(|x| (0.05..0.95).contains(&px(&vector, *x, 100)[3])).count();
+    assert!(soft <= 4, "{soft} soft pixels along a row");
+    let blue = px(&vector, 300, 100);
+    assert!(blue[2] > 0.9 && blue[3] > 0.99, "{blue:?}");
+    // made shapes, the layer kept as a group
+    let shapes = run(&mut s, "layer.shapesFromVector", &format!(r#"{{"layer": {pic}}}"#));
+    assert_eq!(shapes.get("shapes").and_then(Json::as_u64), Some(2), "{}", shapes.to_json());
+    let layer = s.project().comp(c).unwrap().layers.iter().find(|l| l.name == "Page 2 Outlines").unwrap().clone();
+    assert!(layer.props.group("contents/Logo").is_ok(), "the Illustrator layer kept as a group");
+    let made = frame(&s);
+    for (x, y) in [(100, 100), (300, 100), (20, 20)] {
+        let (a, b) = (px(&vector, x, y), px(&made, x, y));
+        assert!((0..4).all(|k| (a[k] - b[k]).abs() < 0.06), "at ({x}, {y}): picture {a:?}, shapes {b:?}");
+    }
+}
+
+#[test]
 fn photoshop_layers_made_a_composition() {
     use veymelo_psd::write::{layer as psd_layer, write as psd_write};
     let dir = std::env::temp_dir().join(format!("veymelo-psd-{}", std::process::id()));

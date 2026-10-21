@@ -3,7 +3,7 @@
 //! times it loops, its pixels' shape), and putting another file in its place.
 
 use veymelo_json::{Map, Value as Json};
-use veymelo_project::{AlphaMode, Footage, FootageKind, ItemKind, fps_json};
+use veymelo_project::{AlphaMode, Footage, FootageKind, ItemKind, SourceLayer, fps_json};
 use veymelo_time::Tick;
 
 use super::{COMP, Command, LAYER, Run, call, find_footage, layer_ids};
@@ -31,7 +31,7 @@ pub fn commands() -> Vec<Command> {
         Command {
             id: "footage.import",
             label: "Import Footage",
-            summary: "Bring a file into the project as footage: a picture (PNG, JPEG, HEIC, TIFF, PSD, EXR, camera raw…), a vector picture (SVG, drawn sharp at any size), an animated picture (GIF, WebP, PNG), numbered pictures as a sequence, a video (MOV, MP4…), a sound (WAV, AIFF, MP3, M4A…) or a 3D model. A Photoshop document can come in as a composition of its layers instead (`as`): each layer its own footage, its groups compositions, their blend modes, opacity, visibility and clipping kept. What it is comes back; layer.add type footage puts footage in a composition.",
+            summary: "Bring a file into the project as footage: a picture (PNG, JPEG, HEIC, TIFF, PSD, EXR, camera raw…), a vector picture (SVG, or a page of a PDF or Illustrator file; drawn sharp at any size, and made shape layers by layer.shapesFromVector), an animated picture (GIF, WebP, PNG), numbered pictures as a sequence, a video (MOV, MP4…), a sound (WAV, AIFF, MP3, M4A…) or a 3D model. A Photoshop document can come in as a composition of its layers instead (`as`): each layer its own footage, its groups compositions, their blend modes, opacity, visibility and clipping kept. What it is comes back; layer.add type footage puts footage in a composition.",
             params: const {
                 &[
                     Param::opt("path", Ty::Text, "the file"),
@@ -41,9 +41,10 @@ pub fn commands() -> Vec<Command> {
                     Param::opt("name", Ty::Text, "what to call it (default: its file's name)"),
                     Param::opt("folder", Ty::Whole, "the folder item to put it in"),
                     Param::opt("as", Ty::Choice(super::layered::IMPORT_AS), "a Photoshop document: as footage of the whole picture (default), as a composition of its layers each the document's size, or each just its own size, placed where it is"),
+                    Param::opt("page", Ty::Whole, "a PDF or Illustrator file's page to show (from 1; default 1)"),
                 ]
             },
-            returns: "{item, name, kind, width?, height?, fps?, duration?, hasAudio, alpha} (with `paths`: {items: […], failed: [{path, error}]}; as a composition: {item, name, layers, notes})",
+            returns: "{item, name, kind, width?, height?, fps?, duration?, hasAudio, alpha, page?, pages?} (with `paths`: {items: […], failed: [{path, error}]}; as a composition: {item, name, layers, notes})",
             run: Run::Edit(footage_import),
         },
         Command {
@@ -104,6 +105,12 @@ fn describe(id: u64, name: &str, f: &Footage) -> Json {
     o.insert("name", name);
     o.insert("path", f.path.as_str());
     o.insert("kind", f.kind.id());
+    if veymelo_media::has_pages(&f.path) {
+        o.insert("page", (veymelo_media::page_of(f) + 1) as f64);
+        if let Ok(n) = veymelo_media::page_count(&f.path) {
+            o.insert("pages", n as f64);
+        }
+    }
     if f.width > 0 {
         o.insert("width", f.width as f64);
         o.insert("height", f.height as f64);
@@ -160,7 +167,7 @@ fn footage_import(cx: &mut Ctx, a: &Args) -> Result<Json> {
         for p in paths {
             let mut one = Map::new();
             one.insert("path", p.as_str());
-            for k in ["sequence", "fps", "folder", "as"] {
+            for k in ["sequence", "fps", "folder", "as", "page"] {
                 if let Some(v) = a.json(k) {
                     one.insert(k, v.clone());
                 }
@@ -190,6 +197,19 @@ fn footage_import(cx: &mut Ctx, a: &Args) -> Result<Json> {
         return super::layered::import(cx, path, how == "compositionLayerSizes", a.text("name"), folder);
     }
     let mut f = veymelo_media::probe(path, a.bool("sequence").unwrap_or(false)).map_err(Error::not_found)?;
+    // a page of a file with pages: its size, kept as the footage's source layer
+    if let Some(page) = a.whole("page") {
+        if !veymelo_media::has_pages(path) {
+            return Err(Error::params(format!("{path}: only PDF and Illustrator files have pages")));
+        }
+        let pages = veymelo_media::page_count(path).map_err(Error::not_found)?;
+        if page < 1 || page as usize > pages {
+            return Err(Error::params(format!("{path} has {pages} pages; there is no page {page}")));
+        }
+        let doc = veymelo_media::vector_page(path, page as usize - 1).map_err(Error::not_found)?;
+        (f.width, f.height) = (doc.width.ceil().clamp(1.0, 30_000.0) as u32, doc.height.ceil().clamp(1.0, 30_000.0) as u32);
+        f.layer = Some(SourceLayer { index: page as u32 - 1, name: format!("Page {page}"), cropped: false });
+    }
     if let Some(r) = rate_of(a)? {
         if f.kind != FootageKind::Sequence {
             return Err(Error::params("`fps` here is for sequences; footage.set conforms other footage"));

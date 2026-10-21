@@ -7,7 +7,7 @@ mod inflate;
 
 pub use archive::{unzip, zip};
 pub use deflate::{adler32, deflate, zlib};
-pub use inflate::{inflate, inflate_up_to, unzlib};
+pub use inflate::{inflate, inflate_partial, inflate_up_to, unzlib};
 
 const fn crc_table() -> [u32; 256] {
     let mut table = [0u32; 256];

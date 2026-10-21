@@ -2,6 +2,7 @@
 //! and the 38 blend modes, by name and by how each mixes a pixel with the one under it.
 
 pub mod aces;
+pub mod icc;
 mod blend;
 pub mod space;
 

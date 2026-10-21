@@ -219,8 +219,21 @@ pub fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// `data` inflated, as long as it comes to no more than `limit` bytes.
 pub fn inflate_up_to(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    inflate_into(data, limit, &mut out)?;
+    Ok(out)
+}
+
+/// As much of `data` as inflates before it goes wrong (a file cut off, a check that fails), and
+/// what went wrong.
+pub fn inflate_partial(data: &[u8]) -> (Vec<u8>, Option<String>) {
+    let mut out = Vec::new();
+    let e = inflate_into(data, usize::MAX, &mut out).err();
+    (out, e)
+}
+
+fn inflate_into(data: &[u8], limit: usize, out: &mut Vec<u8>) -> Result<(), String> {
     let mut bits = Bits { data, pos: 0, word: 0, have: 0 };
-    let mut out: Vec<u8> = Vec::new();
     let too_big = || format!("it inflates to more than {limit} bytes");
     loop {
         let last = bits.need(1)? == 1;
@@ -279,7 +292,7 @@ pub fn inflate_up_to(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
             _ => return Err("a block of an unknown kind".into()),
         }
         if last {
-            return Ok(out);
+            return Ok(());
         }
     }
 }

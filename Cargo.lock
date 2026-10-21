@@ -161,6 +161,7 @@ dependencies = [
  "veymelo-json",
  "veymelo-model",
  "veymelo-os",
+ "veymelo-pdf",
  "veymelo-project",
  "veymelo-psd",
  "veymelo-raster",
@@ -187,6 +188,21 @@ name = "veymelo-path"
 version = "0.1.0"
 dependencies = [
  "veymelo-keyframe",
+]
+
+[[package]]
+name = "veymelo-pdf"
+version = "0.1.0"
+dependencies = [
+ "veymelo-color",
+ "veymelo-font",
+ "veymelo-geom",
+ "veymelo-os",
+ "veymelo-path",
+ "veymelo-raster",
+ "veymelo-svg",
+ "veymelo-text",
+ "veymelo-zip",
 ]
 
 [[package]]
@@ -260,6 +276,7 @@ dependencies = [
 name = "veymelo-svg"
 version = "0.1.0"
 dependencies = [
+ "veymelo-color",
  "veymelo-geom",
  "veymelo-path",
  "veymelo-raster",

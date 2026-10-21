@@ -11,6 +11,7 @@ veymelo-project.workspace = true
 veymelo-raster.workspace = true
 veymelo-model.workspace = true
 veymelo-svg.workspace = true
+veymelo-pdf.workspace = true
 veymelo-psd.workspace = true
 veymelo-geom.workspace = true
 veymelo-exr.workspace = true

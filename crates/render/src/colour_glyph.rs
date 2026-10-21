@@ -267,79 +267,14 @@ pub(crate) fn composite(mode: u8, s: Px, b: Px) -> Px {
         10 => duff(1.0 - ba, sa),
         11 => duff(1.0 - ba, 1.0 - sa),
         12 => duff(1.0, 1.0),
+        // the blend modes, as layers blend (the same W3C formulas)
         13..=27 => {
-            let un = |c: Px| -> [f32; 3] { if c[3] > 0.0 { [c[0] / c[3], c[1] / c[3], c[2] / c[3]] } else { [0.0; 3] } };
-            let (cs, cb) = (un(s), un(b));
-            let mixed = blended(mode, cb, cs);
-            let a = sa + ba - sa * ba;
-            let mut out = [0.0; 4];
-            for k in 0..3 {
-                out[k] = s[k] * (1.0 - ba) + b[k] * (1.0 - sa) + sa * ba * mixed[k];
-            }
-            out[3] = a;
-            out
+            use veymelo_color::BlendMode as B;
+            const MODES: [B; 15] = [B::Screen, B::Overlay, B::Darken, B::Lighten, B::ColorDodge, B::ColorBurn, B::HardLight, B::SoftLight, B::Difference, B::Exclusion, B::Multiply, B::Hue, B::Saturation, B::Color, B::Luminosity];
+            veymelo_color::blend(MODES[mode as usize - 13], b, s, 0.0)
         }
         _ => [0.0; 4],
     }
-}
-
-/// Backdrop colour `b` and source colour `s` (straight) blended by `mode`.
-fn blended(mode: u8, b: [f32; 3], s: [f32; 3]) -> [f32; 3] {
-    let multiply = |b: f32, s: f32| b * s;
-    let screen = |b: f32, s: f32| b + s - b * s;
-    let hard = |b: f32, s: f32| if s <= 0.5 { multiply(b, 2.0 * s) } else { screen(b, 2.0 * s - 1.0) };
-    let each = |f: &dyn Fn(f32, f32) -> f32| -> [f32; 3] { std::array::from_fn(|k| f(b[k], s[k])) };
-    match mode {
-        13 => each(&screen),
-        14 => each(&|b, s| hard(s, b)),
-        15 => each(&f32::min),
-        16 => each(&f32::max),
-        17 => each(&|b, s| if b == 0.0 { 0.0 } else if s >= 1.0 { 1.0 } else { (b / (1.0 - s)).min(1.0) }),
-        18 => each(&|b, s| if b >= 1.0 { 1.0 } else if s <= 0.0 { 0.0 } else { 1.0 - ((1.0 - b) / s).min(1.0) }),
-        19 => each(&hard),
-        20 => each(&|b, s| {
-            if s <= 0.5 {
-                b - (1.0 - 2.0 * s) * b * (1.0 - b)
-            } else {
-                let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
-                b + (2.0 * s - 1.0) * (d - b)
-            }
-        }),
-        21 => each(&|b, s| (b - s).abs()),
-        22 => each(&|b, s| b + s - 2.0 * b * s),
-        23 => each(&multiply),
-        24 => set_lum(set_sat(s, sat(b)), lum(b)),
-        25 => set_lum(set_sat(b, sat(s)), lum(b)),
-        26 => set_lum(s, lum(b)),
-        _ => set_lum(b, lum(s)),
-    }
-}
-
-fn lum(c: [f32; 3]) -> f32 {
-    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
-}
-
-fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
-    let d = l - lum(c);
-    let c = c.map(|v| v + d);
-    let l = lum(c);
-    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
-    c.map(|v| {
-        let v = if n < 0.0 && l - n > 0.0 { l + (v - l) * l / (l - n) } else { v };
-        if x > 1.0 && x - l > 0.0 { l + (v - l) * (1.0 - l) / (x - l) } else { v }
-    })
-}
-
-fn sat(c: [f32; 3]) -> f32 {
-    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
-}
-
-fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
-    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
-    if x <= n {
-        return [0.0; 3];
-    }
-    c.map(|v| (v - n) * s / (x - n))
 }
 
 /// What a drawn colour glyph is kept by: its font's instance, the glyph, its pixels to an em and
@@ -477,6 +412,7 @@ mod tests {
         assert!(near(composite(15, RED, grey), [0.5, 0.0, 0.0, 1.0]));
         // a hue's colour at the backdrop's lightness and colourfulness
         let out = composite(24, BLUE, [0.8, 0.2, 0.2, 1.0]);
+        let lum = |c: [f32; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
         assert!(out[2] > out[0] && out[2] > out[1] && (lum([out[0], out[1], out[2]]) - lum([0.8, 0.2, 0.2])).abs() < 1e-4, "{out:?}");
         // a blend over nothing is the source as it is
         assert!(near(composite(23, half_red, [0.0; 4]), half_red));

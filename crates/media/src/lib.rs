@@ -58,8 +58,26 @@ pub fn importable(path: &str) -> bool {
     PICTURES.contains(&e.as_str()) || VECTORS.contains(&e.as_str()) || VIDEOS.contains(&e.as_str()) || SOUNDS.contains(&e.as_str()) || MODELS.contains(&e.as_str())
 }
 
-/// The vector pictures footage is made from (drawn at whatever size they are shown).
-pub const VECTORS: &[&str] = &["svg"];
+/// The vector pictures footage is made from (drawn at whatever size they are shown): SVG, and
+/// PDF and Illustrator files (a page of them).
+pub const VECTORS: &[&str] = &["svg", "pdf", "ai"];
+
+/// Whether a vector picture file has pages (PDF and Illustrator files), one of which footage shows.
+pub fn has_pages(path: &str) -> bool {
+    matches!(ext_of(path).as_str(), "pdf" | "ai")
+}
+
+/// How many pages a PDF or Illustrator file has.
+pub fn page_count(path: &str) -> Result<usize, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    veymelo_pdf::page_count(bytes).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The page of a vector picture footage shows (from 0): its source layer's place, for a file
+/// with pages.
+pub fn page_of(f: &Footage) -> usize {
+    if has_pages(&f.path) { f.layer.as_ref().map_or(0, |l| l.index as usize) } else { 0 }
+}
 
 /// Whether footage's file is a vector picture.
 pub fn is_vector(path: &str) -> bool {
@@ -103,7 +121,7 @@ pub fn probe(path: &str, sequence: bool) -> Result<Footage, String> {
         return Ok(f);
     }
     if VECTORS.contains(&e.as_str()) {
-        let doc = vector(path)?;
+        let doc = vector_page(path, 0)?;
         let mut f = Footage::new(path, FootageKind::Image);
         (f.width, f.height) = (doc.width.ceil().clamp(1.0, 30_000.0) as u32, doc.height.ceil().clamp(1.0, 30_000.0) as u32);
         f.alpha = AlphaMode::Straight;
@@ -262,12 +280,19 @@ fn layer_frame(path: &str, layer: &veymelo_project::SourceLayer) -> Result<veyme
     Ok(img)
 }
 
-/// The SVG picture in the file at `path`, read once and kept while the file stays as it is.
+/// The vector picture in the file at `path` (its first page), read once and kept while the file
+/// stays as it is.
 pub fn vector(path: &str) -> Result<std::sync::Arc<veymelo_svg::Doc>, String> {
+    vector_page(path, 0)
+}
+
+/// Page `page` (from 0) of the vector picture in the file at `path` (an SVG has one), read once
+/// and kept while the file stays as it is.
+pub fn vector_page(path: &str, page: usize) -> Result<std::sync::Arc<veymelo_svg::Doc>, String> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::SystemTime;
-    type Kept = HashMap<String, (Option<SystemTime>, Arc<veymelo_svg::Doc>)>;
+    type Kept = HashMap<(String, usize), (Option<SystemTime>, Arc<veymelo_svg::Doc>)>;
     static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
     let when = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     if when.is_none() && !std::path::Path::new(path).exists() {
@@ -275,20 +300,22 @@ pub fn vector(path: &str) -> Result<std::sync::Arc<veymelo_svg::Doc>, String> {
     }
     let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     let all = kept.get_or_insert_with(HashMap::new);
-    if let Some((t, d)) = all.get(path)
+    let key = (path.to_string(), page);
+    if let Some((t, d)) = all.get(&key)
         && *t == when
     {
         return Ok(d.clone());
     }
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let d = Arc::new(veymelo_svg::parse(&bytes).map_err(|e| format!("{path}: {e}"))?);
-    all.insert(path.to_string(), (when, d.clone()));
+    let doc = if has_pages(path) || veymelo_pdf::looks_like(&bytes) { veymelo_pdf::read(bytes, page) } else { veymelo_svg::parse(&bytes) };
+    let d = Arc::new(doc.map_err(|e| format!("{path}: {e}"))?);
+    all.insert(key, (when, d.clone()));
     Ok(d)
 }
 
-/// A vector picture drawn at its own size, premultiplied, its colours as they are.
-fn vector_frame(path: &str) -> Result<veymelo_raster::Image, String> {
-    let doc = vector(path)?;
+/// A vector picture (page `page`) drawn at its own size, premultiplied, its colours as they are.
+fn vector_frame(path: &str, page: usize) -> Result<veymelo_raster::Image, String> {
+    let doc = vector_page(path, page)?;
     let (w, h) = (doc.width.ceil().clamp(1.0, 30_000.0) as usize, doc.height.ceil().clamp(1.0, 30_000.0) as usize);
     let color = |c: [f64; 4]| [(c[0] * c[3]) as f32, (c[1] * c[3]) as f32, (c[2] * c[3]) as f32, c[3] as f32];
     Ok(veymelo_svg::draw(&doc, veymelo_geom::Mat3::IDENTITY, w, h, &color))
