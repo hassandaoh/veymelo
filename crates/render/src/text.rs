@@ -511,7 +511,7 @@ fn glyph_picture(bytes: &[u8]) -> Option<Arc<Image>> {
     if let Some(p) = kept.lock().ok().and_then(|k| k.get(&key).cloned()) {
         return p;
     }
-    let p = veymelo_os::read_picture_bytes(bytes).ok().map(|p| Arc::new(Image { width: p.width, height: p.height, px: p.px }));
+    let p = veymelo_os::read_picture_bytes(bytes).ok().map(|p| Arc::new(Image { width: p.width, height: p.height, px: p.px.into() }));
     if let Ok(mut k) = kept.lock() {
         if k.len() > 4096 {
             k.clear();

@@ -4,7 +4,7 @@
 use veymelo_color::{BlendMode, Rgba, blend};
 use veymelo_geom::{Mat3, Rect, vec2};
 
-use crate::par;
+use crate::{Pixels, par};
 
 /// A pixel: red, green, blue, each times alpha, and alpha.
 pub type Px = [f32; 4];
@@ -13,17 +13,17 @@ pub type Px = [f32; 4];
 pub struct Image {
     pub width: usize,
     pub height: usize,
-    pub px: Vec<Px>,
+    pub px: Pixels,
 }
 
 impl Image {
     /// A clear picture.
     pub fn new(width: usize, height: usize) -> Image {
-        Image { width, height, px: vec![[0.0; 4]; width * height] }
+        Image { width, height, px: Pixels::zeroed(width * height) }
     }
 
     pub fn filled(width: usize, height: usize, p: Px) -> Image {
-        Image { width, height, px: vec![p; width * height] }
+        Image { width, height, px: Pixels::filled(width * height, p) }
     }
 
     pub fn is_empty(&self) -> bool {

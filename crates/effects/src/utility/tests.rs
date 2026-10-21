@@ -24,7 +24,7 @@ fn grows_bounds() {
 #[test]
 fn shows_overbrights() {
     let mut img = Image::new(3, 1);
-    img.px = vec![[1.5, 0.2, 0.2, 1.0], [-0.2, 0.5, 0.5, 1.0], [0.5, 0.4, 0.3, 1.0]];
+    img.px = vec![[1.5, 0.2, 0.2, 1.0], [-0.2, 0.5, 0.5, 1.0], [0.5, 0.4, 0.3, 1.0]].into();
     let out = run(&OVERBRIGHTS, &[], img);
     assert_eq!(out.img.px[0], [1.0, 0.0, 0.0, 1.0], "past white: the highlight colour");
     assert!((out.img.px[1][0] - 0.175).abs() < 1e-6, "the brightest channel in range: dim grey");
@@ -40,7 +40,7 @@ fn shows_overbrights() {
 #[test]
 fn compresses_highlights() {
     let mut img = Image::new(4, 1);
-    img.px = vec![[0.3, 0.2, 0.1, 1.0], [2.0, 1.0, 0.5, 1.0], [8.0, 4.0, 2.0, 1.0], [0.9, 0.9, 0.9, 1.0]];
+    img.px = vec![[0.3, 0.2, 0.1, 1.0], [2.0, 1.0, 0.5, 1.0], [8.0, 4.0, 2.0, 1.0], [0.9, 0.9, 0.9, 1.0]].into();
     let out = run(&HDR_COMPRESSION, &[], img.clone());
     assert_eq!(out.img.px[0], img.px[0], "below the bend: as it was");
     for p in &out.img.px[1..3] {
@@ -54,7 +54,7 @@ fn compresses_highlights() {
 #[test]
 fn compander_undoes_itself() {
     let mut img = Image::new(3, 1);
-    img.px = vec![[3.0, 1.0, 0.25, 1.0], [-0.05, 0.0, 6.0, 0.5], [0.5, 0.5, 0.5, 1.0]];
+    img.px = vec![[3.0, 1.0, 0.25, 1.0], [-0.05, 0.0, 6.0, 0.5], [0.5, 0.5, 0.5, 1.0]].into();
     let set = [("gain", n(16.0)), ("gamma", n(2.2))];
     let squeezed = run(&HDR_COMPANDER, &set, img.clone());
     assert!(squeezed.img.px.iter().all(|p| p[0] <= p[3] + 1e-6 && p[2] <= p[3] + 1e-6), "all within 0 to 1");
@@ -78,7 +78,7 @@ fn cineon_both_ways() {
     assert!(soft.to_linear(1.0) <= 1.0 && c.to_linear(1.0) > 10.0, "the brightest rolled off to the internal white, not past it");
     // the effect: log to linear, and log to log with the standard settings changes nothing
     let mut img = Image::new(2, 1);
-    img.px = vec![[0.67, 0.4, 0.2, 1.0], [0.1, 0.5, 0.72, 1.0]];
+    img.px = vec![[0.67, 0.4, 0.2, 1.0], [0.1, 0.5, 0.72, 1.0]].into();
     let lin = run(&CINEON, &[("highlightRolloff", n(0.0))], img.clone());
     assert!((lin.img.px[0][0] - c.to_linear(0.67)).abs() < 1e-6);
     let same = run(&CINEON, &[("conversionType", Value::Choice(2))], img.clone());

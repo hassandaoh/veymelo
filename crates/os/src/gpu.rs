@@ -4,7 +4,7 @@
 //! `VEYMELO_GPU_TIMES=1` says how long each piece of work took on it.
 
 #[cfg(target_os = "macos")]
-pub use crate::mac::gpu::{Buffer, Shapes, name, prepare, run, run_steps, traces};
+pub use crate::mac::gpu::{Buffer, Shapes, copy_between, name, prepare, run, run_steps, traces};
 
 /// A GPU program: its source and the kernel in it to run.
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +87,9 @@ mod none {
         pub fn new(_len: usize) -> Result<Buffer, String> {
             Err("there is no GPU to draw with here".into())
         }
+        pub fn new_unfilled(_len: usize) -> Result<Buffer, String> {
+            Err("there is no GPU to draw with here".into())
+        }
         pub fn of<T: Plain>(_items: &[T]) -> Result<Buffer, String> {
             Buffer::new(0)
         }
@@ -135,10 +138,14 @@ mod none {
         Err("there is no GPU to draw with here".into())
     }
 
+    pub fn copy_between(_copies: &[(&Buffer, usize, &Buffer, usize, usize)]) -> Result<(), String> {
+        Err("there is no GPU to draw with here".into())
+    }
+
     pub fn prepare(_kernel: &Kernel) -> Result<(), String> {
         Err("there is no GPU to draw with here".into())
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub use none::{Buffer, Shapes, name, prepare, run, run_steps, traces};
+pub use none::{Buffer, Shapes, copy_between, name, prepare, run, run_steps, traces};

@@ -61,7 +61,7 @@ fn cut_sized_and_channelled() {
     let small = resize(&big, 2, 2);
     assert!(small.px.iter().all(|p| (p[0] - 0.5).abs() < 1e-6));
     // half see-through red: straight, multiplied, or its alpha as grey
-    let half = Image { width: 1, height: 1, px: vec![[0.5, 0.0, 0.0, 0.5]] };
+    let half = Image { width: 1, height: 1, px: vec![[0.5, 0.0, 0.0, 0.5]].into() };
     assert_eq!(channels(&half, Channels::Rgba, false), vec![255, 0, 0, 128]);
     assert_eq!(channels(&half, Channels::Rgba, true), vec![128, 0, 0, 128]);
     assert_eq!(channels(&half, Channels::Alpha, false), vec![128, 128, 128, 255]);

@@ -127,7 +127,7 @@ fn extract(ctx: &Ctx, mut b: Buf) -> Buf {
         });
         [c[0], c[1], c[2], 1.0]
     });
-    b.img.px = px;
+    b.img.px = px.into();
     b
 }
 
@@ -192,7 +192,7 @@ fn extractor(ctx: &Ctx, mut b: Buf) -> Buf {
         let c = if unmult && alpha > 1e-6 { [o[0] / alpha, o[1] / alpha, o[2] / alpha] } else { [o[0], o[1], o[2]] };
         premul(c, alpha)
     }).collect();
-    b.img.px = px;
+    b.img.px = px.into();
     b
 }
 
@@ -381,7 +381,7 @@ fn id_matte(ctx: &Ctx, mut b: Buf) -> Buf {
         let k = i.map_or(0.0, |i| if ids[i].round() == wanted { cover.map_or(1.0, |c| c[i].clamp(0.0, 1.0)) } else { 0.0 });
         [k; 4]
     });
-    let mut matte = Image { width: b.img.width, height: b.img.height, px: m };
+    let mut matte = Image { width: b.img.width, height: b.img.height, px: m.into() };
     let feather = ctx.num("feather", 0.0).max(0.0) * b.scale;
     if feather > 0.0 {
         matte = filter::gaussian(&matte, feather * 0.5, feather * 0.5, Edge::Repeat);

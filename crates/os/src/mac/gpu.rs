@@ -135,6 +135,13 @@ unsafe impl Sync for Buffer {}
 impl Buffer {
     /// `len` bytes, all zero.
     pub fn new(len: usize) -> Result<Buffer, String> {
+        let mut b = Buffer::new_unfilled(len)?;
+        b.bytes_mut().fill(0);
+        Ok(b)
+    }
+
+    /// `len` bytes holding whatever they hold (for what fills them all).
+    pub fn new_unfilled(len: usize) -> Result<Buffer, String> {
         let g = gpu().ok_or("there is no GPU to draw with")?;
         // Metal makes no empty buffers
         let size = len.max(16);
@@ -142,9 +149,7 @@ impl Buffer {
         if id.is_null() {
             return Err(format!("the GPU has no room for {} MB", len / 1_000_000));
         }
-        let mut b = Buffer { id, len };
-        b.bytes_mut().fill(0);
-        Ok(b)
+        Ok(Buffer { id, len })
     }
 
     /// A buffer holding `items`.
@@ -419,6 +424,33 @@ fn run_each(steps: &[OneStep]) -> Result<(), String> {
             }
         }
         wait(commands, &buffers, &shapes)?;
+    }
+    Ok(())
+}
+
+/// Copies made by the GPU from one buffer to another (each: from, where in it, to, where in it,
+/// how many bytes), as one piece of work, waited for.
+pub fn copy_between(copies: &[(&Buffer, usize, &Buffer, usize, usize)]) -> Result<(), String> {
+    let copies: Vec<_> = copies.iter().filter(|c| c.4 > 0).collect();
+    if copies.is_empty() {
+        return Ok(());
+    }
+    let g = gpu().ok_or("there is no GPU to draw with")?;
+    let _pool = Pool::new();
+    unsafe {
+        let commands = send(g.queue, "commandBuffer");
+        let blit = send(commands, "blitCommandEncoder");
+        if commands.is_null() || blit.is_null() {
+            return Err("the GPU took no work".into());
+        }
+        for (from, at, to, into, size) in &copies {
+            msg!(unsafe extern "C" fn(Id, Sel, Id, usize, Id, usize, usize))(blit, sel("copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:"), from.id, *at, to.id, *into, *size);
+        }
+        send(blit, "endEncoding");
+        let _turn = Turn::take();
+        send(commands, "commit");
+        let buffers: Vec<&Buffer> = copies.iter().flat_map(|c| [c.0, c.2]).collect();
+        wait(commands, &buffers, &[])?;
     }
     Ok(())
 }

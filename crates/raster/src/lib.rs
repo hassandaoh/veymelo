@@ -13,8 +13,10 @@ pub mod gpu;
 mod image;
 pub mod par;
 pub mod passes;
+mod pixels;
 
 pub use image::{Image, Px, Sampling, accumulate, blend_onto, noise, place, reach};
+pub use pixels::Pixels;
 
 use veymelo_path::{cover, Path};
 

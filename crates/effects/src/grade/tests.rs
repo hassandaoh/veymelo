@@ -102,7 +102,7 @@ fn hls_link_and_broadcast() {
     assert!(near(px(&COLOR_BALANCE_HLS, &[("hue", n(120.0))], [1.0, 0.0, 0.0, 1.0]), [0.0, 1.0, 0.0, 1.0], 1e-5));
     // a picture's own average, multiplied over it
     let mut img = Image::new(2, 1);
-    img.px = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+    img.px = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]].into();
     let linked = run(&COLOR_LINK, &[], img);
     assert!(near(linked.img.px[0], [0.5, 0.0, 0.5, 1.0], 1e-5) && near(linked.img.px[1], [0.5, 0.0, 0.5, 1.0], 1e-5));
     let safe = px(&BROADCAST, &[], [1.0, 1.0, 0.0, 1.0]);

@@ -11,7 +11,7 @@ use veymelo_os::gpu::{Arg, Buffer, Step, bytes_of};
 pub use veymelo_os::gpu::{Kernel, Plain};
 
 use crate::filter::Edge;
-use crate::{Image, Px};
+use crate::{Image, Pixels, Px};
 
 /// What the GPU's picture programs share (put first in each).
 pub const COMMON: &str = include_str!("common.metal");
@@ -77,7 +77,7 @@ pub fn ran() -> usize {
 
 /// The fewest pixels a picture has for the GPU to filter it (`VEYMELO_GPU_FROM` sets another:
 /// 0 hands every picture over, to test with).
-fn fewest() -> usize {
+pub(crate) fn fewest() -> usize {
     static FROM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *FROM.get_or_init(|| std::env::var("VEYMELO_GPU_FROM").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(256 * 256))
 }
@@ -244,35 +244,59 @@ pub fn apply(img: &Image, ops: &[Op]) -> Option<Image> {
         return Some(img.clone());
     }
     let go = || -> Result<Image, String> {
-        let len = std::mem::size_of_val(img.px.as_slice());
-        let mut source = take(0, len)?;
-        source.slice_mut::<Px>()[..img.px.len()].copy_from_slice(&img.px);
+        let n = img.px.len();
+        let len = std::mem::size_of_val(&img.px[..]);
+        // the picture where it is, if the GPU shares it; else copied over
+        let copied = match img.px.buffer() {
+            Some(_) => None,
+            None => {
+                let mut b = take(0, len)?;
+                b.slice_mut::<Px>()[..n].copy_from_slice(&img.px);
+                Some(b)
+            }
+        };
+        let source: &Buffer = match &copied {
+            Some(b) => b,
+            None => img.px.buffer().expect("shared"),
+        };
         let (a, b) = (take(1, len)?, take(2, len)?);
+        // what the last step makes goes straight into the new picture's pixels (unless it puts
+        // it in a slot)
+        let made = if ops.last().is_some_and(|op| op.save.is_none()) { Pixels::shared_unfilled(n) } else { None };
         let used = |k: usize| ops.iter().any(|op| op.input == Some(k) || op.also == Some(k) || op.save == Some(k));
         let slots: Vec<Option<Buffer>> = (0..SLOTS).map(|k| used(k).then(|| take(3 + k, len)).transpose()).collect::<Result<_, _>>()?;
         let slot = |k: usize| -> Result<&Buffer, String> { slots.get(k).and_then(Option::as_ref).ok_or_else(|| format!("no slot {k}")) };
         let data: Vec<Option<Buffer>> = ops.iter().map(|op| op.data.as_deref().map(Buffer::of).transpose()).collect::<Result<_, _>>()?;
-        // where the last step's picture is: 0 the picture, 1 and 2 the two, 3 on the slots
+        let out_buffer = made.as_ref().and_then(|p| p.buffer());
+        // where the last step's picture is: 0 the picture, 1 and 2 the two, 3 on the slots, and
+        // the new picture's own (past them)
+        const MADE: usize = 3 + SLOTS;
         let mut here = 0usize;
         let buffer = |w: usize| -> Result<&Buffer, String> {
             match w {
-                0 => Ok(&source),
+                0 => Ok(source),
                 1 => Ok(&a),
                 2 => Ok(&b),
+                MADE => out_buffer.ok_or_else(|| "no picture to make".to_string()),
                 k => slot(k - 3),
             }
         };
         let mut steps = Vec::with_capacity(ops.len());
         for (k, op) in ops.iter().enumerate() {
             let from = op.input.map_or(here, |s| 3 + s);
-            // into a slot, or back and forth between the two
-            let to = op.save.map_or(if from == 1 { 2 } else { 1 }, |s| 3 + s);
+            // into a slot, the new picture (the last step), or back and forth between the two
+            let to = match op.save {
+                Some(s) => 3 + s,
+                None if k + 1 == ops.len() && out_buffer.is_some() => MADE,
+                None if from == 1 => 2,
+                None => 1,
+            };
             let mut args = vec![Arg::Pass(buffer(to)?), Arg::Pass(buffer(from)?)];
-            if let Some(n) = &data[k] {
-                args.push(Arg::Read(n));
+            if let Some(d) = &data[k] {
+                args.push(Arg::Read(d));
             }
             if op.original {
-                args.push(Arg::Pass(&source));
+                args.push(Arg::Pass(source));
             }
             if let Some(s) = op.also {
                 args.push(Arg::Pass(slot(s)?));
@@ -283,8 +307,15 @@ pub fn apply(img: &Image, ops: &[Op]) -> Option<Image> {
         }
         veymelo_os::gpu::run_steps(&steps)?;
         drop(steps);
-        let out = Image { width: img.width, height: img.height, px: buffer(here)?.slice::<Px>()[..img.px.len()].to_vec() };
-        keep(0, source);
+        let elsewhere = if here == MADE { None } else { Some(buffer(here)?.slice::<Px>()[..n].to_vec()) };
+        let px = match (elsewhere, made) {
+            (None, Some(p)) => p,
+            (Some(v), _) => Pixels::from(v),
+            (None, None) => return Err("no picture made".into()),
+        };
+        if let Some(c) = copied {
+            keep(0, c);
+        }
         keep(1, a);
         keep(2, b);
         for (k, s) in slots.into_iter().enumerate() {
@@ -292,7 +323,7 @@ pub fn apply(img: &Image, ops: &[Op]) -> Option<Image> {
                 keep(3 + k, s);
             }
         }
-        Ok(out)
+        Ok(Image { width: img.width, height: img.height, px })
     };
     match go() {
         Ok(out) => {

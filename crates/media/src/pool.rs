@@ -174,7 +174,7 @@ fn interpret(f: &Footage, p: veymelo_os::Picture) -> Image {
             q[3] = 1.0;
         }),
     }
-    square(f, Image { width: p.width, height: p.height, px })
+    square(f, Image { width: p.width, height: p.height, px: px.into() })
 }
 
 /// A frame's pixels made square, as wide as the footage's pixel aspect says.
@@ -256,7 +256,7 @@ pub fn frame(f: &Footage, n: u64) -> Result<Arc<Image>, String> {
         FootageKind::Image | FootageKind::Sequence => {
             // OpenEXR pictures by our own decoder, alpha as the footage says
             let img = match crate::is_exr(&file).then(|| crate::exr::picture(&file, f.alpha)) {
-                Some(Ok(pic)) => square(f, Image { width: pic.width, height: pic.height, px: pic.px }),
+                Some(Ok(pic)) => square(f, Image { width: pic.width, height: pic.height, px: pic.px.into() }),
                 _ => interpret(f, veymelo_os::read_picture(&file, 0)?),
             };
             p.decoded += 1;

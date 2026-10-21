@@ -77,18 +77,26 @@ impl Shadows {
         }
         let mut texels = take(PICTURES, total * 16)?;
         let (mut list, mut at) = (Vec::with_capacity(planes.len()), Vec::with_capacity(planes.len()));
+        // the pictures one after another: those the GPU made (in memory it shares) copied by
+        // the GPU, the rest by the cores
+        let mut on_gpu = Vec::new();
         {
             let mut out = &mut texels.slice_mut::<[f32; 4]>()[..total];
             let mut first = 0;
             for (c, img) in planes {
                 let (to, rest) = out.split_at_mut(img.px.len());
-                veymelo_raster::par::chunks(to, PIECE, |k, c| c.copy_from_slice(&img.px[k * PIECE..k * PIECE + c.len()]));
+                match img.px.buffer() {
+                    Some(b) => on_gpu.push((b, first * 16, img.px.len() * 16)),
+                    None => veymelo_raster::par::chunks(to, PIECE, |k, c| c.copy_from_slice(&img.px[k * PIECE..k * PIECE + c.len()])),
+                }
                 out = rest;
                 list.push(Caster { img: [first as u32, img.width as u32, img.height as u32, c.img[3]], ..*c });
                 at.push(first as u32);
                 first += img.px.len();
             }
         }
+        let copies: Vec<_> = on_gpu.iter().map(|&(b, into, size)| (b, 0, &texels, into, size)).collect();
+        veymelo_os::gpu::copy_between(&copies)?;
         Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)? }))
     }
 
