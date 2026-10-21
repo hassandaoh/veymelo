@@ -173,6 +173,8 @@ pub enum Framing {
     Crop,
     /// Cut so, and scaled up to fill the frame.
     CropScale,
+    /// Shown whole, what the moved frames leave empty filled from the frames round them.
+    Synthesize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -301,7 +303,7 @@ pub fn plan(a: &Analysis, s: &Settings) -> Plan {
     let cover = covered(a, &moved);
     let extra = s.extra_scale / 100.0;
     let (scale, keep) = match s.framing {
-        Framing::Stabilize => (extra, 1.0),
+        Framing::Stabilize | Framing::Synthesize => (extra, 1.0),
         Framing::Crop => (extra, cover),
         Framing::CropScale => {
             let up = (1.0 / cover.max(1e-6)).min(s.most_scale.max(100.0) / 100.0);

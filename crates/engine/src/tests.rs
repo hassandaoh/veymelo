@@ -3226,6 +3226,16 @@ fn shaky_footage_held_still_and_rolling_shutter_taken_out() {
         let held = differ(&first, &frame(&s, t), middle);
         assert!(held < 0.01, "at {t}: {held}");
     }
+    // its moved edges left empty, or filled from the frames round it: then like the first frame
+    // all over
+    let clear = |s: &Session, t: f64| s.render(Some(&Json::Number(main as f64)), Some(veymelo_time::Tick::from_seconds(t)), &render::Options { background: false, ..render::Options::default() }).unwrap();
+    let empty = |f: &render::Rendered| f.image.px.iter().filter(|p| p[3] < 0.5).count();
+    let bare = empty(&clear(&s, 0.44));
+    run(&mut s, "prop.set", &format!(r#"{{"layer": {shot}, "path": "effects/Warp Stabilizer/framing", "value": "synthesizeEdges"}}"#));
+    let filled = clear(&s, 0.44);
+    assert!(bare > 500 && empty(&filled) < bare / 10, "{bare} {}", empty(&filled));
+    let whole = differ(&first, &filled, [0, 0, 320, 240]);
+    assert!(whole < 0.02, "{whole}");
     run(&mut s, "effect.set", &format!(r#"{{"layer": {shot}, "effect": "Warp Stabilizer", "enabled": false}}"#));
     let shaking = differ(&first, &frame(&s, 0.2), middle);
     assert!(shaking > 0.05, "{shaking}");
@@ -3263,6 +3273,15 @@ fn shaky_footage_held_still_and_rolling_shutter_taken_out() {
     let box_ = [40, 20, 280, 220];
     let (after, before) = (differ(&repaired, &truth, box_), differ(&slant, &truth, box_));
     assert!(after < 0.4 * before, "repaired {after}, slanted {before}");
+    // each part by its own motion, from the frames before and after (no analysis needed)
+    run(&mut s, "effect.set", &format!(r#"{{"comp": {rolling}, "layer": {wide}, "effect": "Corner Pin", "enabled": true}}"#));
+    run(&mut s, "effect.set", &format!(r#"{{"comp": {fixed}, "layer": {slanted}, "effect": "Rolling Shutter Repair", "enabled": true}}"#));
+    run(&mut s, "prop.set", &format!(r#"{{"comp": {fixed}, "layer": {slanted}, "path": "effects/Rolling Shutter Repair/method", "value": "pixelMotion"}}"#));
+    run(&mut s, "prop.set", &format!(r#"{{"comp": {fixed}, "layer": {slanted}, "path": "effects/Rolling Shutter Repair/analysis", "value": ""}}"#));
+    let by_pixel = draw(&s, fixed);
+    assert!(by_pixel.notes.is_empty(), "{:?}", by_pixel.notes);
+    let after = differ(&by_pixel, &truth, box_);
+    assert!(after < 0.4 * before, "by pixel motion {after}, slanted {before}");
 }
 
 #[test]

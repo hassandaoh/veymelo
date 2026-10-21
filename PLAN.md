@@ -663,6 +663,10 @@ prop.list/get/set/keys, render.frame
 - [x] 17.1 planar: tracker แบบ perspective ตั้ง `planar` (track.new) → track.analyze ตามผิวเรียบทั้งผืน: จุดเด่น (Shi–Tomasi)
       ภายในสี่มุมทุกเฟรม ตามด้วย KLT ไปเฟรมถัดไป (ตรวจตามกลับ) แล้ว RANSAC perspective ย้ายสี่มุม (track/planar.rs) — มุมอยู่นอกภาพ
       หรือบนพื้นเรียบได้; confidence = สัดส่วนที่เห็นด้วย; track.apply corner pin ได้เหมือนเดิม
+- [x] 17.2 Warp Stabilizer Framing "synthesizeEdges": ขอบที่ว่างหลังเลื่อนเฟรม เติมจากเฟรมรอบๆ (ใกล้ก่อน ไม่เกิน Synthesis Input
+      Range) ที่พาเข้ามุมมองเดียวกันด้วย map ของเฟรมนั้น (Host::this_at), Synthesis Edge Feather ให้ภาพตัวเองค่อยๆ จางเข้า
+- [x] 17.3 Rolling Shutter Repair Method "pixelMotion": การเคลื่อนของแต่ละส่วนจาก optical flow (track/flow.rs: ตารางจุด KLT
+      ไปเฟรมถัดไปและก่อนหน้า ตรวจตามกลับ เติมช่องจากรอบข้าง median 3×3) — ไม่ต้อง analyze
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**

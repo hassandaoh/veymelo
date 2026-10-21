@@ -13,6 +13,7 @@
 //! Points are in the layer's pixels: an image pixel is a layer point plus the frame's offset.
 
 pub mod fit;
+pub mod flow;
 pub mod klt;
 pub mod planar;
 pub mod plane;
