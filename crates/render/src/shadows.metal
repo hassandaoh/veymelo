@@ -88,8 +88,54 @@ struct Face {
     float4 normals[3];  // its corners' (w: the layer's ambient, diffuse, whether it takes light)
     float4 colours[3];  // its corners' (w: how much the layer mirrors, how much less face on)
     float4 glow;
-    uint4 probes;       // the points its corners' bouncing light was gathered at (NONE: none)
+    uint4 probes;       // the points its corners' bouncing light was gathered at, its picture (NONE: none)
+    float4 uvs[2];      // its corners' points on its picture (u, v each); whether colours are worked in linear light
 };
+
+// A picture as the GPU reads it, among others one after another.
+struct Pic {
+    uint4 a;         // first texel, width, height; read between its pixels (bit 0), wrap across (bits 1-2) and down (bits 3-4)
+};
+
+// a picture's pixel `v` along `n` of them, past its edges as it repeats (0 repeat, 1 clamp, 2 mirror)
+static uint fold(int v, int n, uint wrap) {
+    if (wrap == 1) return uint(clamp(v, 0, n - 1));
+    if (wrap == 2) {
+        int m = v % (2 * n);
+        if (m < 0) m += 2 * n;
+        return uint(m < n ? m : 2 * n - 1 - m);
+    }
+    int m = v % n;
+    if (m < 0) m += n;
+    return uint(m);
+}
+
+static float4 pic_texel(const device float4 *texels, Pic p, float x, float y) {
+    // (held to what a whole number holds: far past the edges is as far as can be)
+    int ix = int(clamp(x, -1e9, 1e9));
+    int iy = int(clamp(y, -1e9, 1e9));
+    int w = int(p.a.y), h = int(p.a.z);
+    return texels[p.a.x + fold(iy, h, (p.a.w >> 3) & 3u) * uint(w) + fold(ix, w, (p.a.w >> 1) & 3u)];
+}
+
+// picture `p` at its point `at` (0 to 1 across and down; Texture::at): white with no pixels
+static float4 pic_at(const device float4 *texels, Pic p, float2 at) {
+    if (p.a.y == 0 || p.a.z == 0) return float4(1.0);
+    float x = at.x * float(p.a.y) - 0.5;
+    float y = at.y * float(p.a.z) - 0.5;
+    if ((p.a.w & 1u) == 0) return pic_texel(texels, p, round(x), round(y));
+    float x0 = floor(x), y0 = floor(y);
+    float tx = x - x0, ty = y - y0;
+    float4 a = pic_texel(texels, p, x0, y0), b = pic_texel(texels, p, x0 + 1.0, y0);
+    float4 c = pic_texel(texels, p, x0, y0 + 1.0), d = pic_texel(texels, p, x0 + 1.0, y0 + 1.0);
+    float4 top = a + (b - a) * tx;
+    float4 bottom = c + (d - c) * tx;
+    return top + (bottom - top) * ty;
+}
+
+static float srgb_to_linear(float v) {
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
 
 // What casts shadows: the flat layers (and their pictures), and with rays the models casting
 // them and all of them; each model triangle's face (shadows go through glass), and for each
@@ -103,8 +149,24 @@ struct Shadows {
     primitive_acceleration_structure everything;  // all of them (for the ambient occlusion)
     const device Face *faces;
     const device uint *glass;
+    const device Pic *pics;          // the faces' pictures
+    const device float4 *pic_texels;
 #endif
 };
+
+// a face's colour at its corners' weights `w`: between its corners', times its picture there
+static float3 face_rgb(thread const Shadows &sh, Face f, float3 w) {
+    float3 rgb = f.colours[0].xyz * w.x + f.colours[1].xyz * w.y + f.colours[2].xyz * w.z;
+#if RAYS
+    if (f.probes.w != NONE) {
+        float2 at = float2(f.uvs[0].x * w.x + f.uvs[0].z * w.y + f.uvs[1].x * w.z, f.uvs[0].y * w.x + f.uvs[0].w * w.y + f.uvs[1].y * w.z);
+        float3 c = pic_at(sh.pic_texels, sh.pics[f.probes.w], at).xyz;
+        if (f.uvs[1].z > 0.5) c = float3(srgb_to_linear(max(c.x, 0.0)), srgb_to_linear(max(c.y, 0.0)), srgb_to_linear(max(c.z, 0.0)));
+        rgb *= c;
+    }
+#endif
+    return rgb;
+}
 
 // The most glass surfaces a shadow's ray is followed through, and how far past one the next is
 // looked for (three.rs).
@@ -149,7 +211,7 @@ static float3 pass_from(thread const Shadows &sh, uint own, float3 q, float3 dir
             float3 wt = float3(1.0 - b.x - b.y, b.x, b.y);
             float3 n = f.normals[0].xyz * wt.x + f.normals[1].xyz * wt.y + f.normals[2].xyz * wt.z;
             n = length(n) > 1e-12 ? normalize(n) : float3(0.0, 0.0, 1.0);
-            float3 rgb = f.colours[0].xyz * wt.x + f.colours[1].xyz * wt.y + f.colours[2].xyz * wt.z;
+            float3 rgb = face_rgb(sh, f, wt);
             float facing = clamp(fabs(dot(n, dir)), 0.0, 1.0);
             float clear = f.colours[2].w * (1.0 - f.glow.w * (1.0 - facing));
             pass *= sqrt(clear * max(rgb, 0.0));
@@ -361,7 +423,7 @@ static Met meet(thread const Shadows &sh, thread const Seen &by, uint own, float
         float3 nn = f.normals[0].xyz * w.x + f.normals[1].xyz * w.y + f.normals[2].xyz * w.z;
         nn = length(nn) > 1e-12 ? normalize(nn) : -dir;
         if (dot(nn, dir) > 0.0) nn = -nn;
-        float3 rgb = f.colours[0].xyz * w.x + f.colours[1].xyz * w.y + f.colours[2].xyz * w.z;
+        float3 rgb = face_rgb(sh, f, w);
         float3 fell = float3(0.0);
         if (by.amount > 0.0) {
             for (uint j = 0; j < 3; j++) {
@@ -510,7 +572,7 @@ static float3 bounced_from(thread const Shadows &sh, thread const Seen &by, floa
         float3 nn = f.normals[0].xyz * w.x + f.normals[1].xyz * w.y + f.normals[2].xyz * w.z;
         nn = length(nn) > 1e-12 ? normalize(nn) : -dir;
         if (dot(nn, dir) > 0.0) nn = -nn;
-        float3 rgb = f.colours[0].xyz * w.x + f.colours[1].xyz * w.y + f.colours[2].xyz * w.z;
+        float3 rgb = face_rgb(sh, f, w);
         float3 e = float3(0.0);
         for (uint j = 0; j < 3; j++) {
             if (f.probes[j] != NONE) e += before[f.probes[j]].xyz * w[j];
@@ -555,11 +617,13 @@ kernel void gather(device float4 *out [[buffer(0)]],
                    primitive_acceleration_structure models [[buffer(10)]],
                    primitive_acceleration_structure everything [[buffer(11)]],
                    const device uint *glass [[buffer(12)]],
+                   const device Pic *pics [[buffer(13)]],
+                   const device float4 *pic_texels [[buffer(14)]],
 #endif
                    uint2 at [[thread_position_in_grid]]) {
     if (at.x >= params.a.x) return;
 #if RAYS
-    Shadows sh = { casters, params.a.z, shadow_px, models, everything, faces, glass };
+    Shadows sh = { casters, params.a.z, shadow_px, models, everything, faces, glass, pics, pic_texels };
 #else
     Shadows sh = { casters, params.a.z, shadow_px };
 #endif

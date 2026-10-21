@@ -54,6 +54,8 @@ pub(crate) struct Shadows {
     pub faces: Buffer,
     /// Whether any casting model is glass, then each casting triangle's face (`NONE`: not glass).
     pub glass: Buffer,
+    /// The pictures the faces read (none: none does).
+    pub pictures: Option<std::sync::Arc<crate::meshes::FacePictures>>,
 }
 
 /// A frame's worth of pictures is copied by all the cores, a piece each.
@@ -62,13 +64,14 @@ pub(crate) const PIECE: usize = 1 << 16;
 impl Shadows {
     /// Nothing casting shadows.
     pub(crate) fn none() -> Result<Shadows, String> {
-        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)?, glass: Buffer::new(16)? })
+        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)?, glass: Buffer::new(16)?, pictures: None })
     }
 
     /// Flat layers `planes` (each with its own picture), the triangles of models casting
-    /// shadows and those of every model hiding the sky (three corners each, in the world): none
-    /// when there are models to trace and the GPU cannot, or the pictures are too many.
-    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face], glass: &[u32]) -> Result<Option<Shadows>, String> {
+    /// shadows and those of every model hiding the sky (three corners each, in the world), each
+    /// as a reflection sees it, and the pictures they read: none when there are models to trace
+    /// and the GPU cannot, or the pictures are too many.
+    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face], glass: &[u32], pictures: Option<std::sync::Arc<crate::meshes::FacePictures>>) -> Result<Option<Shadows>, String> {
         if (!models.is_empty() || !everything.is_empty()) && !veymelo_os::gpu::traces() {
             return Ok(None);
         }
@@ -99,17 +102,21 @@ impl Shadows {
         }
         let copies: Vec<_> = on_gpu.iter().map(|&(b, into, size)| (b, 0, &texels, into, size)).collect();
         veymelo_os::gpu::copy_between(&copies)?;
-        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)?, glass: take_with(GLASS, glass)? }))
+        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)?, glass: take_with(GLASS, glass)?, pictures }))
     }
 
     /// The kernel to run (`plain`, or `rays` when there are models to trace), and what it takes
-    /// after its other arguments: both arrangements of triangles (one there is not: one far off).
+    /// after its other arguments: both arrangements of triangles (one there is not: one far off),
+    /// the glass, and the faces' pictures (where they are, their texels).
     pub(crate) fn kernel<'s>(&'s self, plain: Kernel, rays: Kernel) -> Result<(Kernel, Vec<veymelo_os::gpu::Arg<'s>>), String> {
+        use veymelo_os::gpu::Arg;
         if self.models.is_none() && self.everything.is_none() {
             return Ok((plain, Vec::new()));
         }
         let none = nowhere()?;
-        Ok((rays, vec![veymelo_os::gpu::Arg::Shapes(self.models.as_ref().unwrap_or(none)), veymelo_os::gpu::Arg::Shapes(self.everything.as_ref().unwrap_or(none)), veymelo_os::gpu::Arg::Read(&self.glass)]))
+        let blank = blank()?;
+        let (pics, texels) = self.pictures.as_ref().map_or((blank, blank), |p| (&p.pics, &p.texels));
+        Ok((rays, vec![Arg::Shapes(self.models.as_ref().unwrap_or(none)), Arg::Shapes(self.everything.as_ref().unwrap_or(none)), Arg::Read(&self.glass), Arg::Read(pics), Arg::Read(texels)]))
     }
 
     /// Its buffers back, for the next frame drawn on this thread.
@@ -119,6 +126,15 @@ impl Shadows {
         keep(FACES, self.faces);
         keep(GLASS, self.glass);
     }
+}
+
+/// A buffer with nothing in it, for a kernel to read where there is nothing to.
+fn blank() -> Result<&'static Buffer, String> {
+    static BLANK: std::sync::OnceLock<Buffer> = std::sync::OnceLock::new();
+    if BLANK.get().is_none() {
+        let _ = BLANK.set(Buffer::new(16)?);
+    }
+    BLANK.get().ok_or_else(|| "the GPU made no buffer".to_string())
 }
 
 /// A tiny triangle far off, for a kernel to trace through where there is nothing to.
@@ -458,7 +474,7 @@ mod tests {
     fn the_structs_are_as_big_as_the_kernel_reads_them() {
         assert_eq!(std::mem::size_of::<Plane>(), 21 * 16);
         assert_eq!(std::mem::size_of::<Caster>(), 14 * 16);
-        assert_eq!(std::mem::size_of::<crate::meshes::Face>(), 8 * 16);
+        assert_eq!(std::mem::size_of::<crate::meshes::Face>(), 10 * 16);
         assert_eq!(std::mem::size_of::<Probe>(), 2 * 16);
         assert_eq!(std::mem::size_of::<BounceParams>(), 2 * 16);
         assert_eq!(std::mem::size_of::<Light>(), 6 * 16);

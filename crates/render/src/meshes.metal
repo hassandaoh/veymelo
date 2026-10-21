@@ -35,10 +35,6 @@ struct Mat {
                      // bit each, in that order, the light's last); alpha (0 opaque, 1 mask, 2 see-through); unlit
 };
 
-struct Pic {
-    uint4 a;         // first texel, width, height; read between its pixels (bit 0), wrap across (bits 1-2) and down (bits 3-4)
-};
-
 struct MeshParams {
     uint4 a;         // columns, rows, tiles across, lights
     uint4 b;         // colours worked in linear light, takes light, the environment's levels it shines with (0: none), takes shadows
@@ -66,57 +62,14 @@ struct Mesh {
 
 // ---- pictures ------------------------------------------------------------------------------
 
-// a picture's pixel `v` along `n` of them, past its edges as it repeats (0 repeat, 1 clamp, 2 mirror)
-static uint fold(int v, int n, uint wrap) {
-    if (wrap == 1) return uint(clamp(v, 0, n - 1));
-    if (wrap == 2) {
-        int m = v % (2 * n);
-        if (m < 0) m += 2 * n;
-        return uint(m < n ? m : 2 * n - 1 - m);
-    }
-    int m = v % n;
-    if (m < 0) m += n;
-    return uint(m);
-}
-
-static float4 texel(thread const Mesh &s, Pic p, float x, float y) {
-    // (held to what a whole number holds: far past the edges is as far as can be)
-    int ix = int(clamp(x, -1e9, 1e9));
-    int iy = int(clamp(y, -1e9, 1e9));
-    int w = int(p.a.y), h = int(p.a.z);
-    return s.texels[p.a.x + fold(iy, h, (p.a.w >> 3) & 3u) * uint(w) + fold(ix, w, (p.a.w >> 1) & 3u)];
-}
-
-// picture `which` at its texture point set `set` of `uv`: none, false
+// picture `which` at its texture point set `set` of `uv` (shadows.metal's pic_at): none, false
 static bool picture(thread const Mesh &s, uint which, uint set, float4 uv, thread float4 &out) {
     if (which == NONE) return false;
-    Pic p = s.pics[which];
-    if (p.a.y == 0 || p.a.z == 0) {
-        out = float4(1.0);
-        return true;
-    }
-    float2 at = set == 0 ? uv.xy : uv.zw;
-    float x = at.x * float(p.a.y) - 0.5;
-    float y = at.y * float(p.a.z) - 0.5;
-    if ((p.a.w & 1u) == 0) {
-        out = texel(s, p, round(x), round(y));
-        return true;
-    }
-    float x0 = floor(x), y0 = floor(y);
-    float tx = x - x0, ty = y - y0;
-    float4 a = texel(s, p, x0, y0), b = texel(s, p, x0 + 1.0, y0);
-    float4 c = texel(s, p, x0, y0 + 1.0), d = texel(s, p, x0 + 1.0, y0 + 1.0);
-    float4 top = a + (b - a) * tx;
-    float4 bottom = c + (d - c) * tx;
-    out = top + (bottom - top) * ty;
+    out = pic_at(s.texels, s.pics[which], set == 0 ? uv.xy : uv.zw);
     return true;
 }
 
 // ---- colours -------------------------------------------------------------------------------
-
-static float srgb_to_linear(float v) {
-    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
-}
 
 static float linear_to_srgb(float v) {
     return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
@@ -297,10 +250,12 @@ kernel void mesh(device float4 *color [[buffer(0)]],
                  primitive_acceleration_structure models [[buffer(18)]],
                  primitive_acceleration_structure everything [[buffer(19)]],
                  const device uint *glass [[buffer(20)]],
+                 const device Pic *face_pics [[buffer(21)]],
+                 const device float4 *face_texels [[buffer(22)]],
 #endif
                  uint2 at [[thread_position_in_grid]]) {
 #if RAYS
-    Shadows shadows = { casters, params.c.x, shadow_px, models, everything, faces, glass };
+    Shadows shadows = { casters, params.c.x, shadow_px, models, everything, faces, glass, face_pics, face_texels };
 #else
     Shadows shadows = { casters, params.c.x, shadow_px };
 #endif

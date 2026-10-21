@@ -298,6 +298,26 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("glass-shadows", s, c, vec![0.0]));
     }
+    // a picture on a model seen in a mirror and through glass, read where each is seen: a disc
+    // with a round gradient made solid, over a mirror floor, beside a glass ball
+    {
+        let (mut s, c, _) = stage("mirror-pictures");
+        let floor = s.project().comp(c).and_then(|cp| cp.layers.iter().find(|l| l.name == "Floor").map(|l| l.id)).expect("the floor");
+        set(&mut s, floor, "materialOptions/reflectionIntensity", "70");
+        let disc = id(&run(&mut s, "layer.add", r#"{"type": "shape"}"#), "layer");
+        run(&mut s, "shape.add", &format!(r#"{{"layer": {disc}, "type": "ellipse", "props": {{"size": [150, 150]}}}}"#));
+        run(&mut s, "shape.add", &format!(r##"{{"layer": {disc}, "type": "gradientFill", "props": {{"type": "radial", "start": [0, 0], "end": [75, 0], "colors": ["#ffe066", "#e63946", "#1d3557", "#2a9d8f"]}}}}"##));
+        three_d(&mut s, disc);
+        set(&mut s, disc, "transform/position", "[200, 140, 160]");
+        set(&mut s, disc, "transform/rotationY", "-20");
+        set(&mut s, disc, "geometryOptions/extrusionDepth", "16");
+        let ball = primitive(&mut s, "sphere", [330.0, 175.0, 110.0], "#ffffff", 0.0, 0.05);
+        set(&mut s, ball, "materialOptions/transparency", "90");
+        set(&mut s, ball, "materialOptions/indexOfRefraction", "1.3");
+        light(&mut s, "parallel", [40.0, -200.0, -240.0], false);
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("mirror-pictures", s, c, vec![0.0]));
+    }
     // caustics: a clear glass ball focusing a point light into a bright spot on the floor, a
     // tinted glass cube throwing its coloured light bent, beside an opaque cone's shadow
     {

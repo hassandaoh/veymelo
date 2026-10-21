@@ -214,7 +214,7 @@ impl Scene<'_> {
             // a model not glass stops it; glass bends it, going in or coming out
             let Some((d, k, which, u, v)) = hit else { break };
             let Some(g) = self.casting.glass[k] else { break };
-            let (n, rgb) = glass_at(&self.faces[g.first + which as usize], u, v);
+            let (n, rgb) = glass_at(&self.faces[g.first + which as usize], u, v, self.pics);
             (0..3).for_each(|c| left[c] *= through_glass(g.clear, g.rolloff, n, dir, rgb[c]) as f64);
             let going_in = n.dot(dir) < 0.0;
             let facing = if going_in { n } else { -n };

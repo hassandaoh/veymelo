@@ -430,10 +430,11 @@ pub(crate) fn corners(model: &Model, pose: &Pose, place: &Mat4) -> Vec<[f32; 3]>
 
 /// A triangle of a model as a reflection sees it: its corners' normals (in the world; and the
 /// layer's ambient, diffuse and whether it takes light, in their w) and colours (in the working
-/// space, its picture's at each corner; and how much its layer mirrors, how much less face on,
-/// and how see-through it is, in their w), the light it gives off (and how much less clear its
-/// glass is face on, in its w), and the points the light bouncing onto its corners was gathered
-/// at (`u32::MAX`: none).
+/// space, its picture apart; and how much its layer mirrors, how much less face on, and how
+/// see-through it is, in their w), the light it gives off (and how much less clear its glass is
+/// face on, in its w), the points the light bouncing onto its corners was gathered at and its
+/// picture among the scene's (`u32::MAX`: none), and its corners' points on that picture (u, v
+/// each; then whether colours are worked in linear light).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Face {
@@ -441,6 +442,43 @@ pub(crate) struct Face {
     pub colours: [[f32; 4]; 3],
     pub glow: [f32; 4],
     pub probes: [u32; 4],
+    pub uvs: [[f32; 4]; 2],
+}
+
+impl Face {
+    /// Its picture's colour at its corners' weights `w` (in the working space), if it has one
+    /// (`pics`: the scene's pictures, as `faces` numbers them).
+    pub fn picture(&self, w: [f64; 3], pics: &[&veymelo_model::Texture]) -> Option<[f32; 3]> {
+        let t = pics.get(self.probes[3] as usize)?;
+        let u = self.uvs[0][0] as f64 * w[0] + self.uvs[0][2] as f64 * w[1] + self.uvs[1][0] as f64 * w[2];
+        let v = self.uvs[0][1] as f64 * w[0] + self.uvs[0][3] as f64 * w[1] + self.uvs[1][1] as f64 * w[2];
+        let c = t.at(u, v);
+        let linear = self.uvs[1][2] > 0.5;
+        Some(std::array::from_fn(|k| if linear { srgb_to_linear(c[k].max(0.0) as f64) as f32 } else { c[k] }))
+    }
+}
+
+/// The pictures a scene's model faces read (each model's colour pictures, model after model),
+/// and for each model, its pictures' numbers among them (`u32::MAX`: not one of them).
+pub(crate) fn face_pictures<'m>(models: &[&'m Model]) -> (Vec<&'m veymelo_model::Texture>, Vec<Vec<u32>>) {
+    let mut list = Vec::new();
+    let numbers = models
+        .iter()
+        .map(|model| {
+            let mut of = vec![u32::MAX; model.textures.len()];
+            for m in &model.materials {
+                if let Some(map) = m.base_map
+                    && map.texture < of.len()
+                    && of[map.texture] == u32::MAX
+                {
+                    of[map.texture] = list.len() as u32;
+                    list.push(&model.textures[map.texture]);
+                }
+            }
+            of
+        })
+        .collect();
+    (list, numbers)
 }
 
 /// The model posed (`pose`) and placed by `place`: each of its vertices (in `parts`' order, as
@@ -453,9 +491,8 @@ pub(crate) fn probes(model: &Model, pose: &Pose, place: &Mat4) -> Vec<(Vec3, Vec
 /// `corners`' order), its layer taking light as `m` says, colours worked in linear light (else
 /// as they are seen); its vertices' light gathered at the points from `first_probe` (`probes`'
 /// order), if it was.
-pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, linear: bool, first_probe: Option<usize>) -> Vec<Face> {
+pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, linear: bool, first_probe: Option<usize>, pictures: &[u32]) -> Vec<Face> {
     let to_work = |c: f32| if linear { c } else { linear_to_srgb(c.max(0.0) as f64) as f32 };
-    let pic_to_work = |c: f32| if linear { srgb_to_linear(c.max(0.0) as f64) as f32 } else { c };
     let fallback = veymelo_model::Material::default();
     let mut out = Vec::new();
     let mut part_first = 0;
@@ -469,15 +506,20 @@ pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, line
             });
             let colours = [0, 1, 2].map(|i| {
                 let v = corner(t[i]);
-                let pic = sample(model, mat.base_map, &v.uv).unwrap_or([1.0; 4]);
-                let c: [f32; 3] = std::array::from_fn(|k| to_work(mat.base[k] * v.color[k]) * pic_to_work(pic[k]));
+                let c: [f32; 3] = std::array::from_fn(|k| to_work(mat.base[k] * v.color[k]));
                 [c[0], c[1], c[2], [m.reflection, m.rolloff, m.transparency][i]]
             });
+            // its colour picture, and its corners' points on it
+            let picture = mat.base_map.filter(|b| b.texture < model.textures.len()).map_or(u32::MAX, |b| pictures.get(b.texture).copied().unwrap_or(u32::MAX));
+            let set = mat.base_map.map_or(0, |b| (b.set as usize).min(1));
+            let uv = |i: usize| corner(t[i]).uv[set].map(|c| c as f32);
+            let uvs = [[uv(0)[0], uv(0)[1], uv(1)[0], uv(1)[1]], [uv(2)[0], uv(2)[1], linear as u32 as f32, 0.0]];
             let probes = [0, 1, 2, 3].map(|i| match first_probe {
                 Some(f) if i < 3 => (f + part_first + t[i] as usize) as u32,
+                _ if i == 3 => picture,
                 _ => u32::MAX,
             });
-            out.push(Face { normals, colours, glow: [to_work(mat.emissive[0]), to_work(mat.emissive[1]), to_work(mat.emissive[2]), m.clear_rolloff], probes });
+            out.push(Face { normals, colours, glow: [to_work(mat.emissive[0]), to_work(mat.emissive[1]), to_work(mat.emissive[2]), m.clear_rolloff], probes, uvs });
         }
         part_first += p.verts.len();
     }
@@ -872,25 +914,7 @@ fn pictures(model: &Arc<Model>) -> Result<Option<Arc<Pictures>>, String> {
         kept.push(entry);
         return Ok(Some(p));
     }
-    let mut texels = veymelo_os::gpu::Buffer::new(total * 16)?;
-    let mut pics = Vec::with_capacity(model.textures.len());
-    {
-        let out = texels.slice_mut::<[f32; 4]>();
-        let wrap = |w: veymelo_model::Wrap| match w {
-            veymelo_model::Wrap::Repeat => 0u32,
-            veymelo_model::Wrap::Clamp => 1,
-            veymelo_model::Wrap::Mirror => 2,
-        };
-        let mut at = 0;
-        for t in &model.textures {
-            let n = t.px.len();
-            out[at..at + n].copy_from_slice(&t.px);
-            // a picture with no pixels (or not as many as it says) reads as white
-            let (w, h) = if n > 0 && n == t.width * t.height { (t.width, t.height) } else { (0, 0) };
-            pics.push(crate::gpu::Pic { a: [at as u32, w as u32, h as u32, t.smooth as u32 | wrap(t.wrap[0]) << 1 | wrap(t.wrap[1]) << 3] });
-            at += n;
-        }
-    }
+    let (texels, pics) = packed(model.textures.iter(), total)?;
     let p = Arc::new(Pictures { texels, pics });
     // a model without pictures has nothing worth keeping
     if total == 0 {
@@ -904,6 +928,61 @@ fn pictures(model: &Arc<Model>) -> Result<Option<Arc<Pictures>>, String> {
         kept.remove(0);
     }
     Ok(Some(p))
+}
+
+/// A scene's face pictures (`face_pictures`) as the GPU reads them: where each is, and their
+/// texels one after another.
+pub(crate) struct FacePictures {
+    pub pics: veymelo_os::gpu::Buffer,
+    pub texels: veymelo_os::gpu::Buffer,
+}
+
+/// Face pictures on the GPU, and the models they are of.
+type KeptPictures = (Vec<Arc<Model>>, Arc<FacePictures>);
+
+/// The face pictures last put on the GPU (kept while the same models are drawn).
+static FACE_PICTURES: std::sync::Mutex<Option<KeptPictures>> = std::sync::Mutex::new(None);
+
+/// Models `models`' face pictures (`list`, as `face_pictures` makes them of the models) on the
+/// GPU: none when they are too many to put there.
+pub(crate) fn face_pictures_on_gpu(models: &[Arc<Model>], list: &[&veymelo_model::Texture]) -> Result<Option<Arc<FacePictures>>, String> {
+    let total: usize = list.iter().map(|t| t.px.len()).sum();
+    if total * 16 > 1 << 31 {
+        return Ok(None);
+    }
+    let mut kept = FACE_PICTURES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, p)) = kept.as_ref()
+        && k.len() == models.len()
+        && k.iter().zip(models).all(|(a, b)| Arc::ptr_eq(a, b))
+    {
+        return Ok(Some(p.clone()));
+    }
+    let (texels, pics) = packed(list.iter().copied(), total)?;
+    let p = Arc::new(FacePictures { pics: veymelo_os::gpu::Buffer::of(&pics)?, texels });
+    *kept = Some((models.to_vec(), p.clone()));
+    Ok(Some(p))
+}
+
+/// Pictures one after another as the GPU reads them (`total` texels in all), and where each is.
+fn packed<'t>(list: impl Iterator<Item = &'t veymelo_model::Texture>, total: usize) -> Result<(veymelo_os::gpu::Buffer, Vec<crate::gpu::Pic>), String> {
+    let mut texels = veymelo_os::gpu::Buffer::new((total * 16).max(16))?;
+    let mut pics = Vec::new();
+    let out = texels.slice_mut::<[f32; 4]>();
+    let wrap = |w: veymelo_model::Wrap| match w {
+        veymelo_model::Wrap::Repeat => 0u32,
+        veymelo_model::Wrap::Clamp => 1,
+        veymelo_model::Wrap::Mirror => 2,
+    };
+    let mut at = 0;
+    for t in list {
+        let n = t.px.len();
+        out[at..at + n].copy_from_slice(&t.px);
+        // a picture with no pixels (or not as many as it says) reads as white
+        let (w, h) = if n > 0 && n == t.width * t.height { (t.width, t.height) } else { (0, 0) };
+        pics.push(crate::gpu::Pic { a: [at as u32, w as u32, h as u32, t.smooth as u32 | wrap(t.wrap[0]) << 1 | wrap(t.wrap[1]) << 3] });
+        at += n;
+    }
+    Ok((texels, pics))
 }
 
 /// The triangles `placed` filled on the GPU, as `fill` fills them, on canvas pixels `area`: none
