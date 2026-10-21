@@ -506,10 +506,11 @@ kernel void scene(device float4 *canvas [[buffer(0)]],
 #if RAYS
                   primitive_acceleration_structure models [[buffer(17)]],
                   primitive_acceleration_structure everything [[buffer(18)]],
+                  const device uint *glass [[buffer(19)]],
 #endif
                   uint2 at [[thread_position_in_grid]]) {
 #if RAYS
-    Shadows shadows = { casters, params.b.z, shadow_px, models, everything };
+    Shadows shadows = { casters, params.b.z, shadow_px, models, everything, faces, glass };
 #else
     Shadows shadows = { casters, params.b.z, shadow_px };
 #endif

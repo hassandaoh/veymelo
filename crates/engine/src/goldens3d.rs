@@ -279,6 +279,25 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("glass", s, c, vec![0.0]));
     }
+    // glass casting shadows: an orange glass ball and a blue glass box let the light through,
+    // tinted (the box less clear slant on), beside a solid cone's shadow
+    {
+        let (mut s, c, _) = stage("glass-shadows");
+        let ball = primitive(&mut s, "sphere", [170.0, 170.0, 150.0], "#ff9a3c", 0.0, 0.1);
+        set(&mut s, ball, "materialOptions/transparency", "85");
+        set(&mut s, ball, "materialOptions/indexOfRefraction", "1.5");
+        let box_ = primitive(&mut s, "cube", [290.0, 185.0, 130.0], "#5aa9ff", 0.0, 0.1);
+        set(&mut s, box_, "transform/rotationY", "35");
+        set(&mut s, box_, "materialOptions/transparency", "80");
+        set(&mut s, box_, "materialOptions/transparencyRolloff", "40");
+        let cone = primitive(&mut s, "cone", [380.0, 180.0, 160.0], "#3b3b3b", 0.0, 0.6);
+        for m in [ball, box_, cone] {
+            set(&mut s, m, "materialOptions/castsShadows", "\"on\"");
+        }
+        light(&mut s, "point", [150.0, -220.0, -40.0], true);
+        light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        out.push(("glass-shadows", s, c, vec![0.0]));
+    }
     // many layers: 120 cards in rows (more than the GPU once took), and a stack of 24 see-through
     // ones on one spot (more at a pixel than it keeps: those pixels are drawn by the processor)
     {

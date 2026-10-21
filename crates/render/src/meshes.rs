@@ -430,9 +430,10 @@ pub(crate) fn corners(model: &Model, pose: &Pose, place: &Mat4) -> Vec<[f32; 3]>
 
 /// A triangle of a model as a reflection sees it: its corners' normals (in the world; and the
 /// layer's ambient, diffuse and whether it takes light, in their w) and colours (in the working
-/// space, its picture's at each corner; and how much its layer mirrors and how much less face
-/// on, in the first two's w), the light it gives off, and the points the light bouncing onto
-/// its corners was gathered at (`u32::MAX`: none).
+/// space, its picture's at each corner; and how much its layer mirrors, how much less face on,
+/// and how see-through it is, in their w), the light it gives off (and how much less clear its
+/// glass is face on, in its w), and the points the light bouncing onto its corners was gathered
+/// at (`u32::MAX`: none).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Face {
@@ -470,13 +471,13 @@ pub(crate) fn faces(model: &Model, pose: &Pose, place: &Mat4, m: &Material, line
                 let v = corner(t[i]);
                 let pic = sample(model, mat.base_map, &v.uv).unwrap_or([1.0; 4]);
                 let c: [f32; 3] = std::array::from_fn(|k| to_work(mat.base[k] * v.color[k]) * pic_to_work(pic[k]));
-                [c[0], c[1], c[2], [m.reflection, m.rolloff, 0.0][i]]
+                [c[0], c[1], c[2], [m.reflection, m.rolloff, m.transparency][i]]
             });
             let probes = [0, 1, 2, 3].map(|i| match first_probe {
                 Some(f) if i < 3 => (f + part_first + t[i] as usize) as u32,
                 _ => u32::MAX,
             });
-            out.push(Face { normals, colours, glow: [to_work(mat.emissive[0]), to_work(mat.emissive[1]), to_work(mat.emissive[2]), 0.0], probes });
+            out.push(Face { normals, colours, glow: [to_work(mat.emissive[0]), to_work(mat.emissive[1]), to_work(mat.emissive[2]), m.clear_rolloff], probes });
         }
         part_first += p.verts.len();
     }

@@ -82,6 +82,16 @@ static float3 grid_at(const device float4 *light, uint4 map, float4 cell, float 
     return top + (c + (d - c) * fx - top) * fy;
 }
 
+struct Face {
+    float4 normals[3];  // its corners' (w: the layer's ambient, diffuse, whether it takes light)
+    float4 colours[3];  // its corners' (w: how much the layer mirrors, how much less face on)
+    float4 glow;
+    uint4 probes;       // the points its corners' bouncing light was gathered at (NONE: none)
+};
+
+// What casts shadows: the flat layers (and their pictures), and with rays the models casting
+// them and all of them; each model triangle's face (shadows go through glass), and for each
+// casting triangle its face if its model is glass (the first: whether any is).
 struct Shadows {
     const device Caster *casters;
     uint count;
@@ -89,8 +99,15 @@ struct Shadows {
 #if RAYS
     primitive_acceleration_structure models;      // those casting shadows
     primitive_acceleration_structure everything;  // all of them (for the ambient occlusion)
+    const device Face *faces;
+    const device uint *glass;
 #endif
 };
+
+// The most glass surfaces a shadow's ray is followed through, and how far past one the next is
+// looked for (three.rs).
+constant constexpr uint GLASS_CROSSINGS = 16;
+constant constexpr float GLASS_STEP = 1e-3;
 
 static float3 apply(const device float4 *m, float3 p) {
     float x = dot(m[0].xyz, p) + m[0].w;
@@ -104,14 +121,37 @@ static float3 apply(const device float4 *m, float3 p) {
 // how much of the light gets through to q (on plane `own`, or NONE) from one of its points
 // (`dir`, `len` away)
 static float3 pass_from(thread const Shadows &sh, uint own, float3 q, float3 dir, float len) {
-#if RAYS
-    // a model in the way blocks it (a pixel off the surface, so one does not shade itself where it is)
-    ray r(q, dir, 1.0, len - 1.0);
-    intersector<> it;
-    it.accept_any_intersection(true);
-    if (it.intersect(r, sh.models).type != intersection_type::none) return float3(0.0);
-#endif
     float3 pass = float3(1.0);
+#if RAYS
+    // a model in the way blocks it (a pixel off the surface, so one does not shade itself where
+    // it is); glass lets its part through, tinted, surface after surface (three.rs's passes)
+    if (sh.glass[0] == 0) {
+        ray r(q, dir, 1.0, len - 1.0);
+        intersector<> it;
+        it.accept_any_intersection(true);
+        if (it.intersect(r, sh.models).type != intersection_type::none) return float3(0.0);
+    } else {
+        float near = 1.0;
+        for (uint k = 0; k < GLASS_CROSSINGS; k++) {
+            ray r(q, dir, near, len - 1.0);
+            intersector<triangle_data> it;
+            intersection_result<triangle_data> h = it.intersect(r, sh.models);
+            if (h.type != intersection_type::triangle) break;
+            uint fi = sh.glass[1 + h.primitive_id];
+            if (fi == NONE) return float3(0.0);
+            const device Face &f = sh.faces[fi];
+            float2 b = h.triangle_barycentric_coord;
+            float3 wt = float3(1.0 - b.x - b.y, b.x, b.y);
+            float3 n = f.normals[0].xyz * wt.x + f.normals[1].xyz * wt.y + f.normals[2].xyz * wt.z;
+            n = length(n) > 1e-12 ? normalize(n) : float3(0.0, 0.0, 1.0);
+            float3 rgb = f.colours[0].xyz * wt.x + f.colours[1].xyz * wt.y + f.colours[2].xyz * wt.z;
+            float facing = clamp(fabs(dot(n, dir)), 0.0, 1.0);
+            float clear = f.colours[2].w * (1.0 - f.glow.w * (1.0 - facing));
+            pass *= sqrt(clear * max(rgb, 0.0));
+            near = h.distance + GLASS_STEP;
+        }
+    }
+#endif
     for (uint k = 0; k < sh.count; k++) {
         const device Caster &p = sh.casters[k];
         if (p.img.w == own || p.normal.w == 0.0) continue;
@@ -253,12 +293,6 @@ static float open_sky(thread const Shadows &sh, uint own, float3 q, float3 n, fl
 #define MIRROR_SEED 0x85EBCA6Bu
 
 // A model's triangle as a reflection sees it (meshes::Face).
-struct Face {
-    float4 normals[3];  // its corners' (w: the layer's ambient, diffuse, whether it takes light)
-    float4 colours[3];  // its corners' (w: how much the layer mirrors, how much less face on)
-    float4 glow;
-    uint4 probes;       // the points its corners' bouncing light was gathered at (NONE: none)
-};
 
 // What a mirror sees by: the lights (as many as there are), the environment, and the light
 // bouncing onto each point it was gathered at, as much of it as is taken (0: none bounces).
@@ -514,11 +548,12 @@ kernel void gather(device float4 *out [[buffer(0)]],
 #if RAYS
                    primitive_acceleration_structure models [[buffer(10)]],
                    primitive_acceleration_structure everything [[buffer(11)]],
+                   const device uint *glass [[buffer(12)]],
 #endif
                    uint2 at [[thread_position_in_grid]]) {
     if (at.x >= params.a.x) return;
 #if RAYS
-    Shadows sh = { casters, params.a.z, shadow_px, models, everything };
+    Shadows sh = { casters, params.a.z, shadow_px, models, everything, faces, glass };
 #else
     Shadows sh = { casters, params.a.z, shadow_px };
 #endif

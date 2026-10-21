@@ -52,6 +52,8 @@ pub(crate) struct Shadows {
     /// reflection sees it (shadows.metal's `Face`).
     pub everything: Option<Shapes>,
     pub faces: Buffer,
+    /// Whether any casting model is glass, then each casting triangle's face (`NONE`: not glass).
+    pub glass: Buffer,
 }
 
 /// A frame's worth of pictures is copied by all the cores, a piece each.
@@ -60,13 +62,13 @@ pub(crate) const PIECE: usize = 1 << 16;
 impl Shadows {
     /// Nothing casting shadows.
     pub(crate) fn none() -> Result<Shadows, String> {
-        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)? })
+        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)?, glass: Buffer::new(16)? })
     }
 
     /// Flat layers `planes` (each with its own picture), the triangles of models casting
     /// shadows and those of every model hiding the sky (three corners each, in the world): none
     /// when there are models to trace and the GPU cannot, or the pictures are too many.
-    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face]) -> Result<Option<Shadows>, String> {
+    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face], glass: &[u32]) -> Result<Option<Shadows>, String> {
         if (!models.is_empty() || !everything.is_empty()) && !veymelo_os::gpu::traces() {
             return Ok(None);
         }
@@ -97,7 +99,7 @@ impl Shadows {
         }
         let copies: Vec<_> = on_gpu.iter().map(|&(b, into, size)| (b, 0, &texels, into, size)).collect();
         veymelo_os::gpu::copy_between(&copies)?;
-        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)? }))
+        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)?, glass: take_with(GLASS, glass)? }))
     }
 
     /// The kernel to run (`plain`, or `rays` when there are models to trace), and what it takes
@@ -107,7 +109,7 @@ impl Shadows {
             return Ok((plain, Vec::new()));
         }
         let none = nowhere()?;
-        Ok((rays, vec![veymelo_os::gpu::Arg::Shapes(self.models.as_ref().unwrap_or(none)), veymelo_os::gpu::Arg::Shapes(self.everything.as_ref().unwrap_or(none))]))
+        Ok((rays, vec![veymelo_os::gpu::Arg::Shapes(self.models.as_ref().unwrap_or(none)), veymelo_os::gpu::Arg::Shapes(self.everything.as_ref().unwrap_or(none)), veymelo_os::gpu::Arg::Read(&self.glass)]))
     }
 
     /// Its buffers back, for the next frame drawn on this thread.
@@ -115,6 +117,7 @@ impl Shadows {
         keep(CASTERS, self.casters);
         keep(PICTURES, self.texels);
         keep(FACES, self.faces);
+        keep(GLASS, self.glass);
     }
 }
 
@@ -349,7 +352,8 @@ pub(crate) const PICTURES: usize = 20;
 pub(crate) const SHOT_PX: usize = 21;
 pub(crate) const FACES: usize = 22;
 pub(crate) const BOUNCE: usize = 23;
-const SLOTS: usize = 24;
+pub(crate) const GLASS: usize = 24;
+const SLOTS: usize = 25;
 
 /// A thread's kept buffers (counted in `KEPT_BYTES` while they are kept).
 struct Kept([Option<Buffer>; SLOTS]);

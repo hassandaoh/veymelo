@@ -652,14 +652,15 @@ impl<'a> Renderer<'a> {
                 (scene::Material::of(&self.eval, at, *when), pose, *world * to_layer)
             })
             .collect();
-        let casting = Casting { models: models.iter().zip(&posed).filter(|(_, (m, _, _))| m.casts != 0 && !lights.is_empty()).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect(), trees: std::sync::OnceLock::new() };
+        let casting_models: Vec<usize> = (0..models.len()).filter(|&i| posed[i].0.casts != 0 && !lights.is_empty()).collect();
+        let mut casting = Casting { models: casting_models.iter().map(|&i| (&*models[i].0.model.as_ref().expect("a model").0, &posed[i].1, posed[i].2)).collect(), trees: std::sync::OnceLock::new(), glass: Vec::new() };
         // every model (seen, or casting a shadow alone), for what hides the sky from a point and
         // what a mirror sees (each of its triangles as a reflection sees it, one after another)
         let open_reach = scene::occlusion_reach(&lights, env);
         let mirrors = planes.iter().map(|p| &p.material).chain(posed.iter().map(|(m, ..)| m)).any(|m| m.reflection > 0.0) || posed.iter().any(|(m, ..)| m.transparency > 0.0);
         // light bouncing (where there is light to bounce)
         let bounce = if comp.bounce.amount > 0.0 && (!lights.is_empty() || env.is_some()) { comp.bounce.amount as f32 } else { 0.0 };
-        let everything = Casting { models: if open_reach.is_some() || mirrors || bounce > 0.0 { models.iter().zip(&posed).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect() } else { Vec::new() }, trees: std::sync::OnceLock::new() };
+        let everything = Casting { models: if open_reach.is_some() || mirrors || bounce > 0.0 { models.iter().zip(&posed).map(|((d, ..), (_, pose, place))| (&*d.model.as_ref().expect("a model").0, pose, *place)).collect() } else { Vec::new() }, trees: std::sync::OnceLock::new(), glass: Vec::new() };
         // the points the bouncing light is gathered at: a grid over each flat layer that takes
         // light (on the side the camera sees), then every model's vertices
         let mut probes: Vec<crate::bounce::Probe> = Vec::new();
@@ -689,6 +690,24 @@ impl<'a> Renderer<'a> {
                 faces.extend(crate::meshes::faces(&d.model.as_ref().expect("a model").0, pose, place, m, self.linear, model_probes.get(k).map(|p| p.0)));
             }
         }
+        // each casting model's glass (a see-through model has its faces, mirrors or not)
+        casting.glass = casting_models.iter().map(|&i| (posed[i].0.transparency > 0.0 && i < face_first.len()).then(|| (posed[i].0.transparency, posed[i].0.clear_rolloff, face_first[i]))).collect();
+        // for the GPU: whether any casting model is glass, then each casting triangle's face (a
+        // triangle of a model not glass: none)
+        let glass_faces: Vec<u32> = if casting.glass.iter().any(Option::is_some) {
+            let mut v = vec![1u32];
+            for (ci, &i) in casting_models.iter().enumerate() {
+                let triangles = crate::meshes::corners(casting.models[ci].0, casting.models[ci].1, &casting.models[ci].2).len() / 3;
+                match casting.glass[ci] {
+                    Some((.., first)) => v.extend((0..triangles).map(|j| (first + j) as u32)),
+                    None => v.extend(std::iter::repeat_n(crate::gpu::NONE, triangles)),
+                }
+                let _ = i;
+            }
+            v
+        } else {
+            vec![0]
+        };
         // what casts shadows, as the GPU reads it (none: the processor draws what they fall on)
         let gpu_shadows = if self.options.gpu && !crate::gpu::given_up() {
             let shadowing = lights.iter().any(|l| l.shadows) && (!casters.is_empty() || !casting.is_empty());
@@ -712,7 +731,7 @@ impl<'a> Renderer<'a> {
                     (caster, &p.own.img)
                 })
                 .collect();
-            crate::gpu::Shadows::new(&list, &if shadowing { casting.corners() } else { Vec::new() }, &everything.corners(), &faces).unwrap_or_else(|e| {
+            crate::gpu::Shadows::new(&list, &if shadowing { casting.corners() } else { Vec::new() }, &everything.corners(), &faces, &glass_faces).unwrap_or_else(|e| {
                 crate::gpu::failed(&e);
                 None
             })
@@ -919,6 +938,32 @@ fn gather_on_gpu(sh: &crate::gpu::Shadows, probes: &[crate::bounce::Probe], ligh
 struct Casting<'m> {
     models: Vec<(&'m veymelo_model::Model, &'m veymelo_model::Pose, Mat4)>,
     trees: std::sync::OnceLock<Vec<crate::meshes::Caster>>,
+    /// Each model's glass, if it is see-through (how much, how much less face on, and where its
+    /// faces start): its shadow lets light through, tinted.
+    glass: Vec<Option<(f32, f32, usize)>>,
+}
+
+/// The most glass surfaces a shadow's ray is followed through, and how far past one the next is
+/// looked for.
+const GLASS_CROSSINGS: usize = 16;
+const GLASS_STEP: f64 = 1e-3;
+
+/// A glass face's way (its corners' between, at the second and third corners' weights `u`, `v`)
+/// and colour there.
+fn glass_at(f: &crate::meshes::Face, u: f64, v: f64) -> (Vec3, [f32; 3]) {
+    let w = [1.0 - u - v, u, v];
+    let n = vec3((0..3).map(|j| f.normals[j][0] as f64 * w[j]).sum(), (0..3).map(|j| f.normals[j][1] as f64 * w[j]).sum(), (0..3).map(|j| f.normals[j][2] as f64 * w[j]).sum());
+    let n = if n.length() > 1e-12 { n.normalize() } else { vec3(0.0, 0.0, 1.0) };
+    (n, std::array::from_fn(|c| (0..3).map(|j| f.colours[j][c] * w[j] as f32).sum()))
+}
+
+/// How much light a glass surface lets through crossing it along `dir` (where it faces `n`): half
+/// its clearness and tint (going in and coming out again, the light is let through as much and
+/// tinted as much as what is seen through the glass), less clear the more it is crossed slant if
+/// it rolls off.
+fn through_glass(clear: f32, rolloff: f32, n: Vec3, dir: Vec3, tint: f32) -> f32 {
+    let facing = n.dot(dir).abs().clamp(0.0, 1.0) as f32;
+    (clear * (1.0 - rolloff * (1.0 - facing)) * tint.max(0.0)).sqrt()
 }
 
 impl Casting<'_> {
@@ -1518,10 +1563,28 @@ impl Scene<'_> {
     /// so one does not shade itself where it is), as much as each flat layer casting shadows in
     /// the way lets through.
     fn passes(&self, own: usize, q: Vec3, dir: Vec3, len: f64) -> [f32; 3] {
-        if self.casting.trees().iter().any(|c| c.blocks(q, dir, 1.0, len - 1.0)) {
-            return [0.0; 3];
-        }
         let mut pass = [1f32; 3];
+        for (k, tree) in self.casting.trees().iter().enumerate() {
+            match self.casting.glass.get(k).copied().flatten() {
+                None => {
+                    if tree.blocks(q, dir, 1.0, len - 1.0) {
+                        return [0.0; 3];
+                    }
+                }
+                // through glass, surface after surface: each lets through its part, tinted
+                Some((clear, rolloff, first)) => {
+                    let mut near = 1.0;
+                    for _ in 0..GLASS_CROSSINGS {
+                        let Some((d, which, u, v)) = tree.nearest(q, dir, near, len - 1.0) else { break };
+                        let (n, rgb) = glass_at(&self.faces[first + which as usize], u, v);
+                        for c in 0..3 {
+                            pass[c] *= through_glass(clear, rolloff, n, dir, rgb[c]);
+                        }
+                        near = d + GLASS_STEP;
+                    }
+                }
+            }
+        }
         for &c in self.casters.iter().filter(|&&c| c != own) {
             let p = &self.planes[c];
             let facing = dir.dot(p.normal);
