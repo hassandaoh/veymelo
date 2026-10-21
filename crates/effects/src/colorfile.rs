@@ -109,6 +109,12 @@ pub enum Step {
     /// Light of any brightness rolled smoothly under 1 (a fit of the ACES film look: Krzysztof
     /// Narkowicz, 2015), on each channel.
     ToneMap,
+    /// An ACES output transform: ACES2065-1 to a display's CIE XYZ (or back).
+    Aces(veymelo_color::aces::Output),
+    /// OpenColorIO's grading transforms.
+    GradingPrimary(Box<crate::ocio::grading::Primary>),
+    GradingTone(Box<crate::ocio::grading::Tone>),
+    GradingCurves(Box<crate::ocio::grading::Curves>),
 }
 
 /// A curve of points read at `x` (straight past its ends from the last two points' line kept
@@ -176,6 +182,28 @@ impl Step {
                 }
             }
             Step::ToneMap => d.map(|v| if back { tone_back(v) } else { tone(v) }),
+            Step::GradingPrimary(p) => p.apply(d, back),
+            Step::GradingTone(t) => {
+                if back {
+                    crate::ocio::grading::undo(&|c| t.forward(c), d)
+                } else {
+                    t.forward(d)
+                }
+            }
+            Step::GradingCurves(c) => {
+                if back {
+                    crate::ocio::grading::undo(&|v| c.forward(v), d)
+                } else {
+                    c.forward(d)
+                }
+            }
+            Step::Aces(out) => {
+                if back {
+                    out.back(d).unwrap_or([0.0; 3])
+                } else {
+                    out.apply(d)
+                }
+            }
             Step::Cdl { cdl, clamp } => {
                 if back {
                     cdl.undo(d, *clamp)

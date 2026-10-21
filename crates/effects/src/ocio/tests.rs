@@ -240,3 +240,57 @@ fn every_one_is_registered() {
         assert!(crate::find(spec.def.id).is_some(), "{}", spec.def.id);
     }
 }
+
+#[test]
+fn aces_output_transforms_render_for_the_display() {
+    // the configuration with ACES 1.0's SDR video view and a 1000-nit HDR one
+    let text = CONFIG
+        .replace(
+            "    - !<View> {name: Raw, colorspace: Raw}",
+            "    - !<View> {name: Raw, colorspace: Raw}\n    - !<View> {name: ACES 1.0 - SDR Video, view_transform: ACES 1.0 - SDR Video, display_colorspace: sRGB - Display}\n  Rec.2100-PQ:\n    - !<View> {name: ACES 1.1 - HDR Video (1000 nits & Rec.2020 lim), view_transform: ACES 1.1 - HDR Video (1000 nits & Rec.2020 lim), display_colorspace: Rec.2100-PQ - Display}",
+        )
+        .replace(
+            "view_transforms:\n",
+            "view_transforms:\n  - !<ViewTransform>\n    name: ACES 1.0 - SDR Video\n    from_scene_reference: !<BuiltinTransform> {style: ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-VIDEO_1.0}\n  - !<ViewTransform>\n    name: ACES 1.1 - HDR Video (1000 nits & Rec.2020 lim)\n    from_scene_reference: !<BuiltinTransform> {style: ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - HDR-VIDEO-1000nit-15nit-REC2020lim_1.1}\n",
+        )
+        .replace(
+            "display_colorspaces:\n",
+            "display_colorspaces:\n  - !<ColorSpace>\n    name: Rec.2100-PQ - Display\n    from_display_reference: !<BuiltinTransform> {style: DISPLAY - CIE-XYZ-D65_to_REC.2100-PQ}\n",
+        );
+    let cfg = Config::parse(&text, Path::new(".")).unwrap();
+    let sdr = cfg.display("ACES2065-1", "sRGB", "ACES 1.0 - SDR Video", false).unwrap();
+    assert!(sdr.skipped.is_empty(), "{:?}", sdr.skipped);
+    // middle grey: 4.8 of 48 nits, the dim surround's gamma, written for sRGB
+    let grey = sdr.run([0.18; 3], Between::Tetrahedral, false);
+    let lin = ((4.8 - 0.02) / (48.0 - 0.02f64)).powf(0.9811);
+    let want = space::Curve::Srgb.encode(lin) as f32;
+    assert!(near3(grey, [want; 3], 2e-4), "{grey:?} {want}");
+    // bright light rolls off below white; black stays black
+    let bright = sdr.run([4.0; 3], Between::Tetrahedral, false);
+    assert!(bright[1] > 0.85 && bright[1] < 1.0, "{bright:?}");
+    // past the ODT's top it goes on rising, slowly (OpenColorIO leaves it unclipped)
+    let very = sdr.run([200.0; 3], Between::Tetrahedral, false);
+    assert!(very[1] > bright[1] && very[1] < 1.1, "{very:?}");
+    assert!(sdr.run([0.0; 3], Between::Tetrahedral, false).iter().all(|v| v.abs() < 1e-3));
+    // HDR: middle grey at 15 nits written in PQ
+    let hdr = cfg.display("ACES2065-1", "Rec.2100-PQ", "ACES 1.1 - HDR Video (1000 nits & Rec.2020 lim)", false).unwrap();
+    assert!(hdr.skipped.is_empty(), "{:?}", hdr.skipped);
+    let pq = hdr.run([0.18; 3], Between::Tetrahedral, false);
+    let want = space::Curve::Pq.encode(0.15) as f32;
+    assert!(near3(pq, [want; 3], 5e-4), "{pq:?} {want}");
+}
+
+#[test]
+fn grading_transforms_are_read_from_a_configuration() {
+    let text = CONFIG.replace(
+        "looks:\n",
+        "looks:\n  - !<Look>\n    name: Graded\n    process_space: ACEScct\n    transform: !<GroupTransform>\n      children:\n        - !<GradingPrimaryTransform> {style: log, contrast: {rgb: [1, 1, 1], master: 1.2}, pivot: {contrast: -0.2, black: 0, white: 1}}\n        - !<GradingToneTransform> {style: log, midtones: {rgb: [1, 1, 1], master: 1.2, center: 0.4, width: 0.6}}\n        - !<GradingRGBCurveTransform> {style: log, master: {control_points: [0, 0, 0.5, 0.55, 1, 1]}}\n",
+    );
+    let cfg = Config::parse(&text, Path::new(".")).unwrap();
+    let t = cfg.looks("ACEScg", "ACEScg", "Graded").unwrap();
+    assert!(t.skipped.is_empty(), "{:?}", t.skipped);
+    let g = t.run([0.18; 3], Between::Tetrahedral, false);
+    assert!(g[0] > 0.185 && (g[0] - g[2]).abs() < 1e-5, "brighter, still grey: {g:?}");
+    let back = t.run(g, Between::Tetrahedral, true);
+    assert!(near3(back, [0.18; 3], 1e-4), "{back:?}");
+}

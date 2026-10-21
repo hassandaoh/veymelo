@@ -5,8 +5,10 @@
 //! files are found on. A conversion is built as one list of [`Step`]s.
 //!
 //! Transforms read: Matrix, File, Exponent, ExponentWithLinear, Log, LogAffine, LogCamera, CDL,
-//! Range, Allocation, ExposureContrast (linear), FixedFunction (ACES gamut compression, RGB to
-//! HSV, XYZ to xyY), Builtin (the camera, ACES and display ones), Group, ColorSpace, Look and
+//! Range, Allocation, ExposureContrast (linear), GradingPrimary, GradingTone, GradingRGBCurve,
+//! FixedFunction (ACES gamut compression, RGB to
+//! HSV, XYZ to xyY), Builtin (the camera, ACES (output transforms too: ACES 1.x SDR and HDR) and
+//! display ones), Group, ColorSpace, Look and
 //! DisplayView, each either way. Others pass colours through and are listed
 //! ([`Config::skipped`]).
 
@@ -63,6 +65,9 @@ fn num(y: &Yaml, key: &str, d: f64) -> f64 {
 
 /// A named camera or display transform built in to OpenColorIO, from our colour spaces.
 pub fn builtin(style: &str) -> Option<Vec<Step>> {
+    if let Some(out) = veymelo_color::aces::Output::named(style) {
+        return Some(vec![Step::Aces(out)]);
+    }
     let named = |n: &str| space::find(n).copied();
     let aces = named("ACES2065-1")?;
     let xyz = named("CIE XYZ D65")?;
@@ -212,6 +217,9 @@ impl Xf {
                 }
             }
             "BuiltinTransform" => builtin(y.text("style")).map_or_else(|| Xf::Skipped(format!("BuiltinTransform {}", y.text("style"))), Xf::Steps),
+            "GradingPrimaryTransform" => steps(vec![Step::GradingPrimary(Box::new(super::grading::Primary::read(y)))]),
+            "GradingToneTransform" => steps(vec![Step::GradingTone(Box::new(super::grading::Tone::read(y)))]),
+            "GradingRGBCurveTransform" => steps(vec![Step::GradingCurves(Box::new(super::grading::Curves::read(y)))]),
             "GroupTransform" => Xf::Group(y.get("children").map(Yaml::seq).unwrap_or(&[]).iter().map(|c| Xf::of(c, dir, search)).collect()),
             "ColorSpaceTransform" => Xf::Space { src: y.text("src").to_string(), dst: y.text("dst").to_string() },
             "LookTransform" => Xf::Look { src: y.text("src").to_string(), dst: y.text("dst").to_string(), looks: y.text("looks").to_string() },

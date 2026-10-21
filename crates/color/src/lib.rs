@@ -1,6 +1,7 @@
 //! Colour: the sRGB curve and linear light, HSL and HSV, luminance, colours written as hex,
 //! and the 38 blend modes, by name and by how each mixes a pixel with the one under it.
 
+pub mod aces;
 mod blend;
 pub mod space;
 

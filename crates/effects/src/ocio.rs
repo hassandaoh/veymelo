@@ -8,6 +8,7 @@
 //! from the colour spaces we know (the camera logs, ACES, the display standards).
 
 pub mod config;
+pub mod grading;
 mod yaml;
 
 use veymelo_color::space::{self, Curve, Space};

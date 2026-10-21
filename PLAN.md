@@ -239,7 +239,7 @@ prop.list/get/set/keys, render.frame
       ตัวอ่าน OCIO config (YAML ของเราเอง, v1/v2: roles, display spaces, view transforms, looks, search path,
       transform ทุกชนิดหลัก) + config ในตัวจากปริภูมิสีของเรา (Standard/Tone Mapped/Raw);
       เอฟเฟกต์: OCIO CDL / Color Space / Display / File / Look Transform, Color Stabilizer
-      — ที่ยังไม่ทำ: ACES output transforms (RRT+ODT) ใน config ของ ACES (ผ่านไปพร้อมคำเตือน), GradingPrimary/Tone/Curve
+      — ACES output transforms และ GradingPrimary/Tone/RGBCurve ทำแล้ว 2026-10-21 (ขั้น 18)
 - [x] Simulation (18): Rainfall, Snowfall, Bubbles, Drizzle, Star Burst (คำนวณจากเวลาตรงๆ ไม่พึ่งเฟรมก่อน);
       Particle World, Particle Systems, Mercury, Particle Playground (ปืน ตาราง ระเบิดเลเยอร์ ตัวอักษร map layer),
       Hair, Foam — จำลองทีละสเต็ป 60 ครั้งต่อวินาที เก็บสถานะทุกครึ่งวินาที (เลื่อนไปมาเร็ว, เฟรมเดียวกันได้ผลเดียวกัน
@@ -680,6 +680,17 @@ prop.list/get/set/keys, render.frame
       (≥3 จุด = วางบนระนาบ) — เทสต์ฉาก 3D ที่เรนเดอร์เอง 40 เฟรม: error 0.06 px, มุมมอง 49.16° (จริง 49.13°), เส้นทางกล้อง
       คลาด 0.25 px จาก 362 px; การ์ดที่วางบนพื้นติดพื้นตลอด
 
+### ขั้น 18: สีและตัวหนังสือ (เริ่ม 2026-10-21)
+- [x] 18.1 ACES output transforms 1.x (color/aces.rs): RRT sweeteners (glow, red modifier, AP1 clamp, desat 0.96) + SDR tone
+      scale C5 → C9 48 nits (0.02–48 → code value), dim surround 0.9811, desat 0.93, AP1 → XYZ, Bradford D60→D65 (หรือ D60sim
+      0.955 / 0.964); HDR 1.1 = SSTS (bends 0.18/0.35, 0.89/0.90, mid slope 1.55, expShift ให้ 0.18 ตกที่ Y_MID), clip
+      ใน limiting primaries แล้ว Bradford, ×Y_MAX/100; BuiltinTransform "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - …"
+      (SDR-VIDEO/CINEMA_1.0, D60sim, HDR 1000/2000/4000 nit REC2020lim/P3lim, CINEMA 108 nit) ทั้งไปและกลับ (Newton);
+      ตรวจกับ curve ของ OpenColorIO: knot ของ C5/C9 ตรงทุกค่า, curve 1000 nit ผ่านจุดของ OCIO ≤2e-6
+- [x] 18.2 OCIO GradingPrimaryTransform / GradingToneTransform / GradingRGBCurveTransform (ocio/grading.rs) ตามคณิตของ
+      OpenColorIO (ค่าที่คำนวณ, ลำดับ, ค่าเริ่มต้นตาม style log/linear/video, lin-to-log ของ OCIO สำหรับ linear); tone และ curve
+      ย้อนกลับทีละช่องด้วยการหาค่า (เพิ่มขึ้นเสมอ)
+
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
 (ปุ่ม แผงตั้งค่า การลากแก้ ฯลฯ) จนกว่าผู้ใช้จะสั่ง เรียงตามลำดับที่จะทำ
@@ -689,7 +700,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 3. ~~**3D รายการเก่า (ขั้น 16)**~~ — เสร็จ 2026-10-21 (ดูขั้น 16)
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
-6. **สีและตัวหนังสือ**: ACES output transforms (RRT+ODT), GradingPrimary/Tone/Curve; ฟอนต์ COLR v1 (ไล่สี) และ CBDT
+6. **สีและตัวหนังสือ (ขั้น 18)**: ~~ACES output transforms (RRT+ODT)~~, ~~GradingPrimary/Tone/Curve~~; ฟอนต์ COLR v1 (ไล่สี) และ CBDT
 7. **ไฟล์**: PDF/AI แบบเวกเตอร์; EXR deep, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)
