@@ -27,6 +27,7 @@ use crate::scene::{self, Camera, Focus, Light, Material, NEAR};
 use crate::{Renderer, Take};
 
 mod caustics;
+mod flats;
 
 /// A layer standing in the scene.
 struct Plane<'d> {
@@ -77,6 +78,31 @@ impl Plane<'_> {
     fn shadow_texel(&self, u: f64, v: f64) -> Px {
         let b = &self.own;
         b.img.sample(Sampling::Bilinear, (u - b.origin.x) * b.scale, (v - b.origin.y) * b.scale)
+    }
+
+    /// The box round its own picture in the world (a texel past its edges, where a ray still
+    /// finds some of it between its pixels).
+    fn bounds(&self) -> (Vec3, Vec3) {
+        let b = self.own;
+        let e = 1.0 / b.scale;
+        let (u0, v0, u1, v1) = (b.origin.x - e, b.origin.y - e, b.origin.x + b.img.width as f64 / b.scale + e, b.origin.y + b.img.height as f64 / b.scale + e);
+        let corners = [(u0, v0), (u1, v0), (u0, v1), (u1, v1)].map(|(u, v)| self.origin + self.across * u + self.down * v);
+        let lo = corners.iter().fold(vec3(f64::INFINITY, f64::INFINITY, f64::INFINITY), |a, c| vec3(a.x.min(c.x), a.y.min(c.y), a.z.min(c.z)));
+        let hi = corners.iter().fold(vec3(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |a, c| vec3(a.x.max(c.x), a.y.max(c.y), a.z.max(c.z)));
+        let pad = |v: Vec3| vec3(1e-6 * (1.0 + v.x.abs()), 1e-6 * (1.0 + v.y.abs()), 1e-6 * (1.0 + v.z.abs()));
+        (lo - pad(lo), hi + pad(hi))
+    }
+
+    /// A triangle in the world over its own picture (a texel past its edges), its corners.
+    fn covered(&self) -> [[f32; 3]; 3] {
+        let b = self.own;
+        let e = 1.0 / b.scale;
+        let (u0, v0) = (b.origin.x - e, b.origin.y - e);
+        let (w, h) = ((b.img.width as f64 / b.scale + 2.0 * e) * 2.01, (b.img.height as f64 / b.scale + 2.0 * e) * 2.01);
+        [(u0, v0), (u0 + w, v0), (u0, v0 + h)].map(|(u, v)| {
+            let p = self.origin + self.across * u + self.down * v;
+            [p.x as f32, p.y as f32, p.z as f32]
+        })
     }
 
     /// Layer point and depth under canvas point (x, y), if it is in front of the camera.
@@ -631,6 +657,8 @@ impl<'a> Renderer<'a> {
         }
         let cam = cam_then;
         let casters: Vec<usize> = (0..planes.len()).filter(|&i| planes[i].material.casts != 0).collect();
+        // many flat layers: arranged for rays, a box round each one's picture
+        let flats = (planes.len() > flats::FLAT_TREE).then(|| flats::Flats::new(&planes.iter().map(|p| p.bounds()).collect::<Vec<_>>()));
         // each model posed and placed; those that cast shadows, as trees of their triangles
         let posed: Vec<(scene::Material, veymelo_model::Pose, Mat4)> = models
             .iter()
@@ -690,7 +718,7 @@ impl<'a> Renderer<'a> {
         if comp.caustics > 0.0 && casting.glass.iter().any(Option::is_some) && lights.iter().any(|l| l.shadows) {
             casting.caustics = true;
             let none: Vec<[f32; 3]> = Vec::new();
-            let found = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None }.caustics(comp.caustics as f32);
+            let found = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: None }.caustics(comp.caustics as f32);
             for c in found {
                 planes[c.plane].caustic = Some(crate::bounce::Grid { first: probes.len() + bent.len(), ..c.grid });
                 bent.extend(c.light);
@@ -737,10 +765,12 @@ impl<'a> Renderer<'a> {
                     (caster, &p.own.img)
                 })
                 .collect();
+            // in a scene of many flat layers, a triangle over each one's picture
+            let flat_triangles: Vec<[f32; 3]> = if flats.is_some() { planes.iter().flat_map(|p| p.covered()).collect() } else { Vec::new() };
             // the faces' pictures on the GPU (too many to put there: the processor draws it)
             let pictures = if pics.is_empty() { Ok(Some(None)) } else { crate::meshes::face_pictures_on_gpu(&face_models, &pics).map(|p| p.map(Some)) };
             match pictures.and_then(|p| match p {
-                Some(p) => crate::gpu::Shadows::new(&list, &if shadowing { casting.corners() } else { Vec::new() }, &everything.corners(), &faces, &glass_faces, p),
+                Some(p) => crate::gpu::Shadows::new(&list, &if shadowing { casting.corners() } else { Vec::new() }, &everything.corners(), &faces, &glass_faces, p, &flat_triangles),
                 None => Ok(None),
             }) {
                 Ok(s) => s,
@@ -764,7 +794,7 @@ impl<'a> Renderer<'a> {
             None if probes.is_empty() => Vec::new(),
             None => {
                 let none: Vec<[f32; 3]> = Vec::new();
-                let gather = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None };
+                let gather = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &none, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: None };
                 let mut e = vec![[0f32; 3]; probes.len()];
                 for _ in 0..comp.bounce.bounces {
                     let before = e.clone();
@@ -784,7 +814,7 @@ impl<'a> Renderer<'a> {
         }
         // the model layers, drawn with the shadows falling on them
         let shots: Vec<ModelShot> = {
-            let lit = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: None };
+            let lit = Scene { planes: &planes, shots: &[], casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: None };
             let open = |q: Vec3, n: Vec3| lit.open(usize::MAX, q, n);
             let mirror = |q: Vec3, n: Vec3, viewer: Vec3, sharpness: f32, none: [f32; 3]| lit.mirrored(usize::MAX, q, n, viewer, sharpness, none);
             let through = |q: Vec3, n: Vec3, viewer: Vec3, ior: f32| lit.seen_through(q, n, viewer, ior);
@@ -835,7 +865,7 @@ impl<'a> Renderer<'a> {
         };
         if let Some(record) = record {
             let bounds: Vec<(usize, veymelo_geom::Rect)> = drawn.iter().map(|d| (d.order, self.bounds(d.comp, d.layer))).collect();
-            let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
+            let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: gpu_shadows.as_ref() };
             veymelo_raster::par::rows(record, canvas.width, |y, row| {
                 for (x, hits) in row.iter_mut().enumerate() {
                     hits.extend(scene.hits(x, y, &bounds));
@@ -848,7 +878,7 @@ impl<'a> Renderer<'a> {
             // blurred out of focus: each lit in its own picture first (so its light and shadows
             // blur with it), then blurred by its depth
             let lit: Vec<Buf> = {
-                let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
+                let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: gpu_shadows.as_ref() };
                 // as far past the canvas as anything can blur in from
                 let margin = (focus.aperture * focus.level * 2.0).min(800.0);
                 (0..planes.len()).map(|i| scene.lit_picture(i, canvas.width as f64, canvas.height as f64, margin)).collect()
@@ -867,7 +897,7 @@ impl<'a> Renderer<'a> {
         if y0 >= y1 {
             return;
         }
-        let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, cam: &cam, env, shadows: gpu_shadows.as_ref() };
+        let scene = Scene { planes: &planes, shots: &shots, casting: &casting, everything: &everything, reach: open_reach, faces: &faces, face_first: &face_first, pics: &pics, light: &light, bounce, width: canvas.width, lights: &lights, casters: &casters, flats: flats.as_ref(), cam: &cam, env, shadows: gpu_shadows.as_ref() };
         let (x0, x1) = (reach[0].max(0) as usize, (reach[2].max(0) as usize).min(width));
         let on_gpu = self.options.gpu
             && !crate::gpu::given_up()
@@ -1063,6 +1093,8 @@ struct Scene<'s> {
     width: usize,
     lights: &'s [Light],
     casters: &'s [usize],
+    /// The flat layers arranged for rays (in a scene of many), if they are.
+    flats: Option<&'s flats::Flats>,
     cam: &'s Camera,
     /// The environment lighting it, if one does.
     env: Option<&'s scene::Environment>,
@@ -1667,7 +1699,16 @@ impl Scene<'_> {
                 }
             }
         }
-        for &c in self.casters.iter().filter(|&&c| c != own) {
+        // (in a scene of many, only those whose boxes the ray passes through)
+        let listed: Vec<usize>;
+        let casters = match self.flats {
+            Some(f) => {
+                listed = f.along(q, dir, 0.0, len).into_iter().filter(|&c| self.planes[c].material.casts != 0).collect();
+                &listed
+            }
+            None => self.casters,
+        };
+        for &c in casters.iter().filter(|&&c| c != own) {
             let p = &self.planes[c];
             let facing = dir.dot(p.normal);
             if facing.abs() < 1e-12 {
@@ -1792,7 +1833,11 @@ impl Scene<'_> {
                 continue;
             }
             let mut pass = 1.0f32;
-            for (k, p) in self.planes.iter().enumerate() {
+            // (in a scene of many, only those whose boxes the ray passes through)
+            let listed = self.flats.map(|f| f.along(q, dir, 0.0, reach));
+            for i in 0..listed.as_ref().map_or(self.planes.len(), Vec::len) {
+                let k = listed.as_ref().map_or(i, |l| l[i]);
+                let p = &self.planes[k];
                 let facing = dir.dot(p.normal);
                 if k == own || facing.abs() < 1e-12 {
                     continue;

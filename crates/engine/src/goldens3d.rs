@@ -405,6 +405,30 @@ fn scenes() -> Vec<(&'static str, Session, u64, Vec<f64>)> {
         light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
         out.push(("many", s, c, vec![0.0]));
     }
+    // a big scene: 400 cards in rows casting soft shadows on the floor and each other by a spot
+    // light, among them models casting too, ambient occlusion round all
+    {
+        let (mut s, c, _) = stage("crowd");
+        for k in 0..400 {
+            let (i, j) = (k % 25, k / 25);
+            let color = ["#d1495b", "#edae49", "#00798c", "#30638e", "#f4f1de"][k % 5];
+            let l = id(&run(&mut s, "layer.add", &format!(r##"{{"type": "solid", "color": "{color}", "width": 12, "height": 18}}"##)), "layer");
+            three_d(&mut s, l);
+            set(&mut s, l, "transform/position", &format!("[{}, {}, {}]", 30.0 + 18.0 * i as f64, 200.0 - 6.0 * (k % 3) as f64, 20.0 + 26.0 * j as f64));
+            set(&mut s, l, "transform/rotationY", &format!("{}", (k * 53 % 120) as f64 - 60.0));
+            set(&mut s, l, "materialOptions/castsShadows", "\"on\"");
+        }
+        for (k, shape) in ["cube", "sphere", "torus"].iter().enumerate() {
+            let m = primitive(&mut s, shape, [140.0 + 110.0 * k as f64, 190.0, 160.0], "#9a8c98", 0.0, 0.5);
+            set(&mut s, m, "materialOptions/castsShadows", "\"on\"");
+        }
+        let key = light(&mut s, "spot", [120.0, -220.0, -60.0], true);
+        set(&mut s, key, "lightOptions/coneAngle", "120");
+        let amb = light(&mut s, "ambient", [0.0, 0.0, 0.0], false);
+        set(&mut s, amb, "lightOptions/ambientOcclusion", "100");
+        set(&mut s, amb, "lightOptions/occlusionDistance", "40");
+        out.push(("crowd", s, c, vec![0.0]));
+    }
     // motion blur: a cube flying and turning, a plane sliding
     {
         let (mut s, c, _) = stage("motion");

@@ -252,10 +252,12 @@ kernel void mesh(device float4 *color [[buffer(0)]],
                  const device uint *glass [[buffer(20)]],
                  const device Pic *face_pics [[buffer(21)]],
                  const device float4 *face_texels [[buffer(22)]],
+                 primitive_acceleration_structure flats [[buffer(23)]],
+                 const device uint *flat_use [[buffer(24)]],
 #endif
                  uint2 at [[thread_position_in_grid]]) {
 #if RAYS
-    Shadows shadows = { casters, params.c.x, shadow_px, models, everything, faces, glass, face_pics, face_texels };
+    Shadows shadows = { casters, params.c.x, shadow_px, models, everything, faces, glass, face_pics, face_texels, flats, flat_use };
 #else
     Shadows shadows = { casters, params.c.x, shadow_px };
 #endif

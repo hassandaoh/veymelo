@@ -56,6 +56,10 @@ pub(crate) struct Shadows {
     pub glass: Buffer,
     /// The pictures the faces read (none: none does).
     pub pictures: Option<std::sync::Arc<crate::meshes::FacePictures>>,
+    /// In a scene of many flat layers, a triangle over each one's picture for rays to find them
+    /// by, and whether they do (none: rays look at every one).
+    pub flats: Option<Shapes>,
+    pub flat_use: Buffer,
 }
 
 /// A frame's worth of pictures is copied by all the cores, a piece each.
@@ -64,18 +68,21 @@ pub(crate) const PIECE: usize = 1 << 16;
 impl Shadows {
     /// Nothing casting shadows.
     pub(crate) fn none() -> Result<Shadows, String> {
-        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)?, glass: Buffer::new(16)?, pictures: None })
+        Ok(Shadows { casters: Buffer::new(16)?, count: 0, texels: Buffer::new(16)?, at: Vec::new(), models: None, everything: None, faces: Buffer::new(16)?, glass: Buffer::new(16)?, pictures: None, flats: None, flat_use: Buffer::new(16)? })
     }
 
     /// Flat layers `planes` (each with its own picture), the triangles of models casting
     /// shadows and those of every model hiding the sky (three corners each, in the world), each
-    /// as a reflection sees it, and the pictures they read: none when there are models to trace
-    /// and the GPU cannot, or the pictures are too many.
-    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face], glass: &[u32], pictures: Option<std::sync::Arc<crate::meshes::FacePictures>>) -> Result<Option<Shadows>, String> {
+    /// as a reflection sees it, and the pictures they read, and (in a scene of many flat layers)
+    /// a triangle over each layer's picture: none when there are models to trace and the GPU
+    /// cannot, or the pictures are too many.
+    pub(crate) fn new(planes: &[(Caster, &veymelo_raster::Image)], models: &[[f32; 3]], everything: &[[f32; 3]], faces: &[crate::meshes::Face], glass: &[u32], pictures: Option<std::sync::Arc<crate::meshes::FacePictures>>, flats: &[[f32; 3]]) -> Result<Option<Shadows>, String> {
         if (!models.is_empty() || !everything.is_empty()) && !veymelo_os::gpu::traces() {
             return Ok(None);
         }
         let (models, everything) = (Shapes::new(models)?, Shapes::new(everything)?);
+        let flats = if veymelo_os::gpu::traces() { Shapes::new(flats)? } else { None };
+        let flat_use = Buffer::of(&[flats.is_some() as u32])?;
         let total: usize = planes.iter().map(|(_, img)| img.px.len()).sum();
         if total > u32::MAX as usize || total * 16 > 1 << 31 {
             return Ok(None);
@@ -102,7 +109,7 @@ impl Shadows {
         }
         let copies: Vec<_> = on_gpu.iter().map(|&(b, into, size)| (b, 0, &texels, into, size)).collect();
         veymelo_os::gpu::copy_between(&copies)?;
-        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)?, glass: take_with(GLASS, glass)?, pictures }))
+        Ok(Some(Shadows { casters: take_with(CASTERS, &list)?, count: list.len() as u32, texels, at, models, everything, faces: take_with(FACES, faces)?, glass: take_with(GLASS, glass)?, pictures, flats, flat_use }))
     }
 
     /// The kernel to run (`plain`, or `rays` when there are models to trace), and what it takes
@@ -110,13 +117,13 @@ impl Shadows {
     /// the glass, and the faces' pictures (where they are, their texels).
     pub(crate) fn kernel<'s>(&'s self, plain: Kernel, rays: Kernel) -> Result<(Kernel, Vec<veymelo_os::gpu::Arg<'s>>), String> {
         use veymelo_os::gpu::Arg;
-        if self.models.is_none() && self.everything.is_none() {
+        if self.models.is_none() && self.everything.is_none() && self.flats.is_none() {
             return Ok((plain, Vec::new()));
         }
         let none = nowhere()?;
         let blank = blank()?;
         let (pics, texels) = self.pictures.as_ref().map_or((blank, blank), |p| (&p.pics, &p.texels));
-        Ok((rays, vec![Arg::Shapes(self.models.as_ref().unwrap_or(none)), Arg::Shapes(self.everything.as_ref().unwrap_or(none)), Arg::Read(&self.glass), Arg::Read(pics), Arg::Read(texels)]))
+        Ok((rays, vec![Arg::Shapes(self.models.as_ref().unwrap_or(none)), Arg::Shapes(self.everything.as_ref().unwrap_or(none)), Arg::Read(&self.glass), Arg::Read(pics), Arg::Read(texels), Arg::Shapes(self.flats.as_ref().unwrap_or(none)), Arg::Read(&self.flat_use)]))
     }
 
     /// Its buffers back, for the next frame drawn on this thread.

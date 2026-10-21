@@ -151,6 +151,8 @@ struct Shadows {
     const device uint *glass;
     const device Pic *pics;          // the faces' pictures
     const device float4 *pic_texels;
+    primitive_acceleration_structure flats;  // a triangle over each flat layer's picture (a scene of many)
+    const device uint *flat_use;             // whether rays look at the flat layers through them
 #endif
 };
 
@@ -184,6 +186,22 @@ static float3 apply(const device float4 *m, float3 p) {
 
 // how much of the light gets through to q (on plane `own`, or NONE) from one of its points
 // (`dir`, `len` away)
+// how much of the light from q along dir flat layer k (not `own`) lets through where it casts its
+// shadow before `len` (all of it where it does not)
+static float3 cast_through(thread const Shadows &sh, uint k, uint own, float3 q, float3 dir, float len) {
+    const device Caster &p = sh.casters[k];
+    if (p.img.w == own || p.normal.w == 0.0) return float3(1.0);
+    float facing = dot(dir, p.normal.xyz);
+    if (fabs(facing) < 1e-12) return float3(1.0);
+    float t = dot(p.origin.xyz - q, p.normal.xyz) / facing;
+    if (t <= 1e-6 || t >= len - 1e-6) return float3(1.0);
+    float3 hit = apply(p.unworld, q + dir * t);
+    float4 tx = bilinear(sh.texels, p.img, (hit.x - p.own.x) * p.own.z, (hit.y - p.own.y) * p.own.z);
+    float a = clamp(tx.w, 0.0, 1.0);
+    if (a <= 0.0) return float3(1.0);
+    return 1.0 - a + a * p.origin.w * (tx.xyz / a);
+}
+
 static float3 pass_from(thread const Shadows &sh, uint own, float3 q, float3 dir, float len) {
     float3 pass = float3(1.0);
 #if RAYS
@@ -218,20 +236,17 @@ static float3 pass_from(thread const Shadows &sh, uint own, float3 q, float3 dir
             near = h.distance + GLASS_STEP;
         }
     }
-#endif
-    for (uint k = 0; k < sh.count; k++) {
-        const device Caster &p = sh.casters[k];
-        if (p.img.w == own || p.normal.w == 0.0) continue;
-        float facing = dot(dir, p.normal.xyz);
-        if (fabs(facing) < 1e-12) continue;
-        float t = dot(p.origin.xyz - q, p.normal.xyz) / facing;
-        if (t <= 1e-6 || t >= len - 1e-6) continue;
-        float3 hit = apply(p.unworld, q + dir * t);
-        float4 tx = bilinear(sh.texels, p.img, (hit.x - p.own.x) * p.own.z, (hit.y - p.own.y) * p.own.z);
-        float a = clamp(tx.w, 0.0, 1.0);
-        if (a <= 0.0) continue;
-        pass *= 1.0 - a + a * p.origin.w * (tx.xyz / a);
+    // the flat layers casting shadows (in a scene of many, only those the ray passes)
+    if (sh.flat_use[0] != 0) {
+        intersection_params ps;
+        ps.force_opacity(forced_opacity::non_opaque);
+        intersection_query<triangle_data> iq;
+        iq.reset(ray(q, dir, 0.0, len), sh.flats, ps);
+        while (iq.next()) pass *= cast_through(sh, iq.get_candidate_primitive_id(), own, q, dir, len);
+        return pass;
     }
+#endif
+    for (uint k = 0; k < sh.count; k++) pass *= cast_through(sh, k, own, q, dir, len);
     return pass;
 }
 
@@ -321,6 +336,17 @@ static float3 unshadowed(thread const Shadows &sh, constant Light &l, uint own, 
 // `reach`: the share of rays spread over the half sphere it faces (more toward its top, as light
 // falls: a sunflower on the disc beneath, lifted; the pattern turned a little from point to
 // point) that meet no model, each as much as the flat layers it passes let it through
+// how much of the sky from q along dir flat layer c (not `own`) leaves open before `reach`
+static float hides_sky(thread const Shadows &sh, uint c, uint own, float3 q, float3 dir, float reach) {
+    const device Caster &p = sh.casters[c];
+    float facing = dot(dir, p.normal.xyz);
+    if (p.img.w == own || fabs(facing) < 1e-12) return 1.0;
+    float t = dot(p.origin.xyz - q, p.normal.xyz) / facing;
+    if (t <= 1e-6 || t >= reach) return 1.0;
+    float3 hit = apply(p.unworld, q + dir * t);
+    return 1.0 - clamp(bilinear(sh.texels, p.img, (hit.x - p.own.x) * p.own.z, (hit.y - p.own.y) * p.own.z).w, 0.0, 1.0);
+}
+
 static float open_sky(thread const Shadows &sh, uint own, float3 q, float3 n, float reach) {
     float3 side = fabs(n.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
     float3 a = normalize(cross(n, side));
@@ -339,15 +365,19 @@ static float open_sky(thread const Shadows &sh, uint own, float3 q, float3 n, fl
         if (it.intersect(rr, sh.everything).type != intersection_type::none) continue;
 #endif
         float pass = 1.0;
-        for (uint c = 0; c < sh.count; c++) {
-            const device Caster &p = sh.casters[c];
-            float facing = dot(dir, p.normal.xyz);
-            if (p.img.w == own || fabs(facing) < 1e-12) continue;
-            float t = dot(p.origin.xyz - q, p.normal.xyz) / facing;
-            if (t <= 1e-6 || t >= reach) continue;
-            float3 hit = apply(p.unworld, q + dir * t);
-            pass *= 1.0 - clamp(bilinear(sh.texels, p.img, (hit.x - p.own.x) * p.own.z, (hit.y - p.own.y) * p.own.z).w, 0.0, 1.0);
+#if RAYS
+        // (in a scene of many, only the flat layers the ray passes)
+        if (sh.flat_use[0] != 0) {
+            intersection_params ps;
+            ps.force_opacity(forced_opacity::non_opaque);
+            intersection_query<triangle_data> iq;
+            iq.reset(ray(q, dir, 0.0, reach), sh.flats, ps);
+            while (iq.next()) pass *= hides_sky(sh, iq.get_candidate_primitive_id(), own, q, dir, reach);
+            sum += pass;
+            continue;
         }
+#endif
+        for (uint c = 0; c < sh.count; c++) pass *= hides_sky(sh, c, own, q, dir, reach);
         sum += pass;
     }
     return sum / float(OPEN_RAYS);
@@ -628,11 +658,13 @@ kernel void gather(device float4 *out [[buffer(0)]],
                    const device uint *glass [[buffer(12)]],
                    const device Pic *pics [[buffer(13)]],
                    const device float4 *pic_texels [[buffer(14)]],
+                   primitive_acceleration_structure flats [[buffer(15)]],
+                   const device uint *flat_use [[buffer(16)]],
 #endif
                    uint2 at [[thread_position_in_grid]]) {
     if (at.x >= params.a.x) return;
 #if RAYS
-    Shadows sh = { casters, params.a.z, shadow_px, models, everything, faces, glass, pics, pic_texels };
+    Shadows sh = { casters, params.a.z, shadow_px, models, everything, faces, glass, pics, pic_texels, flats, flat_use };
 #else
     Shadows sh = { casters, params.a.z, shadow_px };
 #endif
