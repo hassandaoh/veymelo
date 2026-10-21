@@ -1,7 +1,7 @@
 //! 3D models read from files: glTF 2.0 (`.gltf` with its buffers beside it or inside it, and
-//! `.glb`), Wavefront OBJ with its MTL materials and STL — written from the Khronos glTF 2.0
-//! specification and the OBJ/MTL and STL file descriptions; and solids made from a few numbers
-//! ([`shapes`]).
+//! `.glb`), Wavefront OBJ with its MTL materials, STL and FBX 7 (binary and ASCII) — written
+//! from the Khronos glTF 2.0 specification, the OBJ/MTL and STL file descriptions and the FBX
+//! files' own layout; and solids made from a few numbers ([`shapes`]).
 //!
 //! A model is meshes (triangles with one material each), metallic-roughness materials and the
 //! pictures they use, a tree of nodes placing the meshes (and cameras and lights), skins that
@@ -11,6 +11,7 @@
 //! Models are in their own units with +Y up and +Z toward the viewer, as glTF has them.
 
 mod base64;
+pub mod fbx;
 pub mod gltf;
 pub mod obj;
 pub mod shapes;
@@ -498,7 +499,7 @@ pub struct Pose {
 }
 
 impl Model {
-    /// The model in the file at `path` (a `.gltf`, `.glb`, `.obj` or `.stl`).
+    /// The model in the file at `path` (a `.gltf`, `.glb`, `.obj`, `.stl` or `.fbx`).
     pub fn open(path: &str) -> Result<Model, String> {
         let p = Path::new(path);
         let bytes = std::fs::read(p).map_err(|e| format!("cannot read {path}: {e}"))?;
@@ -507,13 +508,14 @@ impl Model {
             Some("obj") => obj::read(&String::from_utf8_lossy(&bytes), dir),
             Some("gltf") | Some("glb") => gltf::read(&bytes, dir),
             Some("stl") => stl::read(&bytes),
-            _ => Err(format!("{path} is not a model this reads (.gltf, .glb, .obj or .stl)")),
+            Some("fbx") => fbx::read(&bytes, dir),
+            _ => Err(format!("{path} is not a model this reads (.gltf, .glb, .obj, .stl or .fbx)")),
         }
     }
 
     /// Whether a file's name says it is a model.
     pub fn is_model(path: &str) -> bool {
-        matches!(Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("gltf" | "glb" | "obj" | "stl"))
+        matches!(Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("gltf" | "glb" | "obj" | "stl" | "fbx"))
     }
 
     pub fn triangles(&self) -> usize {

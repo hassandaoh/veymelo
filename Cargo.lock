@@ -175,6 +175,7 @@ dependencies = [
  "veymelo-geom",
  "veymelo-json",
  "veymelo-os",
+ "veymelo-zip",
 ]
 
 [[package]]

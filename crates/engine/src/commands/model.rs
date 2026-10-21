@@ -19,7 +19,7 @@ pub fn commands() -> Vec<Command> {
         Command {
             id: "model.info",
             label: "3D Model Info",
-            summary: "What a 3D model holds (an imported .gltf, .glb, .obj or .stl, or a 3D model layer's): its meshes and triangles, materials, pictures, animations and how long each is, cameras, lights, and the box round it in its own units.",
+            summary: "What a 3D model holds (an imported .gltf, .glb, .obj, .stl or .fbx, or a 3D model layer's): its meshes and triangles, materials, pictures, animations and how long each is, cameras, lights, and the box round it in its own units.",
             params: const { &[Param::opt("item", Ty::Any, "the model's footage item (an id or a name)"), COMP, Param::opt("layer", Ty::Layer, "or a 3D model layer showing it")] },
             returns: "{item, meshes, triangles, materials, textures, animations: [{index, name, length}], cameras, lights, size, notes}",
             run: Run::Look(info),

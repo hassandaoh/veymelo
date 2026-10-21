@@ -67,7 +67,7 @@ pub fn is_vector(path: &str) -> bool {
 }
 
 /// The 3D model files footage is made from.
-pub const MODELS: &[&str] = &["gltf", "glb", "obj", "stl"];
+pub const MODELS: &[&str] = &["gltf", "glb", "obj", "stl", "fbx"];
 
 /// A frame rate near `fps` (whole rates and the NTSC ones exactly).
 fn rate_near(fps: f64) -> FrameRate {

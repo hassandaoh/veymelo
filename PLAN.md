@@ -644,7 +644,13 @@ prop.list/get/set/keys, render.frame
 - [x] 16.4 ความโปร่งใสเรียงลำดับในโมเดล: วัสดุโปร่ง (alpha blend จาก glTF/OBJ, และ primitive ที่ baseColor alpha < 1) — แต่ละ
       sample เก็บสามเหลี่ยมทึบที่ใกล้สุด + สามเหลี่ยมโปร่ง 4 ชิ้นที่ใกล้สุดหน้ามัน แล้ววางจากไกลไปใกล้ (เห็นด้านหลังของโมเดลเอง
       ผ่านด้านหน้า) ทั้ง CPU/GPU; โมเดลทึบภาพเท่าเดิมทุกบิต; golden "see-through" GPU ตรงกับ CPU
-- [ ] 16.5 FBX
+- [x] 16.5 FBX 7 (model/fbx.rs): binary (record 32/64 บิต, array ดิบหรือ zlib ผ่าน veymelo-zip) และ ASCII → ต้นไม้เดียวกัน;
+      object + connection, แกนและหน่วยของไฟล์ → +Y ขึ้น +Z เข้าหาคน เมตร (กลับลำดับสามเหลี่ยมถ้าแกนกลับด้าน); mesh รูปหลายเหลี่ยม
+      ตัดเป็น ear, normal/UV/สี/วัสดุ ทุกแบบ mapping (ByPolygonVertex/ByControlPoint/ByPolygon/AllSame, Direct/IndexToDirect);
+      model วางตาม FBX (pre/post rotation, pivot, offset, Euler ทุกลำดับ, geometric transform ที่ mesh); วัสดุ diffuse×factor,
+      emissive, opacity, shininess (แบบ Blender) + รูป diffuse (ไฟล์ข้างๆ หรือฝังใน Video/Content); animation T/R/S ทุก stack
+      (คิด matrix ทั้งก้อนที่ทุกเวลาของ key แล้วแยก TRS); skin/blend shape/กล้อง/ไฟ ยังไม่อ่าน (บอกใน notes);
+      ตรวจกับไฟล์จาก Blender 5.2 (Y-up และ Z-up, ฝังรูป) เทียบกับ glTF ของฉากเดียวกัน: สามเหลี่ยม วัสดุ ตำแหน่งตรงกันทุกเวลา
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -652,8 +658,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 
 1. ~~**2D บน GPU (ขั้น 15)**~~ — เสร็จ 2026-10-21 (ดูขั้น 15; ที่ไม่ย้ายมีเหตุผลอยู่ที่นั่น)
 2. ~~**3D ที่เหลือจากขั้น 14**~~ — เสร็จ 2026-10-21 (caustics, เงาแก้วให้แสงผ่าน, รูปบนโมเดลในเงาสะท้อนอ่านทุกพิกเซล: ดู 14.6–14.8)
-3. **3D รายการเก่า (ขั้น 16)**: ~~ม่านรูรับแสงหลายเหลี่ยม (bokeh)~~, ~~ฉากใหญ่มาก (shadow map)~~, ~~ความโปร่งใสเรียงลำดับในโมเดล~~,
-   FBX, ~~ชั้นที่เห็นกันในเงาสะท้อน (appearsInReflections)~~
+3. ~~**3D รายการเก่า (ขั้น 16)**~~ — เสร็จ 2026-10-21 (ดูขั้น 16)
 4. **หุ่นเชิด**: mesh ที่จำรูปร่างตอนสร้าง, เส้นตาข่ายบนภาพที่ AI ขอดู, motion blur ของ mesh, ปักหมุดตามเส้นทาง
 5. **ตัวติดตาม**: 3D Camera Tracker, planar, Subspace Warp, synthesize edges, pixel motion ของ Rolling Shutter
 6. **สีและตัวหนังสือ**: ACES output transforms (RRT+ODT), GradingPrimary/Tone/Curve; ฟอนต์ COLR v1 (ไล่สี) และ CBDT

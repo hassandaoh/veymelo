@@ -1,6 +1,6 @@
 [package]
 name = "veymelo-model"
-description = "3D models read from glTF 2.0 and OBJ/MTL files: meshes, materials and their pictures, the node tree, cameras, lights, skins, morph targets and animations"
+description = "3D models read from glTF 2.0, OBJ/MTL, STL and FBX files: meshes, materials and their pictures, the node tree, cameras, lights, skins, morph targets and animations"
 version.workspace = true
 edition.workspace = true
 
@@ -8,3 +8,4 @@ edition.workspace = true
 veymelo-json.workspace = true
 veymelo-geom.workspace = true
 veymelo-os.workspace = true
+veymelo-zip.workspace = true
