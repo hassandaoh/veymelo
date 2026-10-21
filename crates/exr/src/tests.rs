@@ -237,8 +237,13 @@ fn what_is_not_read_says_so() {
     let mut bytes = fixture("lines-zip.exr");
     let at = bytes.windows(12).position(|w| w == b"compression\0").unwrap() + 12 + 12 + 4;
     assert_eq!(bytes[at], 3);
-    bytes[at] = 10;
+    // a compression newer than any read
+    bytes[at] = 12;
     let e = parse(&bytes).unwrap_err();
+    assert!(e.contains("not read"), "{e}");
+    // HTJ2K said, ZIP inside: its chunk is not one
+    bytes[at] = 10;
+    let e = read(&bytes).unwrap_err();
     assert!(e.contains("HTJ2K"), "{e}");
 }
 
@@ -447,5 +452,86 @@ fn deep_tiles_and_zip_scanlines_are_read() {
         let r = &planes.iter().find(|p| p.name == "R").unwrap().samples;
         assert!((r[1] - (0.2 + 0.5 * 0.1)).abs() < 1e-6, "{}", r[1]);
         assert!((r[0] - 0.0).abs() < 1e-6);
+    }
+}
+
+/// HTJ2K files OpenEXR 3.4 wrote (through Blender's OpenImageIO: `probe.py`, `htmore.py`), each
+/// read the same to the bit as the same picture written with ZIP: the files in `VEYMELO_EXR_DIR`.
+#[test]
+#[ignore]
+fn htj2k_files_read_the_same_as_zip_ones() {
+    let Some(dir) = std::env::var_os("VEYMELO_EXR_DIR") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    for (ht, zip) in [
+        ("ht_htj2k256", "ht_ht256"),
+        ("ht_htj2k32", "ht_ht256"),
+        ("odd_htj2k256", "odd_zip"),
+        ("odd_htj2k32", "odd_zip"),
+        ("float_htj2k256", "float_zip"),
+        ("big_htj2k256", "big_zip"),
+        ("big_htj2k32", "big_zip"),
+    ] {
+        let a = std::fs::read(dir.join(format!("{ht}.exr"))).unwrap();
+        let b = std::fs::read(dir.join(format!("{zip}.exr"))).unwrap();
+        let (exr, pa) = read(&a).unwrap_or_else(|e| panic!("{ht}: {e}"));
+        assert!(matches!(exr.parts[0].compression, Compression::Ht256 | Compression::Ht32), "{ht}");
+        let (_, pb) = read(&b).unwrap();
+        assert_eq!(pa.len(), pb.len(), "{ht}");
+        for (x, y) in pa.iter().zip(&pb) {
+            assert_eq!(x.name, y.name);
+            let wrong = x.samples.iter().zip(&y.samples).filter(|(u, v)| u.to_bits() != v.to_bits()).count();
+            let first = x.samples.iter().zip(&y.samples).position(|(u, v)| u.to_bits() != v.to_bits());
+            assert_eq!(wrong, 0, "{ht} {}: {wrong} of {} differ, first at {first:?}: {:?} vs {:?}", x.name, x.samples.len(), first.map(|i| x.samples[i]), first.map(|i| y.samples[i]));
+        }
+    }
+}
+
+
+/// A file 13 × 9 of halves in HTJ2K32, as OpenEXR 3.4 wrote it: red (x − 8) / 4, green y / 8, blue
+/// ((x·y) mod 7 − 3) / 2, alpha 1.
+const TINY_HTJ2K: &str = concat!(
+    "762f3101020000006361704461746500737472696e670013000000323032363a31303a32312031363a32313a33356368",
+    "616e6e656c730063686c6973740049000000410001000000000000000100000001000000420001000000000000000100",
+    "00000100000047000100000000000000010000000100000052000100000000000000010000000100000000636f6d7072",
+    "657373696f6e00636f6d7072657373696f6e00010000000b6461746157696e646f7700626f7832690010000000000000",
+    "00000000000c00000008000000646973706c617957696e646f7700626f783269001000000000000000000000000c0000",
+    "00080000006c696e654f72646572006c696e654f72646572000100000000706978656c417370656374526174696f0066",
+    "6c6f617400040000000000803f73637265656e57696e646f7743656e7465720076326600080000000000000000000000",
+    "73637265656e57696e646f77576964746800666c6f617400040000000000803f00790100000000000000000000a80300",
+    "00003c003c003c003c003c003c003c003c003c003c003c003c003c00be00be00be00be00be00be00be00be00be00be00",
+    "be00be00be000000000000000000000000000000000000000000000000000000c000bf00be00bd00bc00ba00b800b400",
+    "0000340038003a003c003c003c003c003c003c003c003c003c003c003c003c003c003c00be00bc00b800000038003c00",
+    "3e00be00bc00b800000038003c003000300030003000300030003000300030003000300030003000c000bf00be00bd00",
+    "bc00ba00b800b4000000340038003a003c003c003c003c003c003c003c003c003c003c003c003c003c003c00be00b800",
+    "38003e00bc0000003c00be00b80038003e00bc0000003400340034003400340034003400340034003400340034003400",
+    "c000bf00be00bd00bc00ba00b800b4000000340038003a003c003c003c003c003c003c003c003c003c003c003c003c00",
+    "3c003c00be0000003e00b8003c00bc003800be0000003e00b8003c00bc00360036003600360036003600360036003600",
+    "3600360036003600c000bf00be00bd00bc00ba00b800b4000000340038003a003c003c003c003c003c003c003c003c00",
+    "3c003c003c003c003c003c00be003800bc003c00b8003e000000be003800bc003c00b8003e0038003800380038003800",
+    "38003800380038003800380038003800c000bf00be00bd00bc00ba00b800b4000000340038003a003c003c003c003c00",
+    "3c003c003c003c003c003c003c003c003c003c00be003c000000bc003e003800b800be003c000000bc003e0038003900",
+    "390039003900390039003900390039003900390039003900c000bf00be00bd00bc00ba00b800b4000000340038003a00",
+    "3c003c003c003c003c003c003c003c003c003c003c003c003c003c00be003e003c0038000000b800bc00be003e003c00",
+    "38000000b8003a003a003a003a003a003a003a003a003a003a003a003a003a00c000bf00be00bd00bc00ba00b800b400",
+    "0000340038003a003c003c003c003c003c003c003c003c003c003c003c003c003c003c00be00be00be00be00be00be00",
+    "be00be00be00be00be00be00be003b003b003b003b003b003b003b003b003b003b003b003b003b00c000bf00be00bd00",
+    "bc00ba00b800b4000000340038003a003c003c003c003c003c003c003c003c003c003c003c003c003c003c00be00bc00",
+    "b800000038003c003e00be00bc00b800000038003c003c003c003c003c003c003c003c003c003c003c003c003c003c00",
+    "c000bf00be00bd00bc00ba00b800b4000000340038003a003c",
+);
+
+#[test]
+fn a_tiny_htj2k_file_reads_as_it_was_written() {
+    let bytes: Vec<u8> = (0..TINY_HTJ2K.len()).step_by(2).map(|i| u8::from_str_radix(&TINY_HTJ2K[i..i + 2], 16).unwrap()).collect();
+    let (exr, planes) = read(&bytes).unwrap();
+    assert_eq!(exr.parts[0].compression, Compression::Ht32);
+    let plane = |n: &str| &planes.iter().find(|p| p.name == n).unwrap().samples;
+    for y in 0..9 {
+        for x in 0..13 {
+            let i = y * 13 + x;
+            let want = [(x as f32 - 8.0) / 4.0, y as f32 / 8.0, ((x * y) % 7) as f32 / 2.0 - 1.5, 1.0];
+            let got = [plane("R")[i], plane("G")[i], plane("B")[i], plane("A")[i]];
+            assert_eq!(got, want, "({x}, {y})");
+        }
     }
 }

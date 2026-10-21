@@ -14,6 +14,7 @@ pub(crate) fn decompress(c: Compression, data: &[u8], channels: &[Channel], w: W
         Compression::Piz => piz::decompress(data, channels, w, size)?,
         Compression::B44 | Compression::B44a => b44::decompress(data, channels, w, size)?,
         Compression::Dwaa | Compression::Dwab => dwa::decompress(data, channels, w, size)?,
+        Compression::Ht256 | Compression::Ht32 => crate::ht::decompress(data, channels, w, size)?,
         Compression::Other(_) => return Err(format!("{} compression is not read yet", c.name())),
     };
     if out.len() != size {

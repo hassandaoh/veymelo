@@ -356,7 +356,7 @@ prop.list/get/set/keys, render.frame
       ระนาบ ตัวอักษร/รูปทรงนูน primitive โมเดลพร้อม normal/uv/วัสดุของโมเดลจาก Shot.facts) ชั้น 2D นอนบนระนาบคอมพ์
       ชั้นบนอยู่หน้า แล้วรวมจากหน้า → Z, ObjectID (ลำดับชั้น), MaterialID (id ของ source), Coverage, N.X/Y/Z (หันหากล้อง),
       UV, CryptoObject (ชื่อชั้น) / CryptoMaterial (ชื่อ source หรือชื่อวัสดุของโมเดล) 4 อันดับ + manifest;
-      ภายหลัง: ไฟล์ deep, HTJ2K]
+      ไฟล์ deep และ HTJ2K: ดู 19.2–19.3]
 - [x] PDF/AI แบบเวกเตอร์ — ดู 19.1 (ตัวติดตาม: Warp Stabilizer และ Rolling Shutter Repair ทำแล้วในขั้น 11;
       3D Camera Tracker, Object Matte, เอฟเฟกต์ใบหน้า ดู "งานที่เหลือ" ท้ายไฟล์)
 
@@ -729,6 +729,13 @@ prop.list/get/set/keys, render.frame
       ZIPS/ZIP, ตาราง chunk เสียก็ไล่หาได้; Exr::deep ให้ sample ทุกตัว; ภาพ/plane = รวมจากหน้าไปหลังตาม Z (ตามที่ OpenEXR
       อธิบาย deep pixel; OpenImageIO รวมตามลำดับในไฟล์ไม่เรียง) แยกชั้นตาม alpha ของชั้นนั้น, Z/ZBack/id = ของชิ้นหน้าสุด;
       ตรวจกับไฟล์ที่ OpenImageIO (OpenEXR 3.4) เขียน: ทุก sample ตรงสูตรที่เขียน, และ tile/ZIP 16 บรรทัดที่ประกอบเองตามสเปก
+- [x] 19.3 EXR HTJ2K256/HTJ2K32 (exr/ht.rs + ht/): header ของ chunk ("HT", ความยาว, ลำดับ component→ช่อง) + ตัวถอด
+      JPEG 2000 ของเราเอง: SIZ/COD/COC/QCD/QCC/NLT, tile-part, tier-2 (tag tree, จำนวน pass, Lblock, placeholder pass ของ HT,
+      ความยาวสองส่วน, SOP/EPH, ลำดับ LRCP/RLCP/RPCL/PCRL/CPRL ตามตำแหน่งบน reference grid), code-block HT แบบ cleanup
+      (MEL/VLC/MagSgn พร้อมกฎ unstuff ของแต่ละสาย, ตาราง CxtVLC 444+358 แถวที่ตรวจว่าเป็นรหัส prefix สมบูรณ์ทุกบริบท,
+      U-VLC รวมกรณีพิเศษแถวแรกและ +2 จาก MEL, kappa จากแถวบน), wavelet 5/3 ย้อนกลับ, RCT, DC shift, NLT binary complement
+      (ค่าลบของ half/float); ตรวจ: ไฟล์ที่ OpenEXR 3.4 (OpenJPH) เขียน 7 ไฟล์ (ขนาดคี่ ค่าลบ float 32 บิต 2 chunk) ตรงกับไฟล์
+      ZIP ภาพเดียวกันทุกบิต + ไฟล์เล็กฝังในเทสต์; ยังไม่อ่าน: pass SigProp/MagRef (OpenJPH ไม่เขียน) และแบบ 9/7 สูญเสีย (บอกชัด)
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -740,7 +747,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
 6. ~~**สีและตัวหนังสือ (ขั้น 18)**~~ — เสร็จ 2026-10-21 (ACES output, OCIO grading, ฟอนต์ COLR v1 และ CBDT: ดูขั้น 18)
-7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; ~~EXR deep~~, HTJ2K; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
+7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; ~~EXR deep~~, ~~HTJ2K~~; Lottie (layer styles, ตัวอักษรฝัง, เสียง);
    PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)
 

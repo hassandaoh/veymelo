@@ -138,10 +138,10 @@ impl Exr {
             // one channel's samples over pixels `from..to` of the chunk
             let mut take = |ci: usize, from: usize, to: usize, channels: &mut Vec<(String, Vec<f32>)>| -> Result<(), String> {
                 let c = p.channels[ci].sample;
-                for i in from..to {
+                for (i, &count) in chunk_counts.iter().enumerate().take(to).skip(from) {
                     let (x, y) = (win.x0 as usize + i % ww - d.x0 as usize, win.y0 as usize + i / ww - d.y0 as usize);
                     let s = starts[y * w + x];
-                    for k in 0..chunk_counts[i] as usize {
+                    for k in 0..count as usize {
                         let b = raw.get(pos..pos + c.size()).ok_or("a deep chunk with fewer samples than its table says")?;
                         channels[ci].1[s + k] = value(c, b);
                         pos += c.size();

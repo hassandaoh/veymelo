@@ -21,11 +21,13 @@
 //! - deep parts (many samples a pixel, scanlines or tiles; [`Exr::deep`]), and as planes
 //!   flattened: each pixel's samples composited from the nearest.
 //!
-//! The HTJ2K compressions are not read, and say so.
+//! - the HTJ2K compressions (JPEG 2000's high-throughput code-blocks, lossless), by our own
+//!   JPEG 2000 decoder.
 
 mod b44;
 mod codec;
 mod deep;
+mod ht;
 mod dwa;
 pub mod half;
 mod huf;
@@ -115,7 +117,11 @@ pub enum Compression {
     Dwaa,
     /// DWAA, 256 scanlines a chunk.
     Dwab,
-    /// One we do not read (the HTJ2K ones, or newer).
+    /// JPEG 2000 of high-throughput code-blocks (lossless), 256 scanlines a chunk.
+    Ht256,
+    /// The same, 32 scanlines a chunk.
+    Ht32,
+    /// One we do not read (newer ones).
     Other(u8),
 }
 
@@ -133,6 +139,8 @@ impl Compression {
             7 => B44a,
             8 => Dwaa,
             9 => Dwab,
+            10 => Ht256,
+            11 => Ht32,
             v => Other(v),
         }
     }
@@ -150,7 +158,8 @@ impl Compression {
             B44a => "B44A",
             Dwaa => "DWAA",
             Dwab => "DWAB",
-            Other(10 | 11) => "HTJ2K",
+            Ht256 => "HTJ2K256",
+            Ht32 => "HTJ2K32",
             Other(v) => return format!("number {v}"),
         }
         .to_string()
@@ -162,8 +171,8 @@ impl Compression {
         Some(match self {
             None | Rle | Zips => 1,
             Zip | Pxr24 => 16,
-            Piz | B44 | B44a | Dwaa => 32,
-            Dwab => 256,
+            Piz | B44 | B44a | Dwaa | Ht32 => 32,
+            Dwab | Ht256 => 256,
             Other(_) => return Option::None,
         })
     }
