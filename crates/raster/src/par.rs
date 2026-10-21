@@ -86,8 +86,47 @@ pub fn chunks<T: Send>(px: &mut [T], size: usize, f: impl Fn(usize, &mut [T]) + 
     });
 }
 
+/// `f(k)` for every `k` below `n`, worked out on the cores (each takes the next not yet taken),
+/// in the order of `k`.
+pub fn map<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let threads = threads_for(n);
+    if threads == 1 || n < 2 {
+        return (0..n).map(f).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mode = crate::gpu::processor_only();
+    let mut done: Vec<(usize, T)> = std::thread::scope(|s| {
+        let work: Vec<_> = (0..threads)
+            .map(|_| {
+                let (f, next) = (&f, &next);
+                s.spawn(move || {
+                    crate::gpu::with_mode(mode, || {
+                        let mut mine = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if k >= n {
+                                break mine;
+                            }
+                            mine.push((k, f(k)));
+                        }
+                    })
+                })
+            })
+            .collect();
+        work.into_iter().flat_map(|w| w.join().expect("a piece of work")).collect()
+    });
+    done.sort_unstable_by_key(|(k, _)| *k);
+    done.into_iter().map(|(_, t)| t).collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn map_keeps_the_order() {
+        let got = super::map(1000, |k| k * k);
+        assert!(got.iter().enumerate().all(|(k, v)| *v == k * k));
+    }
+
     #[test]
     fn every_chunk_once() {
         let mut px = vec![0usize; 100_003];

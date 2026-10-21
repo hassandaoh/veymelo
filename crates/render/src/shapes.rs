@@ -412,6 +412,10 @@ fn geometry(p: &Paint, arena: &[Vec<Sub>]) -> Path {
     }
 }
 
+/// The fewest pixels a shape layer's picture has for its shapes to be shared among the cores
+/// (fewer cost less than starting the threads).
+const BIG: usize = 1 << 18;
+
 /// A shape layer's contents worked out at a time: each paint with its outline, and where they
 /// all reach (in the layer's own units), ready to be drawn over any part of it.
 pub(crate) struct Drawing {
@@ -449,7 +453,11 @@ impl Drawing {
     let mut img = Image::new(w, h);
     let origin = vec2(i0 / s, j0 / s);
     let to_buf = Mat3::translate(vec2(-i0, -j0)) * Mat3::scale(vec2(s, s));
-    for (k, (p, g)) in shapes.iter().enumerate() {
+    // each shape's cover (on the cores at once, for a big picture), then the shapes put on in
+    // their order, the rows shared among the cores
+    let big = w * h >= BIG;
+    let cover_of = |k: usize| {
+        let (p, g) = &shapes[k];
         let mut mapped = Path::default();
         for c in g.contours() {
             for (n, q) in c.iter().enumerate() {
@@ -462,30 +470,54 @@ impl Drawing {
             }
         }
         let rule = if p.stroke.is_some() { Rule::NonZero } else { p.rule };
-        let Some(cover) = veymelo_path::fill(&mapped, rule, w, h) else { continue };
-        let back = (to_buf * p.xf).inverse();
-        let solid = match &p.look {
-            Look::Color(c) => Some(px(c.with_alpha(1.0), p.opacity)),
-            Look::Gradient(..) => None,
-        };
-        for y in cover.top..cover.top + cover.height {
+        veymelo_path::fill(&mapped, rule, w, h)
+    };
+    let covers: Vec<_> = if big { veymelo_raster::par::map(shapes.len(), cover_of) } else { (0..shapes.len()).map(cover_of).collect() };
+    let looks: Vec<(Option<Px>, Option<Mat3>)> = shapes
+        .iter()
+        .map(|(p, _)| {
+            let solid = match &p.look {
+                Look::Color(c) => Some(px(c.with_alpha(1.0), p.opacity)),
+                Look::Gradient(..) => None,
+            };
+            (solid, (to_buf * p.xf).inverse())
+        })
+        .collect();
+    // a row of the picture with the shapes put on it in their order; `src` the colour of shape k at
+    // pixel x of row y
+    let put = |y: usize, row: &mut [Px], src: &dyn Fn(usize, usize, usize) -> Option<Px>| {
+        for (k, ((p, _), cover)) in shapes.iter().zip(&covers).enumerate() {
+            let Some(cover) = cover else { continue };
+            if y < cover.top || y >= cover.top + cover.height {
+                continue;
+            }
             for x in cover.left..cover.left + cover.width {
                 let c = cover.at(x, y);
                 if c <= 0.0 {
                     continue;
                 }
-                let src = match (&solid, &p.look, back) {
-                    (Some(sp), _, _) => *sp,
-                    (None, Look::Gradient(gr, r), Some(inv)) => {
-                        let q = inv.apply(vec2(x as f64 + 0.5, y as f64 + 0.5));
-                        let [cr, cg, cb, ca] = gr.at(r.at([q.x, q.y]).clamp(0.0, 1.0));
-                        px(Rgba { r: cr, g: cg, b: cb, a: ca }, p.opacity)
-                    }
-                    _ => continue,
-                };
-                let d = &mut img.px[y * w + x];
+                let Some(src) = src(k, x, y) else { continue };
+                let d = &mut row[x];
                 *d = blend(p.blend, *d, src.map(|v| v * c), noise(x, y, k as u32));
             }
+        }
+    };
+    if big && looks.iter().all(|(solid, _)| solid.is_some()) {
+        // solid colours: the rows on the cores
+        let solid: Vec<Px> = looks.iter().map(|(sp, _)| sp.unwrap_or([0.0; 4])).collect();
+        veymelo_raster::par::rows(&mut img.px, w, |y, row| put(y, row, &|k, _, _| Some(solid[k])));
+    } else {
+        // a small picture, or gradients (they ask for their colours pixel by pixel): here
+        for (y, row) in img.px.chunks_mut(w).enumerate() {
+            put(y, row, &|k, x, y| match (&looks[k].0, &shapes[k].0.look, looks[k].1) {
+                (Some(sp), _, _) => Some(*sp),
+                (None, Look::Gradient(gr, r), Some(inv)) => {
+                    let q = inv.apply(vec2(x as f64 + 0.5, y as f64 + 0.5));
+                    let [cr, cg, cb, ca] = gr.at(r.at([q.x, q.y]).clamp(0.0, 1.0));
+                    Some(px(Rgba { r: cr, g: cg, b: cb, a: ca }, shapes[k].0.opacity))
+                }
+                _ => None,
+            });
         }
     }
     Some((img, origin, s))
