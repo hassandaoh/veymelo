@@ -44,6 +44,13 @@ impl Path {
         }
     }
 
+    /// Room for `n` more points in the outline being drawn (so a curve's pieces go in at once).
+    fn room(&mut self, n: usize) {
+        if let Some(c) = self.contours.last_mut() {
+            c.reserve(n);
+        }
+    }
+
     fn here(&self) -> Option<(f64, f64)> {
         self.contours.last().and_then(|c| c.last()).copied()
     }
@@ -55,6 +62,7 @@ impl Path {
         };
         let bend = ((x0 - 2.0 * cx + x).hypot(y0 - 2.0 * cy + y)) / 4.0;
         let n = ((bend / TOLERANCE).sqrt().ceil() as usize).clamp(1, 128);
+        self.room(n);
         for i in 1..=n {
             let t = i as f64 / n as f64;
             let u = 1.0 - t;
@@ -73,6 +81,7 @@ impl Path {
         let d2 = (ax - 2.0 * bx + x).hypot(ay - 2.0 * by + y);
         let bend = 0.75 * d1.max(d2);
         let n = ((bend / TOLERANCE).sqrt().ceil() as usize).clamp(1, 256);
+        self.room(n);
         for i in 1..=n {
             let t = i as f64 / n as f64;
             let u = 1.0 - t;

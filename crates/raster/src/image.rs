@@ -111,23 +111,26 @@ impl Image {
 
     /// Every channel held to 0…1 and colour within alpha (working in 8 or 16 bits).
     pub fn clamp(&mut self) {
-        for p in &mut self.px {
-            p[3] = p[3].clamp(0.0, 1.0);
-            for c in 0..3 {
-                p[c] = p[c].clamp(0.0, p[3]);
+        crate::par::chunks(&mut self.px, 1 << 14, |_, part| {
+            for p in part {
+                p[3] = p[3].clamp(0.0, 1.0);
+                for c in 0..3 {
+                    p[c] = p[c].clamp(0.0, p[3]);
+                }
             }
-        }
+        });
     }
 
     /// Within columns and rows `area` (x0, y0, x1, y1): every channel held as `clamp` holds it,
     /// then rounded as `quantize` rounds it (what the two do to the whole picture, there only).
     pub fn settle_in(&mut self, levels: f32, area: [usize; 4]) {
         let [x0, y0, x1, y1] = [area[0].min(self.width), area[1].min(self.height), area[2].min(self.width), area[3].min(self.height)];
-        if x0 >= x1 {
+        if x0 >= x1 || y0 >= y1 {
             return;
         }
-        for y in y0..y1 {
-            for p in &mut self.px[y * self.width + x0..y * self.width + x1] {
+        let w = self.width;
+        crate::par::rows(&mut self.px[y0 * w..y1 * w], w, |_, row| {
+            for p in &mut row[x0..x1] {
                 p[3] = p[3].clamp(0.0, 1.0);
                 for c in 0..3 {
                     p[c] = p[c].clamp(0.0, p[3]);
@@ -136,16 +139,18 @@ impl Image {
                     *c = (*c * levels).round() / levels;
                 }
             }
-        }
+        });
     }
 
     /// Every channel rounded to `levels` steps (255 for 8 bits).
     pub fn quantize(&mut self, levels: f32) {
-        for p in &mut self.px {
-            for c in p.iter_mut() {
-                *c = (*c * levels).round() / levels;
+        crate::par::chunks(&mut self.px, 1 << 14, |_, part| {
+            for p in part {
+                for c in p.iter_mut() {
+                    *c = (*c * levels).round() / levels;
+                }
             }
-        }
+        });
     }
 
     /// Eight bits a channel, not premultiplied.

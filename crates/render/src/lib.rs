@@ -126,10 +126,12 @@ fn render_on(project: &Project, comp: u64, t: Tick, options: &Options) -> Result
     r.comp(c, t, view, &mut image, 1.0, 0);
     if options.background {
         let bg = r.px(c.background.with_alpha(1.0), 1.0);
-        for p in &mut image.px {
-            let k = 1.0 - p[3];
-            *p = [p[0] + bg[0] * k, p[1] + bg[1] * k, p[2] + bg[2] * k, p[3] + k];
-        }
+        veymelo_raster::par::chunks(&mut image.px, 1 << 14, |_, part| {
+            for p in part {
+                let k = 1.0 - p[3];
+                *p = [p[0] + bg[0] * k, p[1] + bg[1] * k, p[2] + bg[2] * k, p[3] + k];
+            }
+        });
         r.settle(&mut image);
     }
     if r.linear {
