@@ -4123,3 +4123,198 @@ fn a_3d_scene_filmed_and_its_camera_found_again() {
         }
     }
 }
+
+
+/// The pictures of Photoshop documents on this computer (the system's own), each brought in as
+/// a composition of its settings and drawn: as Photoshop drew them into the document's merged
+/// picture — its alpha everywhere (to a step of eight bits and the gradients' dither), its
+/// colours where it is mostly solid (where it is see-through it keeps them matted on white, too
+/// coarsely to be undone).
+#[test]
+fn photoshop_documents_drawn_from_their_settings() {
+    let files = [
+        "/System/Library/PrivateFrameworks/QuickLookSupport.framework/Versions/A/Resources/PageGradient.psd",
+        "/System/Library/CoreServices/StageManagerOnboarding.app/Contents/Resources/StageManager_DK.ca/assets/traffic-lights_2.psd",
+    ];
+    for path in files.iter().filter(|p| std::path::Path::new(p).exists()) {
+        let mut s = Session::new();
+        let made = run(&mut s, "footage.import", &format!(r#"{{"path": {}, "as": "composition"}}"#, Json::from(*path).to_json()));
+        assert_eq!(made.get("notes").and_then(Json::as_array).map(Vec::len), Some(0), "{}", made.to_json());
+        let c = id(&made, "item");
+        let f = s.render(Some(&Json::Number(c as f64)), None, &render::Options { background: false, ..render::Options::default() }).unwrap();
+        let pic = veymelo_os::read_picture(path, 0).unwrap();
+        let (w, h) = (pic.width, pic.height);
+        assert_eq!((w, h), (f.image.width, f.image.height));
+        let (mut sum, mut worst) = (0.0f64, 0.0f32);
+        for (a, b) in pic.px.iter().zip(&f.image.px) {
+            let colour = if a[3] > 0.5 { (0..3).map(|k| (a[k] - b[k]).abs()).fold(0.0, f32::max) } else { 0.0 };
+            let d = colour.max((a[3] - b[3]).abs());
+            sum += d as f64;
+            worst = worst.max(d);
+        }
+        let mean = sum / (w * h) as f64;
+        assert!(mean < 0.003 && worst < 0.02, "{path}: mean {mean}, worst {worst}");
+        let comp = s.project().comp(c).unwrap();
+        if path.ends_with("PageGradient.psd") {
+            // a fill layer: a solid, its gradient overlay and its vector mask, its fill opacity
+            // the styles' own
+            let l = &comp.layers[0];
+            assert_eq!(l.source.id(), "solid");
+            let list = l.props.group("layerStyles").unwrap();
+            let ids: Vec<&str> = list.children.iter().filter_map(|n| n.as_group()).map(|g| g.def.id).collect();
+            assert_eq!(ids, ["blendingOptions", "gradientOverlay"]);
+            let go = list.children[1].as_group().unwrap();
+            assert_eq!((go.prop("angle").unwrap().value.as_f64(), go.prop("reverse").unwrap().value.as_bool()), (45.0, true));
+            assert_eq!(l.props.group("masks").unwrap().children.len(), 1);
+        } else {
+            // three groups cut round by their vector masks (and their layers by theirs)
+            let comps: Vec<&veymelo_project::Comp> = s.project().items.iter().filter_map(|i| if let veymelo_project::ItemKind::Comp(c) = &i.kind { Some(&**c) } else { None }).collect();
+            let masked = comps.iter().flat_map(|c| &c.layers).filter(|l| l.props.group("masks").is_ok_and(|m| !m.children.is_empty())).count();
+            assert_eq!(masked, 6);
+        }
+    }
+}
+
+/// Vector masks' joins as masks: a square with a square taken away, and an inverted square (what
+/// is outside it shown); and a gradient fill layer, a solid under a gradient overlay.
+#[test]
+fn photoshop_vector_masks_join_and_gradients_fill() {
+    use veymelo_psd::write::{desc_block, layer as psd_layer, vector_block, write};
+    use veymelo_psd::{Desc, Item};
+    let desc = |class: &str, items: Vec<(&str, Item)>| Desc { class: class.into(), items: items.into_iter().map(|(k, v)| (k.to_string(), v)).collect() };
+    let white = Item::Desc(desc("RGBC", vec![("Rd  ", Item::Double(255.0)), ("Grn ", Item::Double(255.0)), ("Bl  ", Item::Double(255.0))]));
+    let square = |x0: f64, y0: f64, x1: f64, y1: f64| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|p| [p, p, p]).to_vec();
+    let mut cut = psd_layer("Cut", [0, 0, 0, 0]);
+    cut.info = vec![(*b"SoCo", desc_block(&desc("null", vec![("Clr ", white.clone())]))), (*b"vmsk", vector_block(&[(square(0.0, 0.0, 20.0, 20.0), true, 1), (square(5.0, 5.0, 15.0, 15.0), true, 2)], 40.0, 20.0, 0))];
+    let mut outside = psd_layer("Outside", [0, 0, 0, 0]);
+    outside.info = vec![(*b"SoCo", desc_block(&desc("null", vec![("Clr ", white)]))), (*b"vmsk", vector_block(&[(square(20.0, 0.0, 40.0, 20.0), true, 2), (square(25.0, 5.0, 35.0, 15.0), true, 1)], 40.0, 20.0, 1))];
+    // black to white across, hidden
+    let stop = |at: i64, v: f64| Item::Desc(desc("Clrt", vec![("Clr ", Item::Desc(desc("RGBC", vec![("Rd  ", Item::Double(v)), ("Grn ", Item::Double(v)), ("Bl  ", Item::Double(v))]))), ("Lctn", Item::Int(at))]));
+    let grad = desc("Grdn", vec![("Clrs", Item::List(vec![stop(0, 0.0), stop(4096, 255.0)])), ("Intr", Item::Double(0.0))]);
+    let mut ramp = psd_layer("Ramp", [0, 0, 0, 0]);
+    ramp.info = vec![(*b"GdFl", desc_block(&desc("null", vec![("Grad", Item::Desc(grad)), ("Angl", Item::Unit("#Ang".into(), 0.0)), ("Type", Item::Enum("GrdT".into(), "Lnr ".into()))])))];
+    ramp.hidden = true;
+    let dir = std::env::temp_dir().join(format!("veymelo-psd-joins-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("joins.psd");
+    std::fs::write(&file, write(40, 20, 8, &[cut, outside, ramp])).unwrap();
+    let mut s = Session::new();
+    let made = run(&mut s, "footage.import", &format!(r#"{{"path": {}, "as": "composition"}}"#, Json::from(file.to_string_lossy().as_ref()).to_json()));
+    let c = id(&made, "item");
+    let comp = s.project().comp(c).unwrap();
+    let styles: Vec<&str> = comp.layers[0].props.group("layerStyles").unwrap().children.iter().filter_map(|n| n.as_group()).map(|g| g.def.id).collect();
+    assert_eq!((comp.layers[0].source.id(), styles), ("solid", vec!["blendingOptions", "gradientOverlay"]));
+    let f = s.render(Some(&Json::Number(c as f64)), None, &render::Options { background: false, ..render::Options::default() }).unwrap();
+    let a = |x: usize, y: usize| px(&f, x, y)[3];
+    assert_eq!((a(2, 2), a(10, 10), a(17, 10)), (1.0, 0.0, 1.0), "a square less a square");
+    assert_eq!((a(22, 2), a(30, 10), a(37, 17)), (1.0, 0.0, 1.0), "inverted: shown outside the square");
+    // the gradient fill shown: black at the left, white at the right
+    run(&mut s, "layer.set", &format!(r#"{{"comp": {c}, "layer": "Ramp", "switches": {{"video": true}}}}"#));
+    let f = s.render(Some(&Json::Number(c as f64)), None, &render::Options { background: false, ..render::Options::default() }).unwrap();
+    let (l, r) = (px(&f, 1, 10), px(&f, 38, 10));
+    assert!(l[0] < 0.06 && r[0] > 0.94 && l[3] == 1.0, "{l:?} {r:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A Photoshop document made by the specification's book: a solid fill cut by a vector mask
+/// into a ring, an invert adjustment painted onto the right half, a type layer, a smart object
+/// holding a picture pinned by its corners, a layer with a drop shadow, and a hidden levels
+/// layer — each brought in as what it is, and drawn.
+#[test]
+fn photoshop_fills_adjustments_type_and_smart_objects() {
+    use veymelo_psd::write::{desc_block, effects_block, layer as psd_layer, linked_block, placed_block, type_block, vector_block, write_with};
+    use veymelo_psd::{Desc, Item};
+    let desc = |class: &str, items: Vec<(&str, Item)>| Desc { class: class.into(), items: items.into_iter().map(|(k, v)| (k.to_string(), v)).collect() };
+    let rgb = |r: f64, g: f64, b: f64| Item::Desc(Desc { class: "RGBC".into(), items: vec![("Rd  ".into(), Item::Double(r)), ("Grn ".into(), Item::Double(g)), ("Bl  ".into(), Item::Double(b))] });
+    let dir = std::env::temp_dir().join(format!("veymelo-psd-settings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let plane = |n: usize, v: u8| vec![v; n];
+    let mut back = psd_layer("Back", [0, 0, 40, 60]);
+    back.channels = vec![(0, 0, plane(2400, 51)), (1, 0, plane(2400, 102)), (2, 0, plane(2400, 153))];
+    // a red fill, a square with a square hole merged into it
+    let corners = |x0: f64, y0: f64, x1: f64, y1: f64| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|p| [p, p, p]).to_vec();
+    let mut ring = psd_layer("Ring", [0, 0, 0, 0]);
+    ring.info = vec![
+        (*b"SoCo", desc_block(&desc("null", vec![("Clr ", rgb(255.0, 0.0, 0.0))]))),
+        (*b"vmsk", vector_block(&[(corners(10.0, 10.0, 30.0, 30.0), true, 1), (corners(15.0, 15.0, 25.0, 25.0), true, -1)], 60.0, 40.0, 0)),
+    ];
+    // an invert, painted onto the right half
+    let mut invert = psd_layer("Invert", [0, 0, 0, 0]);
+    invert.info = vec![(*b"nvrt", Vec::new())];
+    invert.channels = vec![(-2, 0, plane(1200, 255))];
+    invert.mask = Some(([0, 30, 40, 60], 0));
+    // "Hi" in red, its own space twice as big, its baseline starting at (4, 36)
+    let mut engine = b"<< /EngineDict << /Editor << /Text (\xfe\xff\x00H\x00i\x00\r) >> /StyleRun << /RunArray [ << /StyleSheet << /StyleSheetData << /Font 0 /FontSize 9.0 /FillColor << /Type 1 /Values [ 1.0 1.0 0.0 0.0 ] >> >> >> >> ] /RunLengthArray [ 3 ] >> /ParagraphRun << /RunArray [ << /ParagraphSheet << /Properties << /Justification 0 >> >> >> ] /RunLengthArray [ 3 ] >> >> /ResourceDict << /FontSet [ << /Name (Helvetica-Bold) >> ] >> >>".to_vec();
+    engine.retain(|_| true);
+    let text = desc("TxLr", vec![("Txt ", Item::Text("Hi\r".into())), ("EngineData", Item::Data(engine))]);
+    let mut hello = psd_layer("Hello", [20, 4, 36, 30]);
+    hello.info = vec![(*b"TySh", type_block([2.0, 0.0, 0.0, 2.0, 4.0, 36.0], &text))];
+    // a smart object holding a green picture, pinned by its corners
+    let png = dir.join("green.png");
+    veymelo_os::write_picture(png.to_str().unwrap(), 4, 4, &[0, 255, 0, 255].repeat(16), "public.png", true, 1.0).unwrap();
+    let bytes = std::fs::read(&png).unwrap();
+    std::fs::remove_file(&png).unwrap();
+    let place = desc("null", vec![("Idnt", Item::Text("green-1".into())), ("Trnf", Item::List([40.0, 22.0, 56.0, 22.0, 56.0, 38.0, 40.0, 38.0].map(Item::Double).to_vec()))]);
+    let mut photo = psd_layer("Photo", [22, 40, 38, 56]);
+    photo.info = vec![(*b"SoLd", placed_block(&place))];
+    // a white square with a black shadow 4 pixels under it
+    let mut square = psd_layer("Square", [2, 2, 8, 8]);
+    square.channels = vec![(0, 0, plane(36, 255)), (1, 0, plane(36, 255)), (2, 0, plane(36, 255))];
+    let shadow = desc(
+        "DrSh",
+        vec![
+            ("enab", Item::Bool(true)),
+            ("Md  ", Item::Enum("BlnM".into(), "Nrml".into())),
+            ("Clr ", rgb(0.0, 0.0, 0.0)),
+            ("Opct", Item::Unit("#Prc".into(), 100.0)),
+            ("uglg", Item::Bool(false)),
+            ("lagl", Item::Unit("#Ang".into(), 90.0)),
+            ("Dstn", Item::Unit("#Pxl".into(), 4.0)),
+            ("blur", Item::Unit("#Pxl".into(), 0.0)),
+        ],
+    );
+    square.info = vec![(*b"lfx2", effects_block(&desc("null", vec![("masterFXSwitch", Item::Bool(true)), ("DrSh", Item::Desc(shadow))])))];
+    // levels, hidden: its white point at 200
+    let mut levels = psd_layer("Levels", [0, 0, 0, 0]);
+    let mut levl = 2u16.to_be_bytes().to_vec();
+    for v in [0u16, 200, 0, 255, 100] {
+        levl.extend(v.to_be_bytes());
+    }
+    levels.info = vec![(*b"levl", levl)];
+    levels.hidden = true;
+    let file = dir.join("settings.psd");
+    std::fs::write(&file, write_with(60, 40, 8, &[back, ring, invert, hello, photo, square, levels], &[], &[(*b"lnk2", linked_block("green-1", "green.png", b"png ", &bytes))])).unwrap();
+    let mut s = Session::new();
+    let path = Json::from(file.to_string_lossy().as_ref()).to_json();
+    let made = run(&mut s, "footage.import", &format!(r#"{{"path": {path}, "as": "composition"}}"#));
+    assert_eq!(made.get("notes").and_then(Json::as_array).map(Vec::len), Some(0), "{}", made.to_json());
+    let c = id(&made, "item");
+    let comp = s.project().comp(c).unwrap();
+    let kinds: Vec<(&str, &str, bool)> = comp.layers.iter().map(|l| (l.name.as_str(), l.source.id(), l.switches.adjustment)).collect();
+    assert_eq!(kinds, [("Levels", "solid", true), ("Square", "footage", false), ("Photo", "footage", false), ("Hello", "text", false), ("Invert", "footage", true), ("Ring", "solid", false), ("Back", "footage", false)]);
+    let effect = |l: usize| comp.layers[l].props.group("effects").unwrap().children[0].as_group().unwrap().clone();
+    let lv = effect(0);
+    assert_eq!((lv.def.id, lv.prop("inputWhite").unwrap().value.as_f64()), ("levels", 200.0 / 255.0));
+    assert_eq!((effect(2).def.id, effect(4).def.id), ("cornerPin", "invert"));
+    assert_eq!(comp.layers[5].props.group("masks").unwrap().children.len(), 2);
+    // the smart object's picture written beside the document
+    assert!(dir.join("settings smart objects").join("green.png").exists());
+    let f = s.render(Some(&Json::Number(c as f64)), None, &render::Options { background: false, ..render::Options::default() }).unwrap();
+    let at = |x: usize, y: usize| px(&f, x, y);
+    let near = |a: [f32; 4], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 0.02);
+    let back = [0.2, 0.4, 0.6];
+    assert!(near(at(12, 20), [1.0, 0.0, 0.0]) && near(at(20, 20), back) && near(at(5, 20), back), "the ring: {:?} {:?}", at(12, 20), at(20, 20));
+    assert!(near(at(35, 5), [0.8, 0.6, 0.4]), "the right half inverted: {:?}", at(35, 5));
+    assert!(near(at(48, 30), [0.0, 1.0, 0.0]), "the pinned picture: {:?}", at(48, 30));
+    assert!(near(at(5, 5), [1.0; 3]) && near(at(5, 10), [0.0; 3]) && near(at(5, 14), back), "the square and its shadow: {:?} {:?}", at(5, 5), at(5, 10));
+    // the text: red letters standing on their baseline
+    let red = (4..30).flat_map(|x| (20..36).map(move |y| (x, y))).filter(|&(x, y)| near(at(x, y), [1.0, 0.0, 0.0])).count();
+    assert!(red > 20, "{red} red pixels of text");
+    let low = (4..30).flat_map(|x| (37..40).map(move |y| (x, y))).filter(|&(x, y)| near(at(x, y), [1.0, 0.0, 0.0])).count();
+    assert_eq!(low, 0, "nothing of it under its baseline");
+    // type layers as their pixels, if asked
+    let made = run(&mut s, "footage.import", &format!(r#"{{"path": {path}, "as": "composition", "text": "pixels", "name": "Flat"}}"#));
+    let comp = s.project().comp(id(&made, "item")).unwrap();
+    assert_eq!(comp.layers.iter().find(|l| l.name == "Hello").map(|l| l.source.id()), Some("footage"));
+    std::fs::remove_dir_all(&dir).ok();
+}

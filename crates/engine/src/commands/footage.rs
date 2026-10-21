@@ -41,6 +41,8 @@ pub fn commands() -> Vec<Command> {
                     Param::opt("name", Ty::Text, "what to call it (default: its file's name)"),
                     Param::opt("folder", Ty::Whole, "the folder item to put it in"),
                     Param::opt("as", Ty::Choice(super::layered::IMPORT_AS), "a Photoshop document: as footage of the whole picture (default), as a composition of its layers each the document's size, or each just its own size, placed where it is"),
+                    Param::opt("text", Ty::Choice(super::layered::TEXT_AS), "a Photoshop document's type layers, as a composition: text layers to edit (default), or their pixels"),
+                    Param::opt("smartObjects", Ty::Text, "the folder to keep the files a Photoshop document's smart objects hold in (default: \"<its name> smart objects\" beside it)"),
                     Param::opt("page", Ty::Whole, "a PDF or Illustrator file's page to show (from 1; default 1)"),
                 ]
             },
@@ -194,7 +196,8 @@ fn footage_import(cx: &mut Ctx, a: &Args) -> Result<Json> {
         if !veymelo_media::is_layered(path) {
             return Err(Error::params(format!("{path}: only a Photoshop document (.psd, .psb) comes in as a composition of its layers")));
         }
-        return super::layered::import(cx, path, how == "compositionLayerSizes", a.text("name"), folder);
+        let how = super::layered::How { cropped: how == "compositionLayerSizes", text_pixels: a.text("text") == Some("pixels"), smart_folder: a.text("smartObjects") };
+        return super::layered::import(cx, path, how, a.text("name"), folder);
     }
     let mut f = veymelo_media::probe(path, a.bool("sequence").unwrap_or(false)).map_err(Error::not_found)?;
     // a page of a file with pages: its size, kept as the footage's source layer
@@ -208,7 +211,7 @@ fn footage_import(cx: &mut Ctx, a: &Args) -> Result<Json> {
         }
         let doc = veymelo_media::vector_page(path, page as usize - 1).map_err(Error::not_found)?;
         (f.width, f.height) = (doc.width.ceil().clamp(1.0, 30_000.0) as u32, doc.height.ceil().clamp(1.0, 30_000.0) as u32);
-        f.layer = Some(SourceLayer { index: page as u32 - 1, name: format!("Page {page}"), cropped: false });
+        f.layer = Some(SourceLayer { index: page as u32 - 1, name: format!("Page {page}"), cropped: false, mask: false });
     }
     if let Some(r) = rate_of(a)? {
         if f.kind != FootageKind::Sequence {

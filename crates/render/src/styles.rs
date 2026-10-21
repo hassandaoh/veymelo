@@ -9,7 +9,9 @@
 //!
 //! Shapes grown or shrunk, strokes, precise glows and bevels come from the exact distance to the
 //! layer's edge; soft shadows and glows from Gaussian blurs of its shape. Sizes are in the
-//! layer's pixels, so a smaller render draws them smaller.
+//! layer's pixels, so a smaller render draws them smaller. A gradient's Smoothness eases it into
+//! and out of each stop (at 100%, halfway from a straight ramp to an S-curve between stops, as
+//! Photoshop's is measured to be).
 
 use std::cell::OnceCell;
 
@@ -265,12 +267,40 @@ fn grainy(a: f32, amount: f32, x: usize, y: usize, seed: u32) -> f32 {
     if amount <= 0.0 { a } else { a * (1.0 - amount * noise(x, y, seed)) }
 }
 
+/// Where `t` falls between `places` (sorted), eased into and out of each by `k` (0 straight, 1
+/// an S-curve): the place a straight ramp would be at for it.
+fn eased(places: impl Iterator<Item = f64>, t: f64, k: f64) -> f64 {
+    let mut before: Option<f64> = None;
+    for p in places {
+        match before {
+            Some(a) if t >= a && t <= p && p > a => {
+                let f = (t - a) / (p - a);
+                return a + (f + k * (f * f * (3.0 - 2.0 * f) - f)) * (p - a);
+            }
+            _ => before = Some(p),
+        }
+    }
+    t
+}
+
+/// A gradient's colour and alpha at `t`, eased by its smoothness (0 to 1).
+fn smooth_at(g: &Gradient, t: f64, smoothness: f64) -> [f64; 4] {
+    let k = smoothness.clamp(0.0, 1.0) * 0.5;
+    if k <= 0.0 {
+        return g.at(t);
+    }
+    let c = g.at(eased(g.colors.iter().map(|s| s.0), t, k));
+    let a = g.at(eased(g.opacities.iter().map(|s| s.0), t, k))[3];
+    [c[0], c[1], c[2], a]
+}
+
 /// A glow: how strong (0 to 1) and in what colour.
 struct Glow {
     mode: BlendMode,
     opacity: f32,
     noise: f32,
     gradient: Option<Gradient>,
+    smoothness: f64,
     color: [f32; 3],
     precise: bool,
     from_middle: bool,
@@ -287,6 +317,7 @@ impl Glow {
             opacity: r.part("opacity", 75.0) as f32,
             noise: r.part("noise", 0.0) as f32,
             gradient: (r.choice("colorType") == 1).then(|| r.gradient()).flatten(),
+            smoothness: r.part("gradientSmoothness", 100.0),
             color: r.color("color", linear),
             precise: r.choice("technique") == 1,
             from_middle: inner && r.choice("source") == 0,
@@ -318,7 +349,7 @@ impl Glow {
             None => (self.color, v),
             Some(g) => {
                 let j = if self.jitter > 0.0 { (noise(x, y, 77) - 0.5) * self.jitter } else { 0.0 };
-                let c = g.at((1.0 - v + j).clamp(0.0, 1.0) as f64);
+                let c = smooth_at(g, (1.0 - v + j).clamp(0.0, 1.0) as f64, self.smoothness);
                 ([c[0] as f32, c[1] as f32, c[2] as f32], c[3] as f32 * (v * 8.0).min(1.0))
             }
         }
@@ -395,6 +426,7 @@ pub fn draw(list: &Group, read: &dyn Fn(&Property) -> Value, content: &Buf, rect
     if let Some(r) = style("gradientOverlay") {
         let gradient = r.gradient().unwrap_or(Gradient { colors: vec![(0.0, [0.0; 3]), (1.0, [1.0; 3])], opacities: vec![(0.0, 1.0), (1.0, 1.0)] });
         let (opacity, kind, reverse, scale) = (r.part("opacity", 100.0) as f32, r.choice("style"), r.flag("reverse"), r.num("scale", 100.0).clamp(10.0, 150.0) / 100.0);
+        let smoothness = r.part("gradientSmoothness", 100.0);
         let a = r.num("angle", 90.0).to_radians();
         let off = r.value("offset").map_or([0.0; 2], |v| v.as_vec2());
         // the frame it spreads over: the layer's shape, or its whole rectangle
@@ -427,7 +459,7 @@ pub fn draw(list: &Group, read: &dyn Fn(&Property) -> Value, content: &Buf, rect
                 _ => 0.5 + along / (2.0 * along_most),
             };
             let t = if reverse { 1.0 - t } else { t };
-            let c = gradient.at(t.clamp(0.0, 1.0));
+            let c = smooth_at(&gradient, t.clamp(0.0, 1.0), smoothness);
             ([c[0] as f32, c[1] as f32, c[2] as f32], c[3] as f32 * opacity)
         });
     }

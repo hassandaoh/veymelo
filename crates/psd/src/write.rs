@@ -1,8 +1,11 @@
 //! Photoshop documents written, a small part of the format: RGB layers (8 or 16 bits) with their
 //! channels compressed any of the four ways, names (ASCII and Unicode), blend modes, opacity,
-//! visibility, layer masks and group dividers. Enough to make documents to read back.
+//! visibility, layer masks (with a feather) and group dividers, any additional information
+//! blocks, image resources and the document's own blocks; and the blocks themselves for vector
+//! masks, type layers and smart objects. Enough to make documents to read back.
 
 use crate::Bounds;
+use crate::descriptor::{Desc, write::versioned};
 
 /// A layer to write: its name, rectangle, blend mode, opacity, flags, what kind of record (group
 /// folder or divider), channels (id, compression, samples), mask (rectangle, default) and fill.
@@ -15,11 +18,110 @@ pub struct Write {
     pub section: Option<u32>,
     pub channels: Vec<(i16, u16, Vec<u8>)>,
     pub mask: Option<(Bounds, u8)>,
+    /// The mask's feather (pixels), and whether it was drawn from the vector mask.
+    pub mask_feather: f64,
+    pub mask_rendered: bool,
+    /// More additional information blocks.
+    pub info: Vec<([u8; 4], Vec<u8>)>,
 }
 
 /// A layer called `name` covering `bounds`, normal, opaque, shown, with no channels yet.
 pub fn layer(name: &'static str, bounds: Bounds) -> Write {
-    Write { name, bounds, blend: b"norm", opacity: 255, hidden: false, section: None, channels: Vec::new(), mask: None }
+    Write { name, bounds, blend: b"norm", opacity: 255, hidden: false, section: None, channels: Vec::new(), mask: None, mask_feather: 0.0, mask_rendered: false, info: Vec::new() }
+}
+
+/// A descriptor block as fill layers and smart objects keep them: its version, then it.
+pub fn desc_block(d: &Desc) -> Vec<u8> {
+    versioned(d)
+}
+
+/// Layer effects (`lfx2`): their version, then the descriptor's.
+pub fn effects_block(d: &Desc) -> Vec<u8> {
+    let mut out = 0u32.to_be_bytes().to_vec();
+    out.extend(versioned(d));
+    out
+}
+
+/// A subpath to write: its knots (control point before, knot, control point after; document
+/// pixels), whether it closes and how it joins (−1 merged, 0 exclude, 1 combine, 2 subtract, 3
+/// intersect).
+pub type Subpath = (Vec<[[f64; 2]; 3]>, bool, i16);
+
+/// A vector mask (`vmsk`) of subpaths for a document `w` × `h`; `flags` 1 inverted, 4 off.
+pub fn vector_block(paths: &[Subpath], w: f64, h: f64, flags: u32) -> Vec<u8> {
+    let mut out = 3u32.to_be_bytes().to_vec();
+    out.extend(flags.to_be_bytes());
+    let rec = |sel: u16, body: &[u8]| {
+        let mut r = sel.to_be_bytes().to_vec();
+        r.extend(body);
+        r.resize(26, 0);
+        r
+    };
+    out.extend(rec(6, &[]));
+    out.extend(rec(8, &[]));
+    let fixed = |v: f64| ((v * (1 << 24) as f64).round() as i32).to_be_bytes();
+    for (knots, closed, op) in paths {
+        let mut b = (knots.len() as u16).to_be_bytes().to_vec();
+        b.extend(op.to_be_bytes());
+        b.extend(1u16.to_be_bytes());
+        out.extend(rec(if *closed { 0 } else { 3 }, &b));
+        for k in knots {
+            let mut b = Vec::new();
+            for p in k {
+                b.extend(fixed(p[1] / h));
+                b.extend(fixed(p[0] / w));
+            }
+            out.extend(rec(if *closed { 2 } else { 5 }, &b));
+        }
+    }
+    out
+}
+
+/// A type layer (`TySh`): its transform, then its text descriptor (holding `Txt ` and the
+/// `EngineData`), then an empty warp.
+pub fn type_block(transform: [f64; 6], text: &Desc) -> Vec<u8> {
+    let mut out = 1u16.to_be_bytes().to_vec();
+    for v in transform {
+        out.extend(v.to_be_bytes());
+    }
+    out.extend(50u16.to_be_bytes());
+    out.extend(versioned(text));
+    out.extend(1u16.to_be_bytes());
+    out.extend(versioned(&Desc { class: "warp".into(), items: Vec::new() }));
+    out.extend([0; 16]);
+    out
+}
+
+/// A smart object's placing (`SoLd`).
+pub fn placed_block(d: &Desc) -> Vec<u8> {
+    let mut out = b"soLD".to_vec();
+    out.extend(4u32.to_be_bytes());
+    out.extend(versioned(d));
+    out
+}
+
+/// A file held for smart objects (one `lnk2` entry): its id, name, kind and bytes.
+pub fn linked_block(id: &str, name: &str, kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut e = b"liFD".to_vec();
+    e.extend(2u32.to_be_bytes());
+    e.push(id.len() as u8);
+    e.extend(id.as_bytes());
+    let units: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    e.extend((units.len() as u32).to_be_bytes());
+    for u in units {
+        e.extend(u.to_be_bytes());
+    }
+    e.extend(kind);
+    e.extend(b"    ");
+    e.extend((data.len() as u64).to_be_bytes());
+    e.push(0);
+    e.extend(data);
+    let mut out = (e.len() as u64).to_be_bytes().to_vec();
+    out.extend(e);
+    while !out.len().is_multiple_of(4) {
+        out.push(0);
+    }
+    out
 }
 
 /// Samples as a channel's data compressed as `how` (`w` samples a row, `bytes` each).
@@ -73,6 +175,11 @@ pub fn encode(how: u16, s: &[u8], w: usize, bytes: usize) -> Vec<u8> {
 
 /// A document `w` × `h` of RGB `depth`-bit layers (given bottom first).
 pub fn write(w: u32, h: u32, depth: u16, layers: &[Write]) -> Vec<u8> {
+    write_with(w, h, depth, layers, &[], &[])
+}
+
+/// A document as [`write`] makes, with image resources (id, data) and blocks of its own.
+pub fn write_with(w: u32, h: u32, depth: u16, layers: &[Write], resources: &[(u16, Vec<u8>)], global: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let bytes = (depth / 8).max(1) as usize;
     let mut f = b"8BPS".to_vec();
     f.extend(1u16.to_be_bytes());
@@ -83,7 +190,19 @@ pub fn write(w: u32, h: u32, depth: u16, layers: &[Write]) -> Vec<u8> {
     f.extend(depth.to_be_bytes());
     f.extend(3u16.to_be_bytes());
     f.extend(0u32.to_be_bytes());
-    f.extend(0u32.to_be_bytes());
+    let mut res = Vec::new();
+    for (id, d) in resources {
+        res.extend(b"8BIM");
+        res.extend(id.to_be_bytes());
+        res.extend([0, 0]);
+        res.extend((d.len() as u32).to_be_bytes());
+        res.extend(d);
+        if d.len() % 2 == 1 {
+            res.push(0);
+        }
+    }
+    f.extend((res.len() as u32).to_be_bytes());
+    f.extend(res);
     let mut records = Vec::new();
     let mut data = Vec::new();
     for l in layers {
@@ -111,11 +230,19 @@ pub fn write(w: u32, h: u32, depth: u16, layers: &[Write]) -> Vec<u8> {
         let mut extra = Vec::new();
         match l.mask {
             Some((mb, default)) => {
-                extra.extend(20u32.to_be_bytes());
+                let mut m = Vec::new();
                 for v in mb {
-                    extra.extend(v.to_be_bytes());
+                    m.extend(v.to_be_bytes());
                 }
-                extra.extend([default, 0, 0, 0]);
+                let flags = if l.mask_rendered { 8 } else { 0 } | if l.mask_feather > 0.0 { 16 } else { 0 };
+                m.extend([default, flags]);
+                if l.mask_feather > 0.0 {
+                    m.push(2);
+                    m.extend(l.mask_feather.to_be_bytes());
+                }
+                m.resize(m.len().max(20), 0);
+                extra.extend((m.len() as u32).to_be_bytes());
+                extra.extend(m);
             }
             None => extra.extend(0u32.to_be_bytes()),
         }
@@ -143,6 +270,16 @@ pub fn write(w: u32, h: u32, depth: u16, layers: &[Write]) -> Vec<u8> {
             extra.extend(b"8BIM");
             extra.extend(l.blend);
         }
+        for (key, d) in &l.info {
+            extra.extend(b"8BIM");
+            extra.extend(key);
+            let mut d = d.clone();
+            if d.len() % 2 == 1 {
+                d.push(0);
+            }
+            extra.extend((d.len() as u32).to_be_bytes());
+            extra.extend(d);
+        }
         records.extend((extra.len() as u32).to_be_bytes());
         records.extend(extra);
         for (_, e) in encoded {
@@ -155,10 +292,20 @@ pub fn write(w: u32, h: u32, depth: u16, layers: &[Write]) -> Vec<u8> {
     if info.len() % 2 == 1 {
         info.push(0);
     }
-    f.extend(((info.len() + 4 + 4) as u32).to_be_bytes());
+    let mut tail = 0u32.to_be_bytes().to_vec();
+    for (key, d) in global {
+        tail.extend(b"8BIM");
+        tail.extend(key);
+        tail.extend((d.len() as u32).to_be_bytes());
+        tail.extend(d);
+        while !tail.len().is_multiple_of(4) {
+            tail.push(0);
+        }
+    }
+    f.extend(((info.len() + 4 + tail.len()) as u32).to_be_bytes());
     f.extend((info.len() as u32).to_be_bytes());
     f.extend(info);
-    f.extend(0u32.to_be_bytes());
+    f.extend(tail);
     // the merged picture (not read): raw, empty
     f.extend(0u16.to_be_bytes());
     f

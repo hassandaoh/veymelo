@@ -339,7 +339,7 @@ prop.list/get/set/keys, render.frame
       raw/RLE/ZIP/ZIP+prediction, 8/16/32 บิต, RGB/gray/CMYK/Lab, ตัวเขียนส่วนเล็กสำหรับทดสอบ); footage.import as
       composition / compositionLayerSizes: ชั้นละ footage (Footage.layer), กลุ่มเป็นคอมพ์ย่อย pass through ยุบ,
       blend/opacity×fill/ซ่อน/clipping; ตรวจกับ PSD จริงของ macOS ตรงกับภาพรวมของระบบ;
-      ภายหลัง: ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/ชั้นเติมสี (วาดจากค่าตั้ง), smart object วางตามมุม, vector mask]
+      ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/ชั้นเติมสี, smart object วางตามมุม, vector mask: ดู 19.5]
 - [x] ชั้นเสียงของ Lottie [เสร็จ: ส่งออกเป็นชั้น ty 6 + asset เสียงฝังในไฟล์ (data URI), ระดับเสียง dB เป็น % ของ Lottie;
       นำเข้ากลับเป็น footage เสียง (เก็บไฟล์) และ audio/levels; ต้นแบบไม่มีส่วนนี้ (ของเราเพิ่มเอง)]
 - [x] EXR หลายช่อง (ส่งให้เอฟเฟกต์ 3D Channel) [เสร็จ: crate exr ของเราเอง (ย้ายตัวเขียน ZIP มาไว้ด้วย):
@@ -742,6 +742,24 @@ prop.list/get/set/keys, render.frame
       ตัวอักษรที่ใช้ (โครงที่ 100 หน่วยต่อ em, y ลง, ความกว้าง) ชั้นยังเป็นตัวหนังสือแก้ได้; นำเข้า: ฟอนต์ไม่มีในเครื่องแต่ไฟล์ฝัง
       glyph มา → วางตัวอักษรจาก glyph เป็น shape layer (หลายบรรทัด, จัดซ้าย/กลาง/ขวา, tracking, leading, เส้นและสี) แทนการเปลี่ยน
       ฟอนต์; ตรวจ: ไปกลับครบทุกค่า และวาดจาก glyph ทับกับตัวหนังสือเดิมเกิน 90%; เสียงทำแล้วในขั้น 10
+- [x] 19.5 PSD จากค่าตั้ง (psd: descriptor.rs vector.rs looks.rs adjust.rs typeset.rs smart.rs; engine: layered.rs): ตัวอ่าน
+      Action Descriptor ของ Photoshop (ทุกชนิดค่า, สีจาก RGB/HSB/CMYK/เทา); เก็บ image resources (แสงรวม 1037/1049) และบล็อก
+      ของทั้งเอกสาร; ชั้นของไฟล์ 16/32 บิตจริงอยู่ใน `Lr16`/`Lr32` (ตัวอ่านเดิมไม่เห็น: แก้แล้ว); mask: feather (เบลอ) density
+      และ real user mask (-3) เมื่อมี vector mask ด้วย, mask ที่วาดจาก vector mask ไม่ใช้ซ้ำ. นำเข้าเป็นคอมพ์: vector mask
+      (`vmsk`/`vsms`) → mask ของชั้นตามวิธีรวมรูป (รวม/ลบ/ตัดกัน/ยกเว้น, รูปที่ merge เป็นรู, กลับด้าน, feather, density รูปเดียว,
+      ปิดอยู่ → mode none) ทั้งชั้นและกลุ่ม; layer effects (`lfx2`/`lmfx`) → layer styles 9 แบบ (โหมดผสม เมนู gradient offset
+      ขนาดคูณ scale, ใช้แสงรวมของเอกสาร, Fill Opacity เป็นของ Blending Options, ปิดทั้งหมด/ทีละอัน); ชั้นเติมสี SoCo → solid,
+      GdFl → solid + gradient overlay; ชั้นปรับ 16 แบบ (levels curves brightness/contrast hue/sat color balance invert
+      threshold posterize exposure vibrance black&white photo filter channel mixer selective color) → adjustment layer พร้อม
+      เอฟเฟกต์ที่ตรงกัน; ชั้นตัวหนังสือ (`TySh` + EngineData) → text layer แก้ได้: ทุก run (ฟอนต์ ขนาด สี เส้น tracking leading
+      kerning baseline caps super/sub ขีดเส้น สเกล faux ligature), ทุกย่อหน้า (จัดแนว indent ระยะ), point/box, แนวตั้ง, ตำแหน่ง
+      และการหมุนจาก transform, ฟอนต์ไม่มีในเครื่องบอกชัด; `text: "pixels"` เอาเป็นพิกเซลแทน; smart object (`SoLd`/`PlLd` +
+      `lnk2`/`lnkD`/`lnk3`) → footage ของไฟล์ที่ฝังไว้ (เขียนไว้ใน "<ชื่อ> smart objects" ข้างไฟล์ หรือ `smartObjects`) หรือไฟล์ที่
+      ลิงก์ ปักด้วย Corner Pin ที่มุมทั้ง 4 (warp, smart filter บอกชัด); mask ที่วาดเองบนชั้นที่ไม่มีพิกเซลของตัวเอง → footage
+      ของ mask (SourceLayer.mask): เป็นตัวชั้นของ fill/adjustment หรือ track matte ของตัวหนังสือ smart object และกลุ่ม;
+      gradient ของ style ใช้ Smoothness แล้ว (100% = ครึ่งทางสู่ S-curve ระหว่าง stop ตามที่วัดจากไฟล์จริง); สิ่งที่ไม่มีให้
+      (pattern fill/overlay, gradient map, color lookup) บอกใน notes; ตรวจ: PSD จริงของระบบ 2 ไฟล์วาดตรงภาพรวมในไฟล์
+      (alpha ห่างไม่ถึง 1 ขั้น 8 บิต), ไฟล์ที่สร้างตามสเปกครบทุกชนิดวาดถูกทุกจุดที่ตรวจ
 
 ## งานที่เหลือ (จัดใหม่ 2026-10-21)
 Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างคือสิ่งที่ AI ใช้ผ่านคำสั่ง/MCP หรือความเร็วและคุณภาพของภาพ — **ไม่มีงานหน้าตาสำหรับคน**
@@ -753,8 +771,7 @@ Veymelo ทำเพื่อ AI: ทุกข้อด้านล่างค�
 4. ~~**หุ่นเชิด**~~ — เสร็จ 2026-10-21 (ดูขั้น 6)
 5. ~~**ตัวติดตาม**~~ — เสร็จ 2026-10-21 (ดูขั้น 17)
 6. ~~**สีและตัวหนังสือ (ขั้น 18)**~~ — เสร็จ 2026-10-21 (ACES output, OCIO grading, ฟอนต์ COLR v1 และ CBDT: ดูขั้น 18)
-7. **ไฟล์ (ขั้น 19)**: ~~PDF/AI แบบเวกเตอร์~~; ~~EXR deep~~, ~~HTJ2K~~; ~~Lottie (layer styles, ตัวอักษรฝัง, เสียง)~~;
-   PSD (ชั้นตัวหนังสือแก้ได้, layer styles, ชั้นปรับ/เติมสี, smart object วางตามมุม, vector mask)
+7. ~~**ไฟล์ (ขั้น 19)**~~ — เสร็จ 2026-10-21 (PDF/AI, EXR deep, HTJ2K, Lottie, PSD จากค่าตั้ง: ดู 19.1–19.5)
 8. **commit** ขั้น 13–15 (push เมื่อผู้ใช้สั่ง)
 
 ไม่อยู่ในแผน:

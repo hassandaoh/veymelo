@@ -253,10 +253,16 @@ pub fn layered(path: &str) -> Result<std::sync::Arc<veymelo_psd::Psd>, String> {
 }
 
 /// One layer of a layered file, premultiplied: just its own rectangle (`cropped`), or the whole
-/// document with the layer where it is in it.
+/// document with the layer where it is in it; or its mask (white, as see-through as it hides)
+/// over the whole document.
 fn layer_frame(path: &str, layer: &veymelo_project::SourceLayer) -> Result<veymelo_raster::Image, String> {
     let doc = layered(path)?;
     let (dw, dh) = (doc.width as usize, doc.height as usize);
+    if layer.mask {
+        let (w, h) = (dw.max(1), dh.max(1));
+        let cover = doc.mask_over(layer.index as usize, 0, 0, w, h).unwrap_or_else(|| vec![1.0; w * h]);
+        return Ok(veymelo_raster::Image { width: w, height: h, px: cover.into_iter().map(|k| [k; 4]).collect() });
+    }
     let Some(veymelo_psd::Pixels { left, top, width: w, height: h, px }) = doc.pixels(layer.index as usize) else {
         return Ok(if layer.cropped { veymelo_raster::Image::new(1, 1) } else { veymelo_raster::Image::new(dw.max(1), dh.max(1)) });
     };

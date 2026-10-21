@@ -1,6 +1,6 @@
 [package]
 name = "veymelo-psd"
-description = "Photoshop documents read by our own reader: their layers, groups and masks, every compression and depth"
+description = "Photoshop documents read by our own reader: their layers, groups and masks, every compression and depth, and the settings they keep (vector masks, effects, fills, adjustments, type, smart objects)"
 version.workspace = true
 edition.workspace = true
 

@@ -96,13 +96,15 @@ pub struct Footage {
 }
 
 /// A layer of a layered picture file that footage shows: its place among the file's layers (from
-/// the bottom, as the file keeps them), its name, and whether the footage is just the layer's own
-/// rectangle (else the whole document's, the layer where it is in it).
+/// the bottom, as the file keeps them), its name, whether the footage is just the layer's own
+/// rectangle (else the whole document's, the layer where it is in it), and whether it shows the
+/// layer's mask (white, as see-through as the mask hides) instead of its pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceLayer {
     pub index: u32,
     pub name: String,
     pub cropped: bool,
+    pub mask: bool,
 }
 
 impl Footage {
@@ -685,6 +687,9 @@ fn footage_write(f: &Footage, o: &mut Map) {
         if l.cropped {
             m.insert("cropped", true);
         }
+        if l.mask {
+            m.insert("mask", true);
+        }
         o.insert("layer", Json::Object(m));
     }
 }
@@ -711,8 +716,13 @@ fn footage_read(o: &Obj) -> Result<Footage, LoadError> {
     if let Some(j) = o.get("layer") {
         let at = o.at("layer");
         let l = Obj::new(j, &at, "a layer of the file")?;
-        l.only(&["index", "name", "cropped"])?;
-        f.layer = Some(SourceLayer { index: l.whole("index", 0, u32::MAX as u64)?.unwrap_or(0) as u32, name: l.text("name")?.unwrap_or("").to_string(), cropped: l.flag("cropped", false)? });
+        l.only(&["index", "name", "cropped", "mask"])?;
+        f.layer = Some(SourceLayer {
+            index: l.whole("index", 0, u32::MAX as u64)?.unwrap_or(0) as u32,
+            name: l.text("name")?.unwrap_or("").to_string(),
+            cropped: l.flag("cropped", false)?,
+            mask: l.flag("mask", false)?,
+        });
     }
     Ok(f)
 }
